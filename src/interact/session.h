@@ -20,6 +20,7 @@
 #include "interact/events.h"
 #include "interact/hit.h"
 #include "interact/selection.h"
+#include "interact/snap.h"
 #include "interact/tools.h"
 
 namespace paroculus {
@@ -55,6 +56,15 @@ struct Presentation {
     ToolPreview toolPreview;
     // The fixed strip's contents, live. Empty while no tool is running.
     std::vector<ToolParameter> toolParameters;
+
+    // What a placement now would infer, ranked. Auto-committing kinds are what
+    // the ghost is already showing; the offered ones are the one-key
+    // confirmations. Both are here because the user is entitled to see what is
+    // about to be declared before it is declared.
+    std::vector<SnapCandidate> snapCandidates;
+    // What the last placement actually declared. No silent changes: an inferred
+    // constraint is shown at commit, not discovered later.
+    std::vector<ConstraintId> inferred;
 
     double solveMicroseconds = 0.0;
 
@@ -95,6 +105,7 @@ public:
     void refresh();
 
     HitPolicy &policy() { return policy_; }
+    SnapPolicy &snapPolicy() { return snapPolicy_; }
 
     // Activates a creation tool, or returns to selection with ToolKind::Select.
     // Switching tools abandons whatever the previous one had in flight, which
@@ -113,8 +124,13 @@ public:
 
 private:
     // Applies whatever a tool asked for, and tells the tool only if it landed.
-    void runTool(ToolOutput output);
+    void runTool(ToolOutput output, std::vector<ConstraintId> inferred = {});
     void refreshToolPresentation();
+    // Runs inference for a placement at `cursor`. One call feeds both the ghost
+    // and the commit, so a previewed candidate set that differs from the
+    // committed one is not a reachable state.
+    SnapResult inferAt(Point cursor) const;
+    void rememberSnaps(const std::vector<SnapCandidate> &committed);
 
     void beginDrag(EntityId grabbed, Point cursor);
     void updateDrag(Point cursor);
@@ -132,7 +148,17 @@ private:
     Selection selection_;
     Presentation presentation_;
     HitPolicy policy_;
+    SnapPolicy snapPolicy_;
     Viewport viewport_;
+
+    // The relations captured when a chain's first click landed. They cannot be
+    // declared yet — the point they bind has no id until the segment that
+    // justifies it exists — so they wait one click and are applied to the start
+    // point when it is created.
+    std::vector<SnapCandidate> pendingStartSnaps_;
+    // Kinds committed recently in this document, most recent first. Ranking is
+    // contextual and document-local; this is the whole of the context.
+    std::vector<SnapKind> recentSnaps_;
 
     ScriptRecorder *recorder_ = nullptr;
     // Null in the home state. Creation tools are shallow, so there is at most

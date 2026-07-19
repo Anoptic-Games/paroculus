@@ -158,13 +158,14 @@ TEST_CASE("the strip reports the placement in flight") {
     session.setViewport(toolViewport());
     session.setTool(ToolKind::Line);
 
+    // On grid multiples, so this measures the strip rather than the grid snap.
     clickAt(session, Point{0.0, 0.0});
-    moveTo(session, Point{30.0, 40.0});
+    moveTo(session, Point{60.0, 80.0});
 
     const std::vector<ToolParameter> &parameters = session.presentation().toolParameters;
     REQUIRE(parameters.size() == 2);
     CHECK(std::string(parameters[0].name) == "length");
-    CHECK(parameters[0].value == doctest::Approx(50.0));  // 3-4-5
+    CHECK(parameters[0].value == doctest::Approx(100.0));  // 3-4-5
     CHECK(std::string(parameters[1].name) == "angle");
     // Degrees, measured the way the document is drawn: Y is up.
     CHECK(parameters[1].value == doctest::Approx(53.13010235).epsilon(1e-6));

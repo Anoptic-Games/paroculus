@@ -14,6 +14,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 
 #include "core/ids.h"
 #include "core/taxonomy.h"
@@ -47,6 +48,49 @@ struct HitPolicy {
     // way however close the user has zoomed in.
     double attributionFloor = 0.02;
 };
+
+// Inference policy.
+//
+// A snap is not a coordinate correction, it is a constraint candidate that
+// placement commits — so these numbers decide what gets *declared*, not merely
+// where a point lands. That makes them the highest-stakes feel numbers in the
+// file: too generous and documents rigidify by helpfulness, too mean and
+// freehand drawing never reaches the parametric layer at all.
+struct SnapPolicy {
+    // Capture radii in logical pixels, for the same reason the hit radii are:
+    // they describe how precisely a hand can aim.
+    double pointRadius = 12.0;
+    double lineRadius = 8.0;
+
+    // How near an axis or a reference direction counts, in degrees. Angular
+    // rather than pixel because a direction is scale-free — the same 3° looks
+    // like two pixels on a short segment and twenty on a long one, and it is
+    // the intent that is the same, not the distance.
+    double angleTolerance = 4.0;
+
+    // Placement only, never a constraint: a document where every point is
+    // grid-pinned is rigidity by helpfulness. Document units.
+    double gridStep = 20.0;
+    bool gridEnabled = true;
+
+    // Ranking weights. Tier dominates, so a coincidence never loses to a
+    // parallel that happens to be nearer; closeness settles the rest.
+    double tierWeight = 1000.0;
+    double closenessWeight = 10.0;
+    // Recent choices in this document weigh in, which is what "contextual and
+    // document-local" means — a small, inspectable, deterministic nudge rather
+    // than anything learned.
+    double recencyBonus = 25.0;
+    size_t recentDepth = 8;
+};
+
+// Ranks one candidate against another. Higher wins.
+//
+// tier: the candidate's commit tier. correction: how far the placement had to
+// move, in pixels. recentRank: 0 when this kind was the most recently committed
+// in this document, growing with age, or absent when it has not been used.
+double snapScore(const SnapPolicy &policy, SnapTier tier, double correction,
+                 std::optional<size_t> recentRank);
 
 // What a hit landed on. Points sit above edges because a vertex is smaller,
 // harder to hit, and almost always what the user meant when both are under the

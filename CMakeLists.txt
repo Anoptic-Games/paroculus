@@ -155,6 +155,8 @@ add_library(paroculus-interact STATIC
     src/interact/script.h
     src/interact/selection.cpp
     src/interact/selection.h
+    src/interact/snap.cpp
+    src/interact/snap.h
     src/interact/session.cpp
     src/interact/session.h
     src/interact/tools.cpp
@@ -229,6 +231,7 @@ if(PAROCULUS_TESTS)
         tests/unit/interact_selection.cpp
         tests/unit/interact_script.cpp
         tests/unit/interact_tools.cpp
+        tests/unit/interact_snap.cpp
         tests/gestures/corpus.cpp
         tests/unit/solve_context.cpp
         tests/unit/solve_demosketch.cpp

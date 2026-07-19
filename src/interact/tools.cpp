@@ -68,10 +68,14 @@ ToolOutput LineTool::press(const Document &doc, Point cursor) {
     const EntityId start = anchorEntity_.valid() ? anchorEntity_ : claim();
     if(!anchorEntity_.valid()) {
         out.commands.push_back(AddRecord<EntityRecord>{pointRecord(start, anchor_)});
+        out.placedStart = start;
     }
     const EntityId end = claim();
     out.commands.push_back(AddRecord<EntityRecord>{pointRecord(end, cursor)});
-    out.commands.push_back(AddRecord<EntityRecord>{segmentRecord(claim(), start, end)});
+    const EntityId segment = claim();
+    out.commands.push_back(AddRecord<EntityRecord>{segmentRecord(segment, start, end)});
+    out.placedPoint = end;
+    out.placedSegment = segment;
     pendingEnd_ = end;
     return out;
 }
@@ -109,6 +113,7 @@ ToolPreview LineTool::preview() const {
     p.active = anchored_ && haveCursor_;
     p.from = anchor_;
     p.to = cursor_;
+    p.fromEntity = anchorEntity_;
     return p;
 }
 

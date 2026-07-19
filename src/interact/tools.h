@@ -50,12 +50,27 @@ struct ToolPreview {
     bool active = false;
     Point from;
     Point to;
+    // The entity the band starts from, once the chain hangs off a real point.
+    // Inference reads it to keep a placement from snapping to its own anchor.
+    EntityId fromEntity;
 };
 
 // What a tool asks the session to do. Empty when the event changed nothing.
 struct ToolOutput {
     std::string label;
     std::vector<Command> commands;
+
+    // What inference may bind to, named by the tool because only the tool knows
+    // which of the ids it claimed are the placement. A macro tool declares its
+    // own subjects the same way.
+    //
+    // placedStart is valid only on the step that opens a chain, because that is
+    // the only step that creates the point the chain starts from — and the
+    // relations inferred for it were captured a click earlier, when the user
+    // was pointing at it.
+    EntityId placedStart;
+    EntityId placedPoint;
+    EntityId placedSegment;
 };
 
 class Tool {

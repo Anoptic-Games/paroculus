@@ -88,11 +88,37 @@ void Session::refreshToolPresentation() {
     presentation_.toolParameters.assign(parameters.begin(), parameters.end());
 }
 
-void Session::runTool(ToolOutput output) {
+SnapResult Session::inferAt(Point cursor) const {
+    SnapRequest request;
+    request.cursor = cursor;
+    if(tool_) {
+        const ToolPreview p = tool_->preview();
+        request.haveAnchor = p.active;
+        request.anchor = p.from;
+        request.anchorEntity = p.fromEntity;
+    }
+    request.recent = recentSnaps_;
+    return snap(*doc_, pose(), index_, viewport_.view, request, snapPolicy_);
+}
+
+void Session::rememberSnaps(const std::vector<SnapCandidate> &committed) {
+    for(const SnapCandidate &c : committed) {
+        const auto it = std::find(recentSnaps_.begin(), recentSnaps_.end(), c.kind);
+        if(it != recentSnaps_.end()) recentSnaps_.erase(it);
+        recentSnaps_.insert(recentSnaps_.begin(), c.kind);
+    }
+    if(recentSnaps_.size() > snapPolicy_.recentDepth) recentSnaps_.resize(snapPolicy_.recentDepth);
+}
+
+void Session::runTool(ToolOutput output, std::vector<ConstraintId> inferred) {
     if(output.commands.empty()) {
         refreshToolPresentation();
         return;
     }
+    // Geometry and its inferences go in as one step. Undo removes the placement
+    // and what it declared together, because they are one gesture; declining a
+    // single inference is the finer step, and it is a separate action.
+    //
     // One placement is one undo step. The tool is told it landed only if the
     // journal accepted every command, so a refused step cannot leave the tool
     // chaining off geometry the document does not have.
@@ -100,6 +126,9 @@ void Session::runTool(ToolOutput output) {
         journal_->applyStep(*doc_, std::move(output.label), std::move(output.commands));
     if(error == CommandError::None) {
         tool_->committed();
+        // No silent changes: what was declared is named at the moment it is
+        // declared, rather than discovered later by hovering.
+        presentation_.inferred = std::move(inferred);
         refresh();
     }
     refreshToolPresentation();
@@ -114,17 +143,63 @@ void Session::handle(const PointerEvent &event) {
         // marquee, no drag. Verb-noun means the noun does not exist yet, so
         // there is nothing under the cursor for the pointer to mean instead.
         //
-        // The placement is the raw cursor for now. The snap engine lands
-        // between here and the tool, and because preview and commit both read
-        // this one position, what the ghost shows is what commit will use.
+        // Preview shows truth. One inference call feeds the ghost on a move and
+        // the declarations on a press, so a previewed candidate set that
+        // differs from the committed one is not a reachable state — it is one
+        // code path, not two that have to be kept in agreement.
         switch(event.action) {
-            case PointerAction::Press:
-                if(event.button == Button::Left) runTool(tool_->press(*doc_, event.document));
+            case PointerAction::Press: {
+                if(event.button != Button::Left) return;
+                const SnapResult inference = inferAt(event.document);
+                presentation_.snapCandidates = inference.candidates;
+
+                ToolOutput out = tool_->press(*doc_, inference.placement);
+                if(out.commands.empty()) {
+                    // The click that opens a chain declares nothing yet: the
+                    // point it binds has no id until a segment justifies it.
+                    // Hold the relations for one click rather than dropping
+                    // them, or starting a run on an existing corner would
+                    // silently place a free point on top of it.
+                    pendingStartSnaps_ = inference.autoCommitted();
+                    refreshToolPresentation();
+                    return;
+                }
+
+                // Constraint ids are claimed the same way the tool claims entity
+                // ids, so what inference declared can be named exactly rather
+                // than recovered afterwards by guessing which records are new.
+                uint32_t nextConstraint = doc_->constraints().allocator().next();
+                std::vector<SnapCandidate> committed;
+                std::vector<ConstraintId> inferred;
+                auto declare = [&](const SnapCandidate &c, EntityId point, EntityId segment) {
+                    std::optional<ConstraintRecord> r = constraintFor(c, point, segment);
+                    if(!r) return;
+                    r->id = ConstraintId(nextConstraint++);
+                    inferred.push_back(r->id);
+                    out.commands.push_back(AddRecord<ConstraintRecord>{*r});
+                    committed.push_back(c);
+                };
+
+                if(out.placedStart.valid()) {
+                    for(const SnapCandidate &c : pendingStartSnaps_) {
+                        declare(c, out.placedStart, EntityId());
+                    }
+                }
+                for(const SnapCandidate &c : inference.autoCommitted()) {
+                    declare(c, out.placedPoint, out.placedSegment);
+                }
+                pendingStartSnaps_.clear();
+                runTool(std::move(out), std::move(inferred));
+                rememberSnaps(committed);
                 return;
-            case PointerAction::Move:
-                tool_->move(*doc_, event.document);
+            }
+            case PointerAction::Move: {
+                const SnapResult inference = inferAt(event.document);
+                presentation_.snapCandidates = inference.candidates;
+                tool_->move(*doc_, inference.placement);
                 refreshToolPresentation();
                 return;
+            }
             case PointerAction::Release:
                 return;
         }
