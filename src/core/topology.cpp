@@ -149,10 +149,17 @@ bool Topology::coincident(EntityId a, EntityId b) const {
 // all edges reachable from one another. Both conditions are needed — the degree
 // test alone admits two disjoint triangles, and connectivity alone admits an
 // open run.
+//
+// Three edges minimum. Two segments between the same pair of vertices satisfy
+// both conditions and walk closed, but the 2-gon they report encloses nothing:
+// straight edges over one pair of endpoints have no area between them. Harmless
+// while closure only notices, wrong the moment make-solid fills what it is
+// handed. Two curved edges *would* enclose a lens, so this bound belongs with
+// the segments-only restriction above and lifts with it.
 std::optional<std::vector<EntityId>> findBoundaryCycle(const Document &doc,
                                                        const Topology &topology,
                                                        std::span<const EntityId> edges) {
-    if(edges.size() < 2) return std::nullopt;
+    if(edges.size() < 3) return std::nullopt;
 
     // Each edge contributes its two endpoints, collapsed to their coincidence
     // class so that "the same vertex" is topological rather than positional.

@@ -103,9 +103,14 @@ private:
 //
 // Returns the ordered boundary on success. Returns nullopt when the edges do
 // not form a single closed loop — an open run, a figure-eight, a disjoint pair
-// of loops, or anything touching a vertex more than twice. That refusal is what
-// make-solid consults, and it is why a visually-closed-but-topologically-open
-// outline gets the heal-and-fill offer instead of a fill.
+// of loops, anything touching a vertex more than twice, or fewer than three
+// edges. That refusal is what make-solid consults, and it is why a
+// visually-closed-but-topologically-open outline gets the heal-and-fill offer
+// instead of a fill.
+//
+// Fewer than three because two straight edges over one pair of endpoints walk
+// closed while enclosing nothing. Two curved edges would enclose a lens, so the
+// bound lifts when arcs become boundary-capable, not before.
 //
 // Areas enclosed by crossing segments rather than shared endpoints are a known
 // later case: they need explicit intersection points before a cycle exists.

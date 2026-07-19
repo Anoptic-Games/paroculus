@@ -290,3 +290,33 @@ TEST_CASE("property: a marked partition equals a rebuild after every step") {
         }
     }
 }
+
+TEST_CASE("two edges between the same vertices are not a cycle") {
+    // Every vertex is touched twice and the walk closes, so both tests pass —
+    // but a 2-gon over straight edges encloses nothing. Harmless while closure
+    // only notices, wrong the moment make-solid fills what it is handed.
+    Document doc;
+    const EntityId a = addPoint(doc, 0.0, 0.0);
+    const EntityId b = addPoint(doc, 10.0, 0.0);
+    const EntityId c = addPoint(doc, 0.0, 0.0);
+    const EntityId d = addPoint(doc, 10.0, 0.0);
+    const EntityId first = addSegment(doc, a, b);
+    const EntityId second = addSegment(doc, c, d);
+    addConstraint(doc, ConstraintKind::Coincident, {a, c});
+    addConstraint(doc, ConstraintKind::Coincident, {b, d});
+
+    Topology t(doc);
+    const std::array<EntityId, 2> pair = {first, second};
+    CHECK_FALSE(findBoundaryCycle(doc, t, pair).has_value());
+
+    // Three is where a boundary starts, and the bound is exactly there.
+    const EntityId e = addPoint(doc, 5.0, 8.0);
+    const EntityId f = addPoint(doc, 5.0, 8.0);
+    const EntityId toApex = addSegment(doc, d, e);
+    const EntityId fromApex = addSegment(doc, f, a);
+    addConstraint(doc, ConstraintKind::Coincident, {e, f});
+
+    Topology t2(doc);
+    const std::array<EntityId, 3> triangle = {first, toApex, fromApex};
+    CHECK(findBoundaryCycle(doc, t2, triangle).has_value());
+}

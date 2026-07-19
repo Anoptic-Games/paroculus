@@ -511,7 +511,11 @@ std::vector<Command> deletionStep(const Document &doc, EntityId id) {
     std::vector<ConstraintId> seenConstraints;
     std::vector<RegionId> seenRegions;
     std::vector<TagId> seenTags;
-    std::vector<GroupId> seenGroups;
+    // Every entity the cascade actually removes, dependents before what they
+    // are built on. Held back rather than emitted inline because the group
+    // shrinks below have to be computed over the whole set and applied before
+    // any of it goes.
+    std::vector<EntityId> doomed;
 
     auto once = [](auto &seen, auto value) {
         if(std::find(seen.begin(), seen.end(), value) != seen.end()) return false;
@@ -536,12 +540,37 @@ std::vector<Command> deletionStep(const Document &doc, EntityId id) {
         for(TagId t : deps.tags) {
             if(once(seenTags, t)) out.push_back(RemoveRecord<TagRecord>{t});
         }
-        for(GroupId g : deps.groups) {
-            if(once(seenGroups, g)) out.push_back(RemoveRecord<GroupRecord>{g});
-        }
-        out.push_back(RemoveRecord<EntityRecord>{victim});
+        doomed.push_back(victim);
     };
     collect(id, collect);
+
+    // A group loses the member, never the grouping. Membership is organization
+    // and nothing reads it as structure, so a group that lost one entity still
+    // names the others correctly — where a region that lost a boundary edge no
+    // longer bounds anything. Same reasoning as the parameter case: only what
+    // the user deleted is lost. The group survives even emptied, because
+    // deciding a named container has outlived its purpose is the user's call
+    // and deleting it is an action they already have.
+    //
+    // Computed over the whole doomed set, in one record per group. Emitting one
+    // per victim would have each drop a different member and the last would win,
+    // restoring the ones before it.
+    for(const GroupRecord &g : doc.groups().records()) {
+        GroupRecord shrunk = g;
+        shrunk.members.erase(
+            std::remove_if(shrunk.members.begin(), shrunk.members.end(),
+                           [&](EntityId m) {
+                               return std::find(doomed.begin(), doomed.end(), m) != doomed.end();
+                           }),
+            shrunk.members.end());
+        if(shrunk.members.size() != g.members.size()) {
+            out.push_back(SetRecord<GroupRecord>{shrunk});
+        }
+    }
+
+    // Entities last: a removal is refused while anything still names it, and by
+    // here nothing does.
+    for(EntityId victim : doomed) out.push_back(RemoveRecord<EntityRecord>{victim});
 
     return out;
 }

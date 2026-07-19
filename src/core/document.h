@@ -214,6 +214,10 @@ ParameterDependents dependentsOf(const Document &doc, ParameterId id);
 // Regions and tags are removed outright in stage 1. Stage 6 replaces that with
 // the degradation states PRINCIPLES calls for, where a region whose boundary
 // lost an edge renders broken rather than vanishing.
+//
+// Groups are not in that deferral and never were: membership is organization,
+// not structure, so a group that lost one entity still names the others
+// correctly and shrinks rather than dies.
 std::vector<Command> deletionStep(const Document &doc, EntityId id);
 
 // The ordered command sequence that removes a parameter without leaving a slot

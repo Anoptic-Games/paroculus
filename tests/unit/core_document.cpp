@@ -497,3 +497,88 @@ TEST_CASE("construction is a role, not a type") {
     // It still takes constraints identically.
     CHECK(addConstraint(doc, ConstraintKind::Horizontal, {seg}).valid());
 }
+
+TEST_CASE("deleting a member shrinks its group rather than dissolving it") {
+    // Membership is organization, not structure: a group that lost one entity
+    // still names the others correctly. Removing the whole record took the
+    // grouping of everything the user did not delete with it.
+    Document doc;
+    const EntityId a = addPoint(doc, 0.0, 0.0);
+    const EntityId b = addPoint(doc, 10.0, 0.0);
+    const EntityId c = addPoint(doc, 10.0, 10.0);
+    const EntityId edge = addSegment(doc, a, b);
+
+    GroupRecord group;
+    group.name = "frame";
+    group.members = {a, b, c, edge};
+    const CommandResult added = doc.apply(AddRecord<GroupRecord>{group});
+    REQUIRE(added.ok());
+    const GroupId id(added.allocated);
+
+    // Deleting a takes the segment built on it, so two members leave at once —
+    // and in one record. One per victim would each drop a different member,
+    // and the last applied would restore the ones before it.
+    const std::vector<Command> cascade = deletionStep(doc, a);
+    size_t shrinks = 0;
+    for(const Command &command : cascade) {
+        CHECK_FALSE(std::holds_alternative<RemoveRecord<GroupRecord>>(command));
+        if(std::holds_alternative<SetRecord<GroupRecord>>(command)) shrinks++;
+    }
+    CHECK(shrinks == 1);
+
+    for(const Command &command : cascade) REQUIRE(doc.apply(command).ok());
+
+    const GroupRecord *after = doc.groups().find(id);
+    REQUIRE(after != nullptr);
+    CHECK(after->name == "frame");
+    CHECK(after->members == std::vector<EntityId>{b, c});
+}
+
+TEST_CASE("a group survives losing its last member") {
+    // An empty group is a named container the user can still add to. Deciding
+    // it has outlived its purpose is their call, and deleting it is an action
+    // they already have.
+    Document doc;
+    const EntityId only = addPoint(doc, 0.0, 0.0);
+
+    GroupRecord group;
+    group.name = "spares";
+    group.members = {only};
+    const CommandResult added = doc.apply(AddRecord<GroupRecord>{group});
+    REQUIRE(added.ok());
+    const GroupId id(added.allocated);
+
+    for(const Command &command : deletionStep(doc, only)) REQUIRE(doc.apply(command).ok());
+
+    const GroupRecord *after = doc.groups().find(id);
+    REQUIRE(after != nullptr);
+    CHECK(after->name == "spares");
+    CHECK(after->members.empty());
+}
+
+TEST_CASE("a group shrink inverts exactly, like every other command") {
+    Document doc;
+    const EntityId a = addPoint(doc, 0.0, 0.0);
+    const EntityId b = addPoint(doc, 10.0, 0.0);
+
+    GroupRecord group;
+    group.name = "pair";
+    group.members = {a, b};
+    const CommandResult added = doc.apply(AddRecord<GroupRecord>{group});
+    REQUIRE(added.ok());
+    const GroupId id(added.allocated);
+    const GroupRecord before = *doc.groups().find(id);
+
+    const std::vector<Command> cascade = deletionStep(doc, a);
+    std::vector<Command> inverses;
+    for(const Command &command : cascade) {
+        const std::optional<Command> inverse = doc.invert(command);
+        REQUIRE(inverse.has_value());
+        inverses.push_back(*inverse);
+        REQUIRE(doc.apply(command).ok());
+    }
+    for(size_t i = inverses.size(); i-- > 0;) REQUIRE(doc.apply(inverses[i]).ok());
+
+    CHECK(*doc.groups().find(id) == before);
+    CHECK(doc.entities().contains(a));
+}
