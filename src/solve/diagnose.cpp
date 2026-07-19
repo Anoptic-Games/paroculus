@@ -34,6 +34,8 @@ bool alreadyDeclared(const Document &doc, const ConstraintRecord &candidate) {
     for(const ConstraintRecord &existing : doc.constraints().records()) {
         if(existing.kind != candidate.kind) continue;
         if(!existing.driving) continue;  // a measurement duplicates nothing
+        // Tangency at one end is not a duplicate of tangency at the other.
+        if(existing.alternative != candidate.alternative) continue;
         if(info.valueArity == 1 && !(existing.value == candidate.value)) continue;
 
         // Bound, so a horizontal against a reference axis does not read as a

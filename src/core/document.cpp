@@ -86,6 +86,10 @@ CommandError Document::validate(const ConstraintRecord &r) const {
         if(r.operands[i].valid()) return CommandError::WrongSignature;
     }
 
+    // A kind with no alternative forms carries the default one, so two records
+    // meaning the same thing compare equal and serialize identically.
+    if(r.alternative > info.alternatives) return CommandError::WrongSignature;
+
     // A valued kind carries a slot; a valueless one carries none. Storing a
     // value on a coincidence would serialize a field nothing reads.
     const bool hasValue = !(r.value.isConstant() && r.value.constant() == 0.0);

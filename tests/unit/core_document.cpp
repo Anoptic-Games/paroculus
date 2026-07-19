@@ -239,6 +239,65 @@ TEST_CASE("horizontal carries a nullable reference axis") {
     }
 }
 
+TEST_CASE("only a kind with alternative forms may name one") {
+    // The alternative is a choice inside one relation, not a free byte. A kind
+    // that has no second form has to carry the default, or two records meaning
+    // the same thing would compare unequal and serialize differently.
+    Document doc;
+    const EntityId p = addPoint(doc, 0.0, 0.0);
+    const EntityId q = addPoint(doc, 100.0, 0.0);
+    const EntityId segment = addSegment(doc, p, q);
+
+    ConstraintRecord horizontal;
+    horizontal.kind = ConstraintKind::Horizontal;
+    horizontal.operands[0] = segment;
+    horizontal.alternative = 1;
+    CHECK(doc.apply(AddRecord<ConstraintRecord>{horizontal}).error ==
+          CommandError::WrongSignature);
+
+    // Tangency has two forms, so it may name either.
+    const EntityId centre = addPoint(doc, 0.0, 200.0);
+    const EntityId arcStart = addPoint(doc, 50.0, 200.0);
+    const EntityId arcEnd = addPoint(doc, 0.0, 250.0);
+    EntityRecord a;
+    a.kind = EntityKind::Arc;
+    a.points = {centre, arcStart, arcEnd};
+    const EntityId arc(doc.apply(AddRecord<EntityRecord>{a}).allocated);
+
+    for(uint8_t form : {uint8_t{0}, uint8_t{1}}) {
+        CAPTURE(int(form));
+        ConstraintRecord t;
+        t.kind = ConstraintKind::Tangent;
+        t.operands[0] = arc;
+        t.operands[1] = segment;
+        t.alternative = form;
+        CHECK(doc.apply(AddRecord<ConstraintRecord>{t}).ok());
+    }
+
+    // But not a third one it does not have.
+    ConstraintRecord tooMany;
+    tooMany.kind = ConstraintKind::Tangent;
+    tooMany.operands[0] = arc;
+    tooMany.operands[1] = segment;
+    tooMany.alternative = 2;
+    CHECK(doc.apply(AddRecord<ConstraintRecord>{tooMany}).error == CommandError::WrongSignature);
+}
+
+TEST_CASE("the two tangent forms are different declarations") {
+    // Two records over the same pair that differ only in which end they hold
+    // at are not duplicates of each other, and comparing them must say so or
+    // undo would restore the wrong one.
+    ConstraintRecord atStart;
+    atStart.id = ConstraintId(1);
+    atStart.kind = ConstraintKind::Tangent;
+    atStart.operands[0] = EntityId(1);
+    atStart.operands[1] = EntityId(2);
+
+    ConstraintRecord atEnd = atStart;
+    atEnd.alternative = 1;
+    CHECK(atStart != atEnd);
+}
+
 TEST_CASE("a reference axis is depended on like any other operand") {
     // Deleting the axis a relation is measured against has to take the relation
     // with it, or the document keeps a horizontal pointing at nothing.

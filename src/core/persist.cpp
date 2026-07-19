@@ -395,6 +395,10 @@ std::string serialize(const Document &doc) {
             out += std::to_string(r.operands[i].value());
         }
         if(info.valueArity == 1) out += " value=" + writeSlot(r.value);
+        // Written only when it is not the default form, so a kind with no
+        // alternatives — which is every kind but tangency — writes the line it
+        // always wrote.
+        if(r.alternative != 0) out += " alt=" + std::to_string(r.alternative);
         out += "\n";
     }
     for(const RegionRecord &r : doc.regions().records()) {
@@ -615,6 +619,11 @@ LoadResult deserialize(std::string_view text, Document &out) {
                 const auto s = parseSlot(*v);
                 if(!s) return fail("malformed constraint value", lineNumber);
                 r.value = *s;
+            }
+            if(const auto v = field(f, "alt")) {
+                const auto n = toUint(*v);
+                if(!n || *n > 255) return fail("malformed constraint alternative", lineNumber);
+                r.alternative = static_cast<uint8_t>(*n);
             }
             if(!DocumentLoader::constraints(doc).addAt(std::move(r))) {
                 return fail("duplicate constraint id", lineNumber);

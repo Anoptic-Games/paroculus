@@ -312,3 +312,78 @@ TEST_CASE("a referenced horizontal solves inside its own component") {
     CHECK(context.contains(r0));
     CHECK(context.contains(r1));
 }
+
+// A quarter arc centred on the origin, running from (50,0) counter-clockwise to
+// (0,50), with every one of its points pinned so the arc itself cannot move.
+// A segment hangs off the start point with its far end free, which is what the
+// tangency has to steer.
+namespace {
+
+struct TangentBench {
+    Document doc;
+    EntityId centre, arcStart, arcEnd, arc, lineFar, segment;
+
+    TangentBench() {
+        centre = addPoint(doc, 0.0, 0.0);
+        arcStart = addPoint(doc, 50.0, 0.0);
+        arcEnd = addPoint(doc, 0.0, 50.0);
+
+        EntityRecord a;
+        a.kind = EntityKind::Arc;
+        a.points = {centre, arcStart, arcEnd};
+        arc = EntityId(doc.apply(AddRecord<EntityRecord>{a}).allocated);
+
+        addConstraint(doc, ConstraintKind::Pin, {centre});
+        addConstraint(doc, ConstraintKind::Pin, {arcStart});
+        addConstraint(doc, ConstraintKind::Pin, {arcEnd});
+
+        // Drawn at a slant, so the solve has to move it either way.
+        const EntityId near = addPoint(doc, 50.0, 0.0);
+        lineFar = addPoint(doc, 80.0, 20.0);
+        segment = addSegment(doc, near, lineFar);
+        addConstraint(doc, ConstraintKind::Coincident, {near, arcStart});
+    }
+
+    // The direction the segment settled on, as a unit vector.
+    Eigen::Vector2d directionAfterSolve(uint8_t alternative) {
+        ConstraintRecord t;
+        t.kind = ConstraintKind::Tangent;
+        t.operands[0] = arc;
+        t.operands[1] = segment;
+        t.alternative = alternative;
+        REQUIRE(doc.apply(AddRecord<ConstraintRecord>{t}).ok());
+
+        SolveContext context = SolveContext::forWholeDocument(doc);
+        const SolveOutcome outcome = solve(doc, context, SolveOptions());
+        REQUIRE(outcome.ok());
+
+        const Point a = *context.point(doc.entities().find(segment)->points[0]);
+        const Point b = *context.point(lineFar);
+        Eigen::Vector2d d(b.x - a.x, b.y - a.y);
+        return d.normalized();
+    }
+};
+
+}  // namespace
+
+TEST_CASE("tangency says which end of the arc it holds at") {
+    // SLVS_C_ARC_LINE_TANGENT picks the arc end from Slvs_Constraint.other, and
+    // zero-filling it made every tangent a tangent at the start — the other
+    // form was not merely unused, it was unrepresentable. Stage 5 makes the
+    // whole catalogue imposable, so it had to become sayable first.
+    SUBCASE("at the start, the tangent is perpendicular to the start radius") {
+        TangentBench bench;
+        const Eigen::Vector2d d = bench.directionAfterSolve(0);
+        // The start radius runs along +x, so its tangent is vertical.
+        CHECK(std::abs(d.x()) == doctest::Approx(0.0).epsilon(1e-6));
+        CHECK(std::abs(d.y()) == doctest::Approx(1.0).epsilon(1e-6));
+    }
+
+    SUBCASE("at the end, it is perpendicular to the end radius instead") {
+        TangentBench bench;
+        const Eigen::Vector2d d = bench.directionAfterSolve(1);
+        // The end radius runs along +y, so its tangent is horizontal.
+        CHECK(std::abs(d.x()) == doctest::Approx(1.0).epsilon(1e-6));
+        CHECK(std::abs(d.y()) == doctest::Approx(0.0).epsilon(1e-6));
+    }
+}

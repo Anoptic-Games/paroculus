@@ -72,6 +72,17 @@ struct ConstraintRecord {
     Slot value;
     bool driving = true;
 
+    // Which of the kind's alternative forms this instance selects. Zero is the
+    // default form and the only legal value for a kind that has no others.
+    //
+    // v1 uses it for one thing: tangency holds at one end of an arc, and which
+    // end is not derivable from the operands — the pair is an arc and a segment
+    // either way. Recorded here rather than as a second constraint kind because
+    // it is the same relation with a choice in it, not a different relation:
+    // one row in the taxonomy, one entry on a menu, and a property the user can
+    // flip like `driving`.
+    uint8_t alternative = 0;
+
     friend bool operator==(const ConstraintRecord &, const ConstraintRecord &);
     friend bool operator!=(const ConstraintRecord &a, const ConstraintRecord &b) {
         return !(a == b);

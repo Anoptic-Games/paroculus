@@ -36,6 +36,10 @@ constexpr bool constraintTableIsWellFormed() {
         // otherwise the document could express a relation the solve drops.
         if(static_cast<size_t>(c.operandCount) + c.optionalOperands > MAX_OPERANDS) return false;
         if((c.optionalOperands == 0) != (c.solverTypeReferenced == 0)) return false;
+        // The alternative is one byte on the record and the solver reads it as
+        // a small selector, so a kind claiming more forms than that would be
+        // claiming something nothing can carry.
+        if(c.alternatives > 3) return false;
         if(c.valueArity > 1) return false;
         if(c.name.empty()) return false;
         if(c.solverValueScale == 0.0) return false;

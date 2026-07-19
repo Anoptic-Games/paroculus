@@ -12,7 +12,7 @@ bool operator==(const EntityRecord &a, const EntityRecord &b) {
 
 bool operator==(const ConstraintRecord &a, const ConstraintRecord &b) {
     return a.id == b.id && a.kind == b.kind && a.operands == b.operands &&
-           a.value == b.value && a.driving == b.driving;
+           a.value == b.value && a.driving == b.driving && a.alternative == b.alternative;
 }
 
 bool operator==(const RegionRecord &a, const RegionRecord &b) {

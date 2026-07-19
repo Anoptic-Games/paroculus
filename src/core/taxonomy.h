@@ -142,6 +142,12 @@ struct ConstraintKindInfo {
     // why selecting one segment still offers horizontal.
     uint8_t optionalOperands;
     int32_t solverTypeReferenced;
+
+    // How many alternative forms the kind has beyond its default one. Zero for
+    // every kind but tangency, which holds at one end of an arc or the other
+    // and cannot say which from its operands. The solver reads the choice as
+    // Slvs_Constraint.other.
+    uint8_t alternatives;
 };
 
 // Horizontal and vertical are recorded as axis-referenced parallelism rather
@@ -194,8 +200,12 @@ inline constexpr std::array<ConstraintKindInfo, 22> CONSTRAINT_KINDS = {{
     {ConstraintKind::SymmetricAboutLine, "symmetric-about-line", 3,
      {OperandKind::Point, OperandKind::Point, OperandKind::Segment},
      0, Invariance::ScaleInvariant, 100017, 1.0},
+    // Two forms: tangent at the arc's start, or at its end. Both are the same
+    // relation over the same pair, so this is one row with a choice rather than
+    // two rows a surface would have to offer side by side.
     {ConstraintKind::Tangent, "tangent", 2,
-     {OperandKind::Arc, OperandKind::Segment}, 0, Invariance::ScaleInvariant, 100027, 1.0},
+     {OperandKind::Arc, OperandKind::Segment}, 0, Invariance::ScaleInvariant, 100027, 1.0,
+     0, 0, 1},
     // The solver constrains diameter; the document declares radius.
     {ConstraintKind::Radius, "radius", 1,
      {OperandKind::Curve}, 1, Invariance::Absolute, 100021, 2.0},

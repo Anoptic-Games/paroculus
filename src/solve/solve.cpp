@@ -235,6 +235,10 @@ void translate(const Document &doc, const SolveContext &context, const SolveOpti
         // is perpendicularity. Data, not a branch the taxonomy cannot see.
         sc.type = bound > info.operandCount ? info.solverTypeReferenced : info.solverType;
         sc.wrkpl = E_WORKPLANE;
+        // Which of the kind's forms this is. Tangency reads it to pick the arc
+        // end it holds at; zero-filling it made every tangent a tangent at the
+        // start and left the other form unreachable.
+        sc.other = c.alternative;
 
         // slvs.h splits operands into point slots and entity slots; the
         // taxonomy's operand kinds are what decide which side each lands on.

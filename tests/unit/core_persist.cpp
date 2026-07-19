@@ -328,6 +328,43 @@ TEST_CASE("a file naming more operands than a kind can hold is refused") {
     CHECK_FALSE(deserialize(tampered, loaded).ok);
 }
 
+TEST_CASE("the tangent form round-trips, and costs nothing when it is the default") {
+    Document doc;
+    const EntityId p = addPoint(doc, 0.0, 0.0);
+    const EntityId q = addPoint(doc, 100.0, 0.0);
+    const EntityId segment = addSegment(doc, p, q);
+    const EntityId centre = addPoint(doc, 0.0, 200.0);
+    const EntityId arcStart = addPoint(doc, 50.0, 200.0);
+    const EntityId arcEnd = addPoint(doc, 0.0, 250.0);
+    EntityRecord a;
+    a.kind = EntityKind::Arc;
+    a.points = {centre, arcStart, arcEnd};
+    const EntityId arc(doc.apply(AddRecord<EntityRecord>{a}).allocated);
+
+    ConstraintRecord atStart;
+    atStart.kind = ConstraintKind::Tangent;
+    atStart.operands[0] = arc;
+    atStart.operands[1] = segment;
+    const ConstraintId first(doc.apply(AddRecord<ConstraintRecord>{atStart}).allocated);
+
+    ConstraintRecord atEnd = atStart;
+    atEnd.alternative = 1;
+    const ConstraintId second(doc.apply(AddRecord<ConstraintRecord>{atEnd}).allocated);
+
+    const std::string text = serialize(doc);
+    // The default form says nothing, so every kind that has no alternatives
+    // writes the line it always wrote.
+    CHECK(text.find(" alt=1") != std::string::npos);
+    CHECK(text.find(" alt=0") == std::string::npos);
+
+    Document loaded;
+    REQUIRE(deserialize(text, loaded).ok);
+    CHECK(loaded == doc);
+    CHECK(serialize(loaded) == text);
+    CHECK(loaded.constraints().find(first)->alternative == 0);
+    CHECK(loaded.constraints().find(second)->alternative == 1);
+}
+
 TEST_CASE("a name cannot split its own record") {
     // A newline in a name would end the line the loader is reading, so the tail
     // would arrive as a record kind nothing recognises and be kept verbatim as
