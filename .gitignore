@@ -67,3 +67,75 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# IDE-specific directories
+.vscode/
+.idea/
+.openclaw/
+.agents/
+.codex/
+.gemini/
+.idx/
+.antigravity/
+.cursorrules
+.windsurfrules
+.github/copilot-instructions.md
+.aider.conf.yml
+.aider.models.yml
+AGENTS.override.md
+llms-full.txt
+llms.txt
+openclaw.json
+CLAUDE.md
+AGENTS.md
+SKILL.md
+
+# Scratchpad
+scratch/
+
+# Docs and doc artifacts
+docs/**/*.pdf
+docs/artifacts/*
+docs/study/
+docs/.archive/
+docs/.archive/**/
+
+# No Python
+*.pyc
+__pycache__/
+requirements.txt
+setup.py
+setup.cfg
+pyproject.toml
+Pipfile
+Pipfile.lock
+poetry.lock
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+*.save
+*.py
+# ...except the checked-in perf harness drivers (see tools/perf/bench_fps.md).
+!tools/perf/bench_fps_*.py
+
+# macOS metadata
+.DS_Store
+
+# Ignore the hidden clangd cache folder
+.clangd/
+
+# Exceptions
+.claude/*
+!.claude/settings.json
+!.claude/skills/
+!.claude/skills/**
+!.claude/hooks/
+!.claude/hooks/**
+!.claude/tools/
+!.claude/tools/**
+build.stale-preclean/
+build*/
+.claude/skills/coding-campaign/
