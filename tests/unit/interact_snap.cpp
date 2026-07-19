@@ -177,6 +177,39 @@ TEST_CASE("an axis-aligned segment is never a parallel reference") {
     }
 }
 
+TEST_CASE("construction geometry does not attract, in any kind") {
+    // Construction geometry constrains normally but does not attract. The
+    // point-valued kinds honoured that; the direction-valued ones iterated
+    // every segment in the document, so a construction segment became exactly
+    // the magnet the policy exists to prevent — and an arc leaves one behind
+    // every time it is drawn.
+    Bench bench;
+    EntityRecord guide = *bench.doc.entities().find(bench.slanted);
+    guide.role = Role::Construction;
+    REQUIRE(bench.doc.apply(SetRecord<EntityRecord>{guide}).ok());
+    bench.pose = Pose(bench.doc);
+    bench.index.rebuild(bench.pose);
+
+    // Alongside it, where a parallel was offered while it was ordinary.
+    const SnapResult r = bench.at(Point{300.0, 179.0}, true, Point{200.0, 119.0});
+    for(const SnapCandidate &c : r.candidates) {
+        CHECK(c.kind != SnapKind::Parallel);
+        CHECK(c.kind != SnapKind::Perpendicular);
+        CHECK(c.target != bench.slanted);
+    }
+
+    // Across it, where a perpendicular was.
+    const SnapResult across = bench.at(Point{140.0, 220.0}, true, Point{200.0, 119.0});
+    for(const SnapCandidate &c : across.candidates) {
+        CHECK(c.kind != SnapKind::Perpendicular);
+    }
+
+    // And the policy still opens the door when a caller wants it open.
+    bench.policy.snapToConstruction = true;
+    const SnapResult opted = bench.at(Point{300.0, 179.0}, true, Point{200.0, 119.0});
+    CHECK(has(opted.candidates, SnapKind::Parallel));
+}
+
 TEST_CASE("a placement never snaps to its own anchor") {
     // Pointing near your own anchor means "short segment", not "zero-length
     // one", and a coincidence with the anchor would propose exactly that.

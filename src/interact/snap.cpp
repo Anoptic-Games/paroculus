@@ -163,6 +163,12 @@ SnapResult snap(const Document &doc, const Pose &pose, const SpatialIndex &index
             // parallel to a horizontal one is horizontal, and declaring the
             // derived relation instead of the plain one buries the intent.
             for(const EntityRecord &e : doc.entities().records()) {
+                // The same role check the point-valued kinds make above.
+                // Construction geometry constrains normally but does not
+                // attract, and a construction segment offering to make the
+                // placement parallel to it is exactly the magnet the policy
+                // exists to prevent.
+                if(!policy.snapToConstruction && e.role == Role::Construction) continue;
                 const auto ends = pose.segment(e.id);
                 if(!ends) continue;
                 const double rx = ends->second.x - ends->first.x;

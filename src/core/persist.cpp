@@ -39,9 +39,25 @@ std::string number(double v) {
 
 // Names are quoted and escaped so a name containing a space or a quote cannot
 // forge extra fields on the line.
+//
+// Control characters take a hex escape rather than riding through literally. A
+// name holding a newline would otherwise split its own record: the loader reads
+// the file a line at a time, so the tail would arrive as a record kind nothing
+// recognises and be kept verbatim as an unknown one. The round trip would
+// silently truncate the name and grow a junk line, which is worse than
+// refusing. Names are arbitrary strings through the command layer, so this is
+// reachable rather than theoretical.
 std::string quote(std::string_view s) {
+    const char digits[] = "0123456789abcdef";
     std::string out = "\"";
     for(char c : s) {
+        const auto u = static_cast<unsigned char>(c);
+        if(u < 0x20 || u == 0x7f) {
+            out += "\\x";
+            out += digits[(u >> 4) & 0xf];
+            out += digits[u & 0xf];
+            continue;
+        }
         if(c == '"' || c == '\\') out += '\\';
         out += c;
     }
@@ -180,11 +196,34 @@ std::optional<uint32_t> toUint(std::string_view s) {
     return v;
 }
 
+// The inverse of quote(). A backslash escapes the character after it, except
+// for \xHH which names one by code — so a name holding the four literal
+// characters of an escape survives, because quote() doubled its backslash.
 std::string unquote(std::string_view s) {
+    auto hex = [](char c) {
+        if(c >= '0' && c <= '9') return c - '0';
+        if(c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if(c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+
     if(s.size() < 2 || s.front() != '"' || s.back() != '"') return std::string(s);
     std::string out;
     for(size_t i = 1; i + 1 < s.size(); i++) {
-        if(s[i] == '\\' && i + 2 < s.size()) i++;
+        if(s[i] != '\\' || i + 2 >= s.size()) {
+            out += s[i];
+            continue;
+        }
+        if(s[i + 1] == 'x' && i + 4 < s.size()) {
+            const int high = hex(s[i + 2]);
+            const int low = hex(s[i + 3]);
+            if(high >= 0 && low >= 0) {
+                out += static_cast<char>(high * 16 + low);
+                i += 3;
+                continue;
+            }
+        }
+        i++;
         out += s[i];
     }
     return out;

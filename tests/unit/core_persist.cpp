@@ -266,6 +266,58 @@ TEST_CASE("names with spaces and quotes survive") {
     CHECK(loaded.layers().find(id)->name == layer.name);
 }
 
+TEST_CASE("a name cannot split its own record") {
+    // A newline in a name would end the line the loader is reading, so the tail
+    // would arrive as a record kind nothing recognises and be kept verbatim as
+    // an unknown one: the name silently truncated, the file silently grown.
+    // Names are arbitrary strings through the command layer, so this is
+    // reachable rather than theoretical.
+    const std::string awkward =
+        std::string("line one\nline two\ttabbed\r\nand a bell\a end") + '\0' + "past a null";
+
+    Document doc;
+    LayerRecord layer;
+    layer.name = awkward;
+    const LayerId lid(doc.apply(AddRecord<LayerRecord>{layer}).allocated);
+    StyleRecord style;
+    style.name = awkward;
+    const StyleId sid(doc.apply(AddRecord<StyleRecord>{style}).allocated);
+    GroupRecord group;
+    group.name = awkward;
+    const GroupId gid(doc.apply(AddRecord<GroupRecord>{group}).allocated);
+    ParameterRecord parameter;
+    parameter.name = awkward;
+    parameter.value = Slot(1.0);
+    const ParameterId pid(doc.apply(AddRecord<ParameterRecord>{parameter}).allocated);
+
+    const std::string text = serialize(doc);
+    // One line per record and nothing else: the count is what a split name
+    // would change, and it changes before any name comparison would notice.
+    CHECK(std::count(text.begin(), text.end(), '\n') == 6);  // version, watermark, four records
+
+    Document loaded;
+    REQUIRE(deserialize(text, loaded).ok);
+    CHECK(loaded.layers().find(lid)->name == awkward);
+    CHECK(loaded.styles().find(sid)->name == awkward);
+    CHECK(loaded.groups().find(gid)->name == awkward);
+    CHECK(loaded.parameters().find(pid)->name == awkward);
+    CHECK(loaded.unknownRecords().empty());
+    CHECK(loaded == doc);
+}
+
+TEST_CASE("a name that looks like an escape is not one") {
+    // quote() doubles the backslash it writes, so a name holding the four
+    // literal characters of a hex escape comes back as those four characters.
+    Document doc;
+    LayerRecord layer;
+    layer.name = "\\x41 is not A, and \\\\x41 is not either";
+    const LayerId id(doc.apply(AddRecord<LayerRecord>{layer}).allocated);
+
+    Document loaded;
+    REQUIRE(deserialize(serialize(doc), loaded).ok);
+    CHECK(loaded.layers().find(id)->name == layer.name);
+}
+
 TEST_CASE("the decimal point is a point, whatever the process locale says") {
     // QGuiApplication calls setlocale(LC_ALL, "") on Unix, so the app runs in
     // the user's locale while the parser is locale-fixed to '.'. A printf-family
