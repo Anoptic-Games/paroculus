@@ -66,10 +66,25 @@ CommandError Document::validate(const ConstraintRecord &r) const {
         if(e == nullptr) return CommandError::UnknownOperand;
         kinds.push_back(e->kind);
     }
-    for(size_t i = info.operandCount; i < MAX_OPERANDS; i++) {
+    // Applicability is decided over the required prefix alone: selecting one
+    // segment offers horizontal whether or not a reference axis is named.
+    if(!signatureMatches(r.kind, kinds)) return CommandError::WrongSignature;
+
+    // The optional tail. A null slot is the kind's default — for horizontal and
+    // vertical, the document frame — and a filled one has to be the kind of
+    // thing the taxonomy says it is, exactly like a required operand.
+    const size_t bound = boundOperandCount(r);
+    for(size_t i = info.operandCount; i < bound; i++) {
+        const EntityRecord *e = entities_.find(r.operands[i]);
+        if(e == nullptr) return CommandError::UnknownOperand;
+        if(!accepts(info.operands[i], e->kind)) return CommandError::WrongSignature;
+    }
+    // Slots past what the record binds must be null, so two records that mean
+    // the same thing compare equal and serialize identically. A gap inside the
+    // optional tail lands here too: it is a record no command could produce.
+    for(size_t i = bound; i < MAX_OPERANDS; i++) {
         if(r.operands[i].valid()) return CommandError::WrongSignature;
     }
-    if(!signatureMatches(r.kind, kinds)) return CommandError::WrongSignature;
 
     // A valued kind carries a slot; a valueless one carries none. Storing a
     // value on a coincidence would serialize a field nothing reads.
@@ -398,7 +413,9 @@ bool sameRecords(const Document &a, const Document &b) {
 Dependents dependentsOf(const Document &doc, EntityId id) {
     Dependents out;
     for(const ConstraintRecord &c : doc.constraints().records()) {
-        const size_t n = constraintInfo(c.kind).operandCount;
+        // Bound rather than required: a segment named as someone's reference
+        // axis is depended on, and deleting it has to take the relation with it.
+        const size_t n = boundOperandCount(c);
         for(size_t i = 0; i < n; i++) {
             if(c.operands[i] == id) {
                 out.constraints.push_back(c.id);

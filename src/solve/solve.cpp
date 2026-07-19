@@ -88,7 +88,7 @@ const SeedSpan *spanFor(const SolveContext &context, EntityId id) {
 // exactly the relations that bind it and no others, which is what makes a drag
 // unable to disturb geometry it is not connected to.
 bool fullyInside(const ConstraintRecord &c, const SolveContext &context) {
-    const size_t n = constraintInfo(c.kind).operandCount;
+    const size_t n = boundOperandCount(c);
     for(size_t i = 0; i < n; i++) {
         if(!context.contains(c.operands[i])) return false;
     }
@@ -226,10 +226,14 @@ void translate(const Document &doc, const SolveContext &context, const SolveOpti
         }
 
         const ConstraintKindInfo &info = constraintInfo(c.kind);
+        const size_t bound = boundOperandCount(c);
         Slvs_Constraint sc{};
         sc.h = static_cast<Slvs_hConstraint>(out.constraintOrder.size() + 1);
         sc.group = GROUP_SKETCH;
-        sc.type = info.solverType;
+        // A kind that names its optional reference is a different solver
+        // primitive: horizontal against an axis is parallelism to it, vertical
+        // is perpendicularity. Data, not a branch the taxonomy cannot see.
+        sc.type = bound > info.operandCount ? info.solverTypeReferenced : info.solverType;
         sc.wrkpl = E_WORKPLANE;
 
         // slvs.h splits operands into point slots and entity slots; the
@@ -238,7 +242,7 @@ void translate(const Document &doc, const SolveContext &context, const SolveOpti
         Slvs_hEntity others[4] = {0, 0, 0, 0};
         size_t pointCount = 0, otherCount = 0;
         bool complete = true;
-        for(size_t i = 0; i < info.operandCount; i++) {
+        for(size_t i = 0; i < bound; i++) {
             const EntityRecord *e = doc.entities().find(c.operands[i]);
             const auto handle = out.entityHandle.find(c.operands[i]);
             if(e == nullptr || handle == out.entityHandle.end()) {

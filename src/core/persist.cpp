@@ -387,7 +387,10 @@ std::string serialize(const Document &doc) {
         const ConstraintKindInfo &info = constraintInfo(r.kind);
         out += "constraint " + std::to_string(r.id.value()) + " kind=" + std::string(info.name) +
                " driving=" + (r.driving ? "1" : "0") + " operands=";
-        for(size_t i = 0; i < info.operandCount; i++) {
+        // Only what the record binds. An unreferenced horizontal writes its one
+        // operand exactly as it always did, so gaining a nullable reference
+        // changes no file that does not use one.
+        for(size_t i = 0; i < boundOperandCount(r); i++) {
             if(i) out += ',';
             out += std::to_string(r.operands[i].value());
         }
@@ -598,7 +601,12 @@ LoadResult deserialize(std::string_view text, Document &out) {
             const auto operands = field(f, "operands");
             if(!operands) return fail("constraint without operands", lineNumber);
             const auto list = parseIdList<EntityId>(*operands);
-            if(!list || list->size() != info.operandCount) {
+            // The required operands, plus as many of the optional ones as the
+            // file names. Validation over the finished document checks what
+            // they are; this only checks that there are neither too few nor
+            // more than the kind can hold.
+            if(!list || list->size() < info.operandCount ||
+               list->size() > static_cast<size_t>(info.operandCount) + info.optionalOperands) {
                 return fail("constraint operand count does not match its kind", lineNumber);
             }
             for(size_t k = 0; k < list->size(); k++) r.operands[k] = (*list)[k];

@@ -34,7 +34,7 @@ bool contains(std::span<const ConstraintId> haystack, ConstraintId needle) {
 void marksFor(const Document &doc, const Pose &pose, const ConstraintRecord &constraint,
               std::vector<GlyphMark> &out) {
     const ConstraintKindInfo &info = constraintInfo(constraint.kind);
-    for(size_t i = 0; i < info.operandCount; i++) {
+    for(size_t i = 0; i < boundOperandCount(constraint); i++) {
         const EntityId operand = constraint.operands[i];
         if(!operand.valid()) continue;
         const std::optional<Point> anchor = anchorOn(doc, pose, operand);

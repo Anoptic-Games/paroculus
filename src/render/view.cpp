@@ -194,7 +194,7 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
     for(ConstraintId id : adornment.resisting) {
         const ConstraintRecord *c = pose.document().constraints().find(id);
         if(c == nullptr) continue;
-        for(size_t i = 0; i < constraintInfo(c->kind).operandCount; i++) {
+        for(size_t i = 0; i < boundOperandCount(*c); i++) {
             resistingEntities.push_back(c->operands[i]);
         }
     }

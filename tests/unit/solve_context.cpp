@@ -219,3 +219,96 @@ TEST_CASE("skipping failure diagnosis still solves") {
     REQUIRE(outcome.ok());
     CHECK(context.point(b)->y == doctest::Approx(0.0));
 }
+
+TEST_CASE("a referenced horizontal is parallelism to the axis it names") {
+    // The whole point of recording horizontal as axis-referenced parallelism:
+    // with a reference the relation follows that axis rather than the document
+    // frame, which is what makes rotate-a-subset answerable at all. Same
+    // declaration, different solver primitive, chosen from the taxonomy.
+    Document doc;
+    // The reference axis, pinned so it cannot rotate to meet the subject.
+    const EntityId r0 = addPoint(doc, 0.0, 0.0);
+    const EntityId r1 = addPoint(doc, 100.0, 60.0);
+    const EntityId axis = addSegment(doc, r0, r1);
+    addConstraint(doc, ConstraintKind::Pin, {r0});
+    addConstraint(doc, ConstraintKind::Pin, {r1});
+
+    // The subject, drawn nowhere near parallel to it.
+    const EntityId s0 = addPoint(doc, 0.0, 200.0);
+    const EntityId s1 = addPoint(doc, 90.0, 190.0);
+    const EntityId subject = addSegment(doc, s0, s1);
+    addConstraint(doc, ConstraintKind::Pin, {s0});
+
+    REQUIRE(addConstraint(doc, ConstraintKind::Horizontal, {subject, axis}).valid());
+
+    SolveContext context = SolveContext::forWholeDocument(doc);
+    const SolveOutcome outcome = solve(doc, context, SolveOptions());
+    REQUIRE(outcome.ok());
+
+    const Point a = *context.point(s0);
+    const Point b = *context.point(s1);
+    // Parallel to (100, 60), which is emphatically not horizontal.
+    const double cross = (b.x - a.x) * 60.0 - (b.y - a.y) * 100.0;
+    CHECK(cross == doctest::Approx(0.0).epsilon(1e-9));
+    CHECK(std::abs(b.y - a.y) > 1.0);
+}
+
+TEST_CASE("a referenced vertical is perpendicularity to the axis it names") {
+    Document doc;
+    const EntityId r0 = addPoint(doc, 0.0, 0.0);
+    const EntityId r1 = addPoint(doc, 100.0, 60.0);
+    const EntityId axis = addSegment(doc, r0, r1);
+    addConstraint(doc, ConstraintKind::Pin, {r0});
+    addConstraint(doc, ConstraintKind::Pin, {r1});
+
+    const EntityId s0 = addPoint(doc, 0.0, 200.0);
+    const EntityId s1 = addPoint(doc, 10.0, 280.0);
+    const EntityId subject = addSegment(doc, s0, s1);
+    addConstraint(doc, ConstraintKind::Pin, {s0});
+
+    REQUIRE(addConstraint(doc, ConstraintKind::Vertical, {subject, axis}).valid());
+
+    SolveContext context = SolveContext::forWholeDocument(doc);
+    const SolveOutcome outcome = solve(doc, context, SolveOptions());
+    REQUIRE(outcome.ok());
+
+    const Point a = *context.point(s0);
+    const Point b = *context.point(s1);
+    // Perpendicular to (100, 60): the dot product goes to zero, not the cross.
+    const double dot = (b.x - a.x) * 100.0 + (b.y - a.y) * 60.0;
+    CHECK(dot == doctest::Approx(0.0).epsilon(1e-9));
+}
+
+TEST_CASE("an unreferenced horizontal still means the document frame") {
+    // The default has to be exactly what it always was, or every corpus entry
+    // and every saved file changes meaning under a format that gained a slot.
+    Document doc;
+    const EntityId a = addPoint(doc, 0.0, 0.0);
+    const EntityId b = addPoint(doc, 90.0, 40.0);
+    const EntityId segment = addSegment(doc, a, b);
+    addConstraint(doc, ConstraintKind::Pin, {a});
+    REQUIRE(addConstraint(doc, ConstraintKind::Horizontal, {segment}).valid());
+
+    SolveContext context = SolveContext::forWholeDocument(doc);
+    REQUIRE(solve(doc, context, SolveOptions()).ok());
+    CHECK(context.point(b)->y == doctest::Approx(0.0));
+}
+
+TEST_CASE("a referenced horizontal solves inside its own component") {
+    // The reference joins the component: the subject and the axis have to be
+    // solved together or the relation binds two systems that never meet.
+    Document doc;
+    const EntityId r0 = addPoint(doc, 0.0, 0.0);
+    const EntityId r1 = addPoint(doc, 100.0, 60.0);
+    const EntityId axis = addSegment(doc, r0, r1);
+    const EntityId s0 = addPoint(doc, 0.0, 200.0);
+    const EntityId s1 = addPoint(doc, 90.0, 190.0);
+    const EntityId subject = addSegment(doc, s0, s1);
+    REQUIRE(addConstraint(doc, ConstraintKind::Horizontal, {subject, axis}).valid());
+
+    Topology topology(doc);
+    const SolveContext context = SolveContext::forComponent(doc, topology, subject);
+    CHECK(context.contains(axis));
+    CHECK(context.contains(r0));
+    CHECK(context.contains(r1));
+}

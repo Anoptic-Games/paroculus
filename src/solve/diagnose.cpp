@@ -36,8 +36,11 @@ bool alreadyDeclared(const Document &doc, const ConstraintRecord &candidate) {
         if(!existing.driving) continue;  // a measurement duplicates nothing
         if(info.valueArity == 1 && !(existing.value == candidate.value)) continue;
 
+        // Bound, so a horizontal against a reference axis does not read as a
+        // duplicate of a plain one: they are different declarations.
+        if(boundOperandCount(existing) != boundOperandCount(candidate)) continue;
         bool positional = true;
-        for(size_t i = 0; i < info.operandCount; i++) {
+        for(size_t i = 0; i < boundOperandCount(candidate); i++) {
             if(existing.operands[i] != candidate.operands[i]) {
                 positional = false;
                 break;
@@ -66,7 +69,9 @@ CandidateCheck checkCandidate(const Document &doc, const Topology &topology,
         return check;
     }
 
-    const size_t operandCount = constraintInfo(candidate.kind).operandCount;
+    // Every component the candidate touches, the reference axis included:
+    // committing it would merge them.
+    const size_t operandCount = boundOperandCount(candidate);
     std::vector<EntityId> anchors(candidate.operands.begin(),
                                   candidate.operands.begin() + operandCount);
 

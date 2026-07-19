@@ -266,6 +266,68 @@ TEST_CASE("names with spaces and quotes survive") {
     CHECK(loaded.layers().find(id)->name == layer.name);
 }
 
+TEST_CASE("a nullable reference axis costs the format nothing until it is used") {
+    // Horizontal gained a second, optional operand. A constraint that does not
+    // name one has to serialize exactly as it did before, or every file and
+    // every corpus entry changes under a slot nobody used.
+    Document doc;
+    const EntityId p = addPoint(doc, 0.0, 0.0);
+    const EntityId q = addPoint(doc, 100.0, 0.0);
+    const EntityId subject = addSegment(doc, p, q);
+    const ConstraintId plain = addConstraint(doc, ConstraintKind::Horizontal, {subject});
+    REQUIRE(plain.valid());
+
+    const std::string text = serialize(doc);
+    CHECK(text.find("kind=horizontal driving=1 operands=" +
+                    std::to_string(subject.value()) + "\n") != std::string::npos);
+
+    Document loaded;
+    REQUIRE(deserialize(text, loaded).ok);
+    CHECK(loaded == doc);
+    CHECK(serialize(loaded) == text);
+}
+
+TEST_CASE("a named reference axis round-trips") {
+    Document doc;
+    const EntityId p = addPoint(doc, 0.0, 0.0);
+    const EntityId q = addPoint(doc, 100.0, 0.0);
+    const EntityId subject = addSegment(doc, p, q);
+    const EntityId r = addPoint(doc, 0.0, 50.0);
+    const EntityId s = addPoint(doc, 100.0, 110.0);
+    const EntityId axis = addSegment(doc, r, s);
+    const ConstraintId id = addConstraint(doc, ConstraintKind::Horizontal, {subject, axis});
+    REQUIRE(id.valid());
+
+    const std::string text = serialize(doc);
+    CHECK(text.find("operands=" + std::to_string(subject.value()) + "," +
+                    std::to_string(axis.value())) != std::string::npos);
+
+    Document loaded;
+    REQUIRE(deserialize(text, loaded).ok);
+    CHECK(loaded == doc);
+    CHECK(serialize(loaded) == text);
+    CHECK(loaded.constraints().find(id)->operands[1] == axis);
+}
+
+TEST_CASE("a file naming more operands than a kind can hold is refused") {
+    Document doc;
+    const EntityId p = addPoint(doc, 0.0, 0.0);
+    const EntityId q = addPoint(doc, 100.0, 0.0);
+    const EntityId subject = addSegment(doc, p, q);
+    REQUIRE(addConstraint(doc, ConstraintKind::Horizontal, {subject}).valid());
+
+    const std::string text = serialize(doc);
+    const std::string one = "operands=" + std::to_string(subject.value());
+    const size_t at = text.find(one);
+    REQUIRE(at != std::string::npos);
+    // Three operands where the kind holds at most two.
+    const std::string tampered = text.substr(0, at) + one + ",1,1" +
+                                 text.substr(at + one.size());
+
+    Document loaded;
+    CHECK_FALSE(deserialize(tampered, loaded).ok);
+}
+
 TEST_CASE("a name cannot split its own record") {
     // A newline in a name would end the line the loader is reading, so the tail
     // would arrive as a record kind nothing recognises and be kept verbatim as

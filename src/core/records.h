@@ -78,6 +78,26 @@ struct ConstraintRecord {
     }
 };
 
+// How many of a constraint's operand slots it actually binds: the required
+// ones, plus any optional ones it names.
+//
+// The one place that knows a null optional operand means absent rather than
+// dangling. Everything that walks operands — validation, topology, deletion,
+// glyphs, solver translation — walks this many, so a nullable reference cannot
+// be read as a missing operand by one of them and skipped by another.
+//
+// Optional operands are a prefix too: a kind carrying one either names it or
+// does not, and a gap would be a record no command could have produced.
+inline size_t boundOperandCount(const ConstraintRecord &r) {
+    const ConstraintKindInfo &info = constraintInfo(r.kind);
+    size_t count = info.operandCount;
+    while(count < static_cast<size_t>(info.operandCount) + info.optionalOperands &&
+          r.operands[count].valid()) {
+        count++;
+    }
+    return count;
+}
+
 // A fill referencing a closed cycle of edges. Not a copy of them: the outline
 // keeps its constraints, and dragging a vertex moves the fill because the fill
 // has no geometry of its own to go stale.

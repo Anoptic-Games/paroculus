@@ -124,12 +124,31 @@ struct ConstraintKindInfo {
     // needs doubling at the seam. Recorded as data so the seam does not grow a
     // special case the taxonomy cannot see.
     double solverValueScale;
+
+    // Trailing operands the kind may carry but does not require, and what the
+    // solver calls the kind when they are present. Both zero for every kind
+    // that has neither, which is every kind but two.
+    //
+    // v1 uses this for exactly one thing. Horizontal and vertical are
+    // axis-referenced parallelism, and the reference is nullable with the
+    // document frame as the default — so an unreferenced horizontal is the
+    // ordinary one and names nothing extra, while naming a reference axis makes
+    // horizontal mean parallel to it and vertical mean perpendicular to it. The
+    // same declaration, a different solver primitive, and the difference is data
+    // rather than a branch in the translation.
+    //
+    // Required operands come first and are never null; optional ones follow and
+    // may be. Applicability is decided over the required prefix alone, which is
+    // why selecting one segment still offers horizontal.
+    uint8_t optionalOperands;
+    int32_t solverTypeReferenced;
 };
 
 // Horizontal and vertical are recorded as axis-referenced parallelism rather
 // than intrinsic properties, which is what makes the rotate-a-subset question
-// answerable at all. The default reference is the document frame; the reference
-// entity itself arrives with cluster frames in stage 7.
+// answerable at all. The reference is the nullable operand and the default is
+// the document frame. What stage 7 adds is the cluster frames worth pointing at
+// and the retarget flow that offers them, not a change to this signature.
 inline constexpr std::array<ConstraintKindInfo, 22> CONSTRAINT_KINDS = {{
     {ConstraintKind::Coincident, "coincident", 2,
      {OperandKind::Point, OperandKind::Point}, 0, Invariance::ScaleInvariant, 100000, 1.0},
@@ -139,10 +158,16 @@ inline constexpr std::array<ConstraintKindInfo, 22> CONSTRAINT_KINDS = {{
      {OperandKind::Point, OperandKind::Curve}, 0, Invariance::ScaleInvariant, 100022, 1.0},
     {ConstraintKind::Midpoint, "midpoint", 2,
      {OperandKind::Point, OperandKind::Segment}, 0, Invariance::ScaleInvariant, 100018, 1.0},
+    // One required segment and one nullable reference axis. Null is the
+    // document frame, which is what an unreferenced horizontal has always meant
+    // and still means; the second slot is what makes rotate-a-subset answerable
+    // rather than a question the format cannot hold.
     {ConstraintKind::Horizontal, "horizontal", 1,
-     {OperandKind::Segment}, 0, Invariance::ScaleInvariant, 100019, 1.0},
+     {OperandKind::Segment, OperandKind::Segment}, 0, Invariance::ScaleInvariant, 100019, 1.0,
+     1, 100025},
     {ConstraintKind::Vertical, "vertical", 1,
-     {OperandKind::Segment}, 0, Invariance::ScaleInvariant, 100020, 1.0},
+     {OperandKind::Segment, OperandKind::Segment}, 0, Invariance::ScaleInvariant, 100020, 1.0,
+     1, 100026},
     {ConstraintKind::Parallel, "parallel", 2,
      {OperandKind::Segment, OperandKind::Segment}, 0, Invariance::ScaleInvariant, 100025, 1.0},
     {ConstraintKind::Perpendicular, "perpendicular", 2,

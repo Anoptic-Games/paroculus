@@ -176,6 +176,89 @@ TEST_CASE("a slot referencing a missing parameter is refused") {
                     .valid());
 }
 
+TEST_CASE("horizontal carries a nullable reference axis") {
+    // PRINCIPLES fixes horizontal and vertical as parallelism to a reference
+    // axis with the document frame as the default. Null is that default and is
+    // what every horizontal in the corpus means; naming a segment says the
+    // relation is to that axis instead. Landed now rather than at stage 7 so
+    // persist, undo, signatures and the corpus change once.
+    Document doc;
+    const EntityId p = addPoint(doc, 0.0, 0.0);
+    const EntityId q = addPoint(doc, 100.0, 0.0);
+    const EntityId subject = addSegment(doc, p, q);
+    const EntityId r = addPoint(doc, 0.0, 50.0);
+    const EntityId s = addPoint(doc, 100.0, 110.0);
+    const EntityId axis = addSegment(doc, r, s);
+
+    SUBCASE("the reference may be absent") {
+        const ConstraintId id = addConstraint(doc, ConstraintKind::Horizontal, {subject});
+        REQUIRE(id.valid());
+        const ConstraintRecord &c = *doc.constraints().find(id);
+        CHECK(boundOperandCount(c) == 1);
+        CHECK_FALSE(c.operands[1].valid());
+    }
+
+    SUBCASE("the reference may be present") {
+        const ConstraintId id = addConstraint(doc, ConstraintKind::Horizontal, {subject, axis});
+        REQUIRE(id.valid());
+        CHECK(boundOperandCount(*doc.constraints().find(id)) == 2);
+    }
+
+    SUBCASE("a reference that is not a segment is refused") {
+        ConstraintRecord bad;
+        bad.kind = ConstraintKind::Horizontal;
+        bad.operands[0] = subject;
+        bad.operands[1] = p;  // a point names no axis
+        CHECK(doc.apply(AddRecord<ConstraintRecord>{bad}).error == CommandError::WrongSignature);
+    }
+
+    SUBCASE("a reference that does not exist is refused") {
+        ConstraintRecord bad;
+        bad.kind = ConstraintKind::Horizontal;
+        bad.operands[0] = subject;
+        bad.operands[1] = EntityId(999);
+        CHECK(doc.apply(AddRecord<ConstraintRecord>{bad}).error == CommandError::UnknownOperand);
+    }
+
+    SUBCASE("a gap in the operands is refused") {
+        // Optional operands are a prefix. A record with slot one empty and slot
+        // two filled is one no command could have produced.
+        ConstraintRecord bad;
+        bad.kind = ConstraintKind::Horizontal;
+        bad.operands[0] = subject;
+        bad.operands[2] = axis;
+        CHECK(doc.apply(AddRecord<ConstraintRecord>{bad}).error == CommandError::WrongSignature);
+    }
+
+    SUBCASE("applicability still reads one segment") {
+        // Selecting a single segment has to keep offering horizontal, or the
+        // nullable operand would have cost the action its whole surface.
+        const std::vector<EntityKind> one{EntityKind::Segment};
+        CHECK(signatureMatches(ConstraintKind::Horizontal, one));
+        CHECK(signatureMatches(ConstraintKind::Vertical, one));
+    }
+}
+
+TEST_CASE("a reference axis is depended on like any other operand") {
+    // Deleting the axis a relation is measured against has to take the relation
+    // with it, or the document keeps a horizontal pointing at nothing.
+    Document doc;
+    const EntityId p = addPoint(doc, 0.0, 0.0);
+    const EntityId q = addPoint(doc, 100.0, 0.0);
+    const EntityId subject = addSegment(doc, p, q);
+    const EntityId r = addPoint(doc, 0.0, 50.0);
+    const EntityId s = addPoint(doc, 100.0, 110.0);
+    const EntityId axis = addSegment(doc, r, s);
+    REQUIRE(addConstraint(doc, ConstraintKind::Horizontal, {subject, axis}).valid());
+
+    CHECK(dependentsOf(doc, axis).constraints.size() == 1);
+    CHECK(doc.apply(RemoveRecord<EntityRecord>{axis}).error == CommandError::HasDependents);
+
+    for(const Command &c : deletionStep(doc, axis)) REQUIRE(doc.apply(c).ok());
+    CHECK(doc.constraints().empty());
+    CHECK(doc.entities().contains(subject));
+}
+
 TEST_CASE("a parameter still being read cannot simply vanish") {
     // A dangling slot is worse than a dangling operand: it evaluates to nullopt
     // and the solver translation reads that as zero, so the dimension drives to

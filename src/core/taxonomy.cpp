@@ -31,6 +31,11 @@ constexpr bool snapTableIsAligned() {
 constexpr bool constraintTableIsWellFormed() {
     for(const ConstraintKindInfo &c : CONSTRAINT_KINDS) {
         if(c.operandCount == 0 || c.operandCount > MAX_OPERANDS) return false;
+        // The optional tail has to fit beside the required operands, and a kind
+        // that has one needs a solver constant for the referenced form —
+        // otherwise the document could express a relation the solve drops.
+        if(static_cast<size_t>(c.operandCount) + c.optionalOperands > MAX_OPERANDS) return false;
+        if((c.optionalOperands == 0) != (c.solverTypeReferenced == 0)) return false;
         if(c.valueArity > 1) return false;
         if(c.name.empty()) return false;
         if(c.solverValueScale == 0.0) return false;

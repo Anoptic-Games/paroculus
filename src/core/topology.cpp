@@ -64,7 +64,7 @@ void Topology::rebuild() const {
 
     // Constraint edges: every operand of a constraint solves with every other.
     for(const ConstraintRecord &c : doc_->constraints().records()) {
-        const size_t n = constraintInfo(c.kind).operandCount;
+        const size_t n = boundOperandCount(c);
         const uint32_t first = indexOf(c.operands[0]);
         if(first == NO_COMPONENT) continue;
         for(size_t i = 1; i < n; i++) {
@@ -124,7 +124,7 @@ void Topology::noteAdded(ConstraintId id) {
     const ConstraintRecord *c = doc_->constraints().find(id);
     if(c == nullptr) return;
 
-    const size_t n = constraintInfo(c->kind).operandCount;
+    const size_t n = boundOperandCount(*c);
     const uint32_t first = indexOf(c->operands[0]);
     if(first == NO_COMPONENT) {
         dirty_ = true;
