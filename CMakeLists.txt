@@ -158,6 +158,8 @@ add_library(paroculus-interact STATIC
     src/interact/numeric.h
     src/interact/policies.cpp
     src/interact/policies.h
+    src/interact/registry.cpp
+    src/interact/registry.h
     src/interact/script.cpp
     src/interact/script.h
     src/interact/selection.cpp
@@ -243,6 +245,7 @@ if(PAROCULUS_TESTS)
         tests/unit/interact_shapes.cpp
         tests/unit/interact_numeric.cpp
         tests/unit/interact_loops.cpp
+        tests/unit/interact_registry.cpp
         tests/gestures/corpus.cpp
         tests/unit/solve_context.cpp
         tests/unit/solve_demosketch.cpp

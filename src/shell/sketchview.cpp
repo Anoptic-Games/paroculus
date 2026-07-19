@@ -10,6 +10,7 @@
 #include <cstdio>
 
 #include "app/scriptplay.h"
+#include "interact/registry.h"
 #include "render/view.h"
 #include "solve/demosketch.h"
 
@@ -206,7 +207,32 @@ void SketchView::wheelEvent(QWheelEvent *event) {
     emit changed();
 }
 
+// The keyboard is a projection of the action registry, not a second copy of it.
+// Every binding here comes from the table, so an action added there is reachable
+// from the keyboard without this function being edited — which is the property
+// that keeps a surface from offering something the model would refuse.
+//
+// Keys that are not actions stay here: Esc and Tab drive the interaction state
+// machine rather than the catalogue, and text is text.
+namespace {
+
+// The canonical binding string for one key event, in the form the table writes.
+std::string bindingOf(const QKeyEvent *event) {
+    std::string out;
+    if(event->modifiers() & Qt::ShiftModifier) out += "shift+";
+    if(event->key() == Qt::Key_Delete) return out + "del";
+    const QString text = event->text().toLower();
+    if(text.isEmpty()) return {};
+    const char c = text.at(0).toLatin1();
+    if(c < 'a' || c > 'z') return {};
+    return out + c;
+}
+
+}  // namespace
+
 void SketchView::keyPressEvent(QKeyEvent *event) {
+    const bool typing = session_->presentation().numericActive;
+
     switch(event->key()) {
         case Qt::Key_Escape: session_->handle(Key::Escape); break;
         case Qt::Key_Return:
@@ -219,42 +245,34 @@ void SketchView::keyPressEvent(QKeyEvent *event) {
         case Qt::Key_Backspace:
             // Backspace edits the field while one is open, and deletes only
             // when there is nothing being typed.
-            if(session_->presentation().numericActive) session_->numericBackspace();
-            else session_->handle(Key::Delete);
+            if(typing) session_->numericBackspace();
+            else paroculus::invokeAction(*session_, "edit.delete");
             break;
-        case Qt::Key_Delete: session_->handle(Key::Delete); break;
-        case Qt::Key_Z:
-            // Undo and redo through the session, so the journal and the derived
-            // indexes stay in step.
-            session_->handle((event->modifiers() & Qt::ShiftModifier) ? Key::Redo : Key::Undo);
-            break;
-        // Tool activation is a keystroke until the registry projects it into a
-        // surface, which is the next item in this stage.
-        case Qt::Key_L: session_->setTool(paroculus::ToolKind::Line); break;
-        case Qt::Key_V: session_->setTool(paroculus::ToolKind::Select); break;
-        case Qt::Key_C: session_->setTool(paroculus::ToolKind::Circle); break;
-        case Qt::Key_A: session_->setTool(paroculus::ToolKind::Arc); break;
-        case Qt::Key_R: session_->setTool(paroculus::ToolKind::Rectangle); break;
-        default:
-            // One key per offer, by rank, matching the order the strip lists
-            // them in. Shift declines instead: confirming what is proposed and
-            // taking back what was declared are opposite actions and share the
-            // digit that names the relation.
+
+        default: {
             // A digit is a value while a field is open, and an offer number
             // otherwise. Typing is the more specific intent, so it wins.
-            if(session_->presentation().numericActive && !event->text().isEmpty()) {
+            if(typing && !event->text().isEmpty()) {
                 session_->type(event->text().at(0).toLatin1());
                 break;
             }
             if(event->key() >= Qt::Key_1 && event->key() <= Qt::Key_9) {
-                const size_t index = static_cast<size_t>(event->key() - Qt::Key_1);
-                if(event->modifiers() & Qt::ShiftModifier) {
-                    session_->declineInference(index);
-                } else {
-                    session_->confirmOffer(index);
-                }
+                paroculus::ActionArguments arguments;
+                arguments.set("index", static_cast<double>(event->key() - Qt::Key_1));
+                paroculus::invokeAction(*session_,
+                                        (event->modifiers() & Qt::ShiftModifier)
+                                            ? "inference.decline"
+                                            : "inference.confirm",
+                                        arguments);
                 break;
             }
+            if(const paroculus::Action *action =
+                   paroculus::actionForBinding(bindingOf(event))) {
+                paroculus::invokeAction(*session_, action->name);
+                break;
+            }
+            // Opening a numeric field: a tool is running and this reads as a
+            // number rather than as a command.
             if(session_->tool() != paroculus::ToolKind::Select && !event->text().isEmpty()) {
                 const char c = event->text().at(0).toLatin1();
                 if((c >= '0' && c <= '9') || c == '.' || c == '-') {
@@ -264,6 +282,7 @@ void SketchView::keyPressEvent(QKeyEvent *event) {
             }
             QQuickPaintedItem::keyPressEvent(event);
             return;
+        }
     }
     syncViewport();
     update();

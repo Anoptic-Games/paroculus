@@ -119,6 +119,10 @@ public:
     // the user picks one thing and selects another.
     Pose pose() const;
 
+    const Document &document() const { return *doc_; }
+    bool canUndo() const { return journal_->canUndo(); }
+    bool canRedo() const { return journal_->canRedo(); }
+
     const Selection &selection() const { return selection_; }
     const Presentation &presentation() const { return presentation_; }
     Signature signature() const { return selection_.signature(*doc_); }

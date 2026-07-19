@@ -62,6 +62,11 @@ struct ScriptStep {
         // replay that skipped to the finished string would skip the feel.
         Type, NumericResolve, NumericImpose, NumericBackspace, NumericAdvance,
         NumericCancel,
+        // Any registered action, by name. The scripting harness is a projection
+        // of the registry rather than a parallel path into the session, so an
+        // action reachable from a menu is reachable from a script by
+        // construction rather than by someone remembering to add it here.
+        Action,
     };
     Kind kind = Kind::Pointer;
 
@@ -72,6 +77,11 @@ struct ScriptStep {
 
     // Kind::Type.
     char character = 0;
+
+    // Kind::Action. The name is the registry's stable token; the arguments are
+    // its parameter schema, filled.
+    std::string actionName;
+    std::vector<std::pair<std::string, double>> arguments;
 
     // Kind::Tool. Without this a drawing session could not be recorded at all:
     // the same click means "select this" or "place a point here" depending on
@@ -147,6 +157,7 @@ public:
     void decline(size_t index);
     void type(char c);
     void numeric(ScriptStep::Kind kind);
+    void action(std::string_view name, const std::vector<std::pair<std::string, double>> &args);
 
     const std::vector<ScriptStep> &steps() const { return steps_; }
     void clear() { steps_.clear(); }

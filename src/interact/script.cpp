@@ -5,6 +5,7 @@
 #include <cstdio>
 
 #include "core/persist.h"
+#include "interact/registry.h"
 #include "interact/session.h"
 
 namespace paroculus {
@@ -251,6 +252,10 @@ std::string serializeScript(const GestureScript &script) {
             case ScriptStep::Kind::NumericBackspace: out += "numeric do=backspace"; break;
             case ScriptStep::Kind::NumericAdvance:  out += "numeric do=advance"; break;
             case ScriptStep::Kind::NumericCancel:   out += "numeric do=cancel"; break;
+            case ScriptStep::Kind::Action:
+                out += "action name=" + s.actionName;
+                for(const auto &[key, v] : s.arguments) out += " " + key + "=" + number(v);
+                break;
         }
         const std::string mods = modifierNames(s.modifiers);
         if(!mods.empty()) out += " mods=" + mods;
@@ -398,6 +403,25 @@ ScriptLoadResult parseScript(std::string_view text, GestureScript &out) {
                 haveIndex = true;
             }
             if(!haveIndex) return fail("step without an index", lineNumber);
+        } else if(kind == "action") {
+            step.kind = ScriptStep::Kind::Action;
+            for(size_t i = 1; i < tokens.size(); i++) {
+                const auto f = field(tokens[i]);
+                if(!f) return fail("malformed field", lineNumber);
+                const auto [key, value] = *f;
+                if(key == "name") {
+                    step.actionName = std::string(value);
+                    continue;
+                }
+                const std::optional<double> v = toDouble(value);
+                if(!v) return fail("malformed action argument", lineNumber);
+                step.arguments.emplace_back(std::string(key), *v);
+            }
+            if(step.actionName.empty()) return fail("action step without a name", lineNumber);
+            // Refused at parse rather than ignored at replay: a script naming an
+            // action this build does not have has asked for something that will
+            // not happen, and silence would hide that.
+            if(findAction(step.actionName) == nullptr) return fail("unknown action", lineNumber);
         } else if(kind == "type") {
             step.kind = ScriptStep::Kind::Type;
             bool haveChar = false;
@@ -495,6 +519,12 @@ void applyStep(Session &session, const ScriptStep &step) {
         case ScriptStep::Kind::NumericBackspace: session.numericBackspace(); return;
         case ScriptStep::Kind::NumericAdvance:   session.numericAdvance(); return;
         case ScriptStep::Kind::NumericCancel:    session.numericCancel(); return;
+        case ScriptStep::Kind::Action: {
+            ActionArguments arguments;
+            for(const auto &[key, v] : step.arguments) arguments.set(key, v);
+            invokeAction(session, step.actionName, arguments);
+            return;
+        }
     }
 }
 
@@ -550,6 +580,15 @@ void ScriptRecorder::type(char c) {
 void ScriptRecorder::numeric(ScriptStep::Kind kind) {
     ScriptStep step;
     step.kind = kind;
+    steps_.push_back(step);
+}
+
+void ScriptRecorder::action(std::string_view name,
+                            const std::vector<std::pair<std::string, double>> &args) {
+    ScriptStep step;
+    step.kind = ScriptStep::Kind::Action;
+    step.actionName = std::string(name);
+    step.arguments = args;
     steps_.push_back(step);
 }
 
