@@ -36,6 +36,14 @@ struct SolveOptions {
     // to leave a trace. Their IDs are reported in `failed` like any other.
     std::vector<ConstraintRecord> extra;
 
+    // Constraints to leave out of the system.
+    //
+    // Counterfactual questions — "what would move if this relation were not
+    // here?" — are how a resisting set is identified and how a conflict is
+    // walked. Suppressing is not deleting: the document is untouched and the
+    // constraint is back on the next solve.
+    std::vector<ConstraintId> suppressed;
+
     // Computing the failing set costs roughly another solve, so it is opt-out
     // for the interactive path where only the pose matters.
     bool diagnoseFailures = true;

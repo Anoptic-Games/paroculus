@@ -5,8 +5,10 @@
 #include <cmath>
 #include <cstdio>
 
+#include "core/pose.h"
 #include "render/view.h"
 #include "solve/demosketch.h"
+#include "solve/solve.h"
 
 namespace paroculus {
 
@@ -53,10 +55,21 @@ int selftest() {
 
     // Render and confirm Skia actually marked the surface. A silently failing
     // installPixels would leave the buffer at its fill value.
+    //
+    // The document is what gets drawn, through the same painter the shell uses,
+    // so this also proves the render path the user sees rather than a parallel
+    // one kept alive for the test.
+    const Document doc = demoDocument(RATIO);
+    Pose pose(doc);
+    SolveContext context = SolveContext::forWholeDocument(doc);
+    solve(doc, context);
+    pose.overlay(context.params());
+
     const int W = 400, H = 300;
     QImage surface(W, H, QImage::Format_ARGB32_Premultiplied);
     surface.fill(Qt::transparent);
-    renderSketch(s, surface.bits(), W, H, static_cast<size_t>(surface.bytesPerLine()));
+    renderDocument(pose, defaultView(W, H), Adornment{}, surface.bits(), W, H,
+                   static_cast<size_t>(surface.bytesPerLine()));
 
     const QRgb background = surface.pixel(2, 2);
     int painted = 0;

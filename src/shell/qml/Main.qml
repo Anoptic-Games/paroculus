@@ -13,7 +13,7 @@ ApplicationWindow {
         id: sketch
         anchors.fill: parent
         anchors.bottomMargin: 78
-        ratio: ratioSlider.value
+        focus: true
     }
 
     Rectangle {
@@ -26,17 +26,16 @@ ApplicationWindow {
             anchors { left: parent.left; leftMargin: 20; top: parent.top; topMargin: 14 }
             color: "#c8ccd4"
             font.pixelSize: 13
-            // Proportion is the control surface, not a derived readout.
-            text: qsTr("len(A) / len(B)")
+            text: sketch.selectionText
         }
 
-        Slider {
-            id: ratioSlider
-            anchors { left: parent.left; leftMargin: 20; right: parent.right; rightMargin: 20
-                      top: label.bottom; topMargin: 6 }
-            from: 0.4
-            to: 3.0
-            value: 1.618
+        Text {
+            anchors { left: parent.left; leftMargin: 20; top: label.bottom; topMargin: 8 }
+            color: "#7f8794"
+            font.pixelSize: 11
+            // Drag is a solve; everything else is selection. Esc lands home.
+            text: qsTr("drag a point · shift-click to extend · marquee on empty space · " +
+                       "del to delete · z / shift-z to undo · wheel to zoom · esc to clear")
         }
 
         Text {

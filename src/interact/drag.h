@@ -1,0 +1,105 @@
+// Drag is a solve.
+//
+// A drag does not set a point to (x, y); it asks the solver for the nearest
+// legal state in which that point sits at (x, y). The dragged point's
+// parameters go into the solver's dragged set, it favours solutions keeping
+// them near the cursor, and everything else moves as little as the constraints
+// allow.
+//
+// Four feel rules here are commitments, not tuning:
+//
+//   release commits    the solved state at mouse-up becomes the new seeds.
+//                      Nothing springs back.
+//   saturation         an unreachable target does not fail. Geometry rides the
+//                      feasible boundary while the cursor overshoots, and the
+//                      constraints doing the resisting light up. Resistance
+//                      with attribution is how users discover constraints by
+//                      feel; refusal teaches nothing.
+//   locality           the solve is scoped to the dragged component, so distant
+//                      geometry cannot move at all.
+//   no silent ripple   if the solve moved something outside the viewport, the
+//                      edge of the screen says so.
+#pragma once
+
+#include <optional>
+#include <vector>
+
+#include "core/pose.h"
+#include "core/topology.h"
+#include "interact/policies.h"
+#include "solve/solve.h"
+
+namespace paroculus {
+
+// The transform in force plus the pixel rectangle it maps onto. The two always
+// travel together for anything that asks "can the user see this?", and ripple
+// detection is exactly that question.
+struct Viewport {
+    ViewTransform view;
+    double width = 0.0;
+    double height = 0.0;
+
+    // p: document coordinates. Returns whether it lands on screen.
+    bool contains(Point p) const {
+        const Eigen::Vector2d s = view.toScreen(p);
+        return s.x() >= 0.0 && s.y() >= 0.0 && s.x() <= width && s.y() <= height;
+    }
+};
+
+struct DragUpdate {
+    SolveStatus status = SolveStatus::Unsolved;
+
+    // How far the geometry ended up from the cursor, in pixels. Zero while the
+    // drag is tracking; grows once the constraints stop it.
+    double gap = 0.0;
+    bool saturated = false;
+
+    // The constraints resisting, when saturated. Diagnosed by a speculative
+    // hard-pin solve, which costs a second solve and is therefore throttled.
+    std::vector<ConstraintId> resisting;
+
+    // Set when the solve moved geometry outside the viewport. Off-screen
+    // consequence without indication is how parametric tools lose trust.
+    bool rippledOffScreen = false;
+
+    double microseconds = 0.0;
+};
+
+// One drag, from press to release.
+//
+// The document is not touched until commit(): every intermediate pose lives in
+// the session's own context, which is what makes an abandoned drag free and a
+// committed one a single ordinary undo step.
+class DragSession {
+public:
+    // Begins dragging `grabbed`, scoping the solve to its component.
+    // Returns nullopt when the entity cannot be dragged — it is not live, or it
+    // owns no parameters of its own, as a segment does not.
+    static std::optional<DragSession> begin(const Document &doc, const Topology &topology,
+                                            EntityId grabbed, const HitPolicy &policy);
+
+    // Moves the target to `cursor` and re-solves, warm-started from the last
+    // pose. Cheap by design: this runs once per frame.
+    //
+    // diagnoseResistance: run the extra hard-pin solve that names the resisting
+    // constraints. The caller throttles this — it roughly doubles the cost, and
+    // the answer only changes when the user pushes further.
+    DragUpdate update(const Document &doc, const Viewport &viewport, Point cursor,
+                      bool diagnoseResistance);
+
+    // The in-flight pose, for rendering and hit testing mid-gesture.
+    const SolveContext &context() const { return context_; }
+    EntityId grabbed() const { return grabbed_; }
+
+    // The commands that make the current pose permanent. Empty when nothing
+    // moved, so an abandoned or no-op drag journals nothing.
+    std::vector<Command> commit(const Document &doc) const;
+
+private:
+    SolveContext context_;
+    EntityId grabbed_;
+    HitPolicy policy_;
+    uint64_t generation_ = 0;
+};
+
+}  // namespace paroculus

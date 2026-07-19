@@ -87,6 +87,8 @@ add_library(paroculus-core STATIC
     src/core/parameters.cpp
     src/core/parameters.h
     src/core/persist.cpp
+    src/core/pose.cpp
+    src/core/pose.h
     src/core/persist.h
     src/core/records.cpp
     src/core/records.h
@@ -141,8 +143,18 @@ target_link_libraries(paroculus-render PUBLIC paroculus-core PRIVATE PkgConfig::
 # input events and emits document commands, which is what makes gesture scripts
 # runnable headlessly in CI.
 add_library(paroculus-interact STATIC
+    src/interact/drag.cpp
+    src/interact/drag.h
     src/interact/events.cpp
     src/interact/events.h
+    src/interact/hit.cpp
+    src/interact/hit.h
+    src/interact/policies.cpp
+    src/interact/policies.h
+    src/interact/selection.cpp
+    src/interact/selection.h
+    src/interact/session.cpp
+    src/interact/session.h
 )
 target_link_libraries(paroculus-interact PUBLIC paroculus-core paroculus-solve)
 
@@ -206,6 +218,10 @@ if(PAROCULUS_TESTS)
         tests/unit/core_units.cpp
         tests/unit/interact_events.cpp
         tests/unit/render_view.cpp
+        tests/unit/core_pose.cpp
+        tests/unit/interact_hit.cpp
+        tests/unit/interact_selection.cpp
+        tests/gestures/corpus.cpp
         tests/unit/solve_context.cpp
         tests/unit/solve_demosketch.cpp
         tests/semantics/catalogue.cpp

@@ -1,7 +1,12 @@
-// The single Qt-aware seam. Everything it consumes — solve, render — is
-// toolkit-agnostic, and the renderer sits behind a paint interface so the
-// QQuickPaintedItem shortcut can be swapped for the GPU path without anything
-// below shell noticing.
+// The single Qt-aware seam.
+//
+// Everything it consumes — interact, render — is toolkit-agnostic. Its whole
+// job is translation: QEvents become abstract PointerEvents in both spaces, and
+// the renderer paints into a buffer it owns. Nothing here decides anything about
+// interaction; the session does, and a script can drive the session identically.
+//
+// View state — pan and zoom — is owned here, per the seam layout: core owns the
+// transform *type*, the shell owns what it currently is.
 #pragma once
 
 #include <QImage>
@@ -9,30 +14,61 @@
 #include <QString>
 #include <QtQml/qqmlregistration.h>
 
-#include "core/solution.h"
+#include <memory>
+
+#include "core/undo.h"
+#include "interact/session.h"
 
 class SketchView : public QQuickPaintedItem {
     Q_OBJECT
     QML_ELEMENT
-    Q_PROPERTY(qreal ratio READ ratio WRITE setRatio NOTIFY solutionChanged)
-    Q_PROPERTY(QString status READ status NOTIFY solutionChanged)
+    Q_PROPERTY(QString status READ status NOTIFY changed)
+    Q_PROPERTY(QString selectionText READ selectionText NOTIFY changed)
 
 public:
     explicit SketchView(QQuickItem *parent = nullptr);
+    ~SketchView() override;
 
     void paint(QPainter *painter) override;
 
-    qreal ratio() const { return ratio_; }
-    void setRatio(qreal ratio);
     QString status() const;
+    QString selectionText() const;
+
+    Q_INVOKABLE void undo();
+    Q_INVOKABLE void redo();
+    Q_INVOKABLE void deleteSelection();
+    Q_INVOKABLE void resetView();
 
 signals:
-    void solutionChanged();
+    void changed();
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void hoverMoveEvent(QHoverEvent *event) override;
+    void wheelEvent(QWheelEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
+    void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override;
 
 private:
-    void resolve();
+    // Rebuilds the viewport from the current pan/zoom and item size, and hands
+    // it to the session. Called whenever either changes.
+    void syncViewport();
+    paroculus::PointerEvent translate(const QPointF &position, Qt::MouseButtons buttons,
+                                      Qt::KeyboardModifiers modifiers,
+                                      paroculus::PointerAction action) const;
 
-    qreal ratio_ = 1.618;  // golden section, len(A)/len(B)
-    paroculus::Solution solution_;
+    paroculus::Document document_;
+    paroculus::UndoJournal journal_;
+    std::unique_ptr<paroculus::Session> session_;
+
+    // View state: a pan in pixels and a zoom factor over the fitted framing.
+    // Kept here rather than in interact because what the view currently is, is
+    // a shell concern; how to convert through it is core's.
+    Eigen::Vector2d pan_ = Eigen::Vector2d::Zero();
+    double zoom_ = 1.0;
+    paroculus::ViewTransform base_;
+
     QImage surface_;  // retained so Skia is not handed a fresh buffer each frame
 };

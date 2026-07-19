@@ -2,6 +2,7 @@
 
 #include <slvs.h>
 
+#include <algorithm>
 #include <chrono>
 #include <unordered_map>
 
@@ -202,6 +203,10 @@ void translate(const Document &doc, const SolveContext &context, const SolveOpti
         const ConstraintRecord &c = *record;
         if(!c.driving) continue;  // a reference measurement reads, it never drives
         if(!fullyInside(c, context)) continue;
+        if(c.id.valid() && std::find(options.suppressed.begin(), options.suppressed.end(),
+                                     c.id) != options.suppressed.end()) {
+            continue;
+        }
 
         const ConstraintKindInfo &info = constraintInfo(c.kind);
         Slvs_Constraint sc{};
