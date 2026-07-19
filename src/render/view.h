@@ -32,6 +32,13 @@ struct Adornment {
     bool marqueeActive = false;
     Eigen::Vector2d marqueeFrom = Eigen::Vector2d::Zero();
     Eigen::Vector2d marqueeTo = Eigen::Vector2d::Zero();
+
+    // The rubber band a creation tool is showing, in document space, because it
+    // is geometry-to-be rather than an adorner. Preview shows truth: this is
+    // where commit would put it, so it is drawn as the thing it will become.
+    bool ghostActive = false;
+    Point ghostFrom;
+    Point ghostTo;
 };
 
 // A framing that fits everything the pose can place, with a margin. Stage 3's

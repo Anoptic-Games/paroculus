@@ -216,6 +216,10 @@ void SketchView::keyPressEvent(QKeyEvent *event) {
             // indexes stay in step.
             session_->handle((event->modifiers() & Qt::ShiftModifier) ? Key::Redo : Key::Undo);
             break;
+        // Tool activation is a keystroke until the registry projects it into a
+        // surface, which is the next item in this stage.
+        case Qt::Key_L: session_->setTool(paroculus::ToolKind::Line); break;
+        case Qt::Key_V: session_->setTool(paroculus::ToolKind::Select); break;
         default: QQuickPaintedItem::keyPressEvent(event); return;
     }
     syncViewport();
@@ -277,6 +281,17 @@ QString SketchView::status() const {
                     .arg(scriptStep_)
                     .arg(script_.steps.size());
     }
+    if(p.tool != paroculus::ToolKind::Select) {
+        // The fixed strip, as a line of text until there is a surface to put it
+        // in. Live: it tracks the placement in flight rather than the last one.
+        text += QString::fromLatin1(paroculus::toolName(p.tool));
+        for(const paroculus::ToolParameter &parameter : p.toolParameters) {
+            text += QStringLiteral("  %1 %2")
+                        .arg(QString::fromLatin1(parameter.name))
+                        .arg(parameter.value, 0, 'f', 2);
+        }
+        text += QStringLiteral("  ·  ");
+    }
     text += QStringLiteral("%1  ·  dof: %2  ·  solve: %3 ms  ·  zoom: %4x")
                        .arg(QString::fromLatin1(paroculus::statusName(p.status)))
                        .arg(p.dof)
@@ -334,6 +349,9 @@ void SketchView::paint(QPainter *painter) {
     adornment.marqueeActive = p.marqueeActive;
     adornment.marqueeFrom = p.marqueeFrom;
     adornment.marqueeTo = p.marqueeTo;
+    adornment.ghostActive = p.toolPreview.active;
+    adornment.ghostFrom = p.toolPreview.from;
+    adornment.ghostTo = p.toolPreview.to;
 
     paroculus::renderDocument(session_->pose(), session_->viewport().view, adornment,
                               surface_.bits(), device.width(), device.height(),

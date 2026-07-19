@@ -157,6 +157,8 @@ add_library(paroculus-interact STATIC
     src/interact/selection.h
     src/interact/session.cpp
     src/interact/session.h
+    src/interact/tools.cpp
+    src/interact/tools.h
 )
 target_link_libraries(paroculus-interact PUBLIC paroculus-core paroculus-solve)
 
@@ -226,6 +228,7 @@ if(PAROCULUS_TESTS)
         tests/unit/interact_hit.cpp
         tests/unit/interact_selection.cpp
         tests/unit/interact_script.cpp
+        tests/unit/interact_tools.cpp
         tests/gestures/corpus.cpp
         tests/unit/solve_context.cpp
         tests/unit/solve_demosketch.cpp

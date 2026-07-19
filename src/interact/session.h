@@ -13,11 +13,14 @@
 #include <optional>
 #include <vector>
 
+#include <memory>
+
 #include "core/undo.h"
 #include "interact/drag.h"
 #include "interact/events.h"
 #include "interact/hit.h"
 #include "interact/selection.h"
+#include "interact/tools.h"
 
 namespace paroculus {
 
@@ -45,6 +48,13 @@ struct Presentation {
     // asking permission.
     size_t deletedEntities = 0;
     size_t deletedRelations = 0;
+
+    // The tool in force, and what it wants shown. Select is the home state, so
+    // this reads Select whenever no creation tool is running.
+    ToolKind tool = ToolKind::Select;
+    ToolPreview toolPreview;
+    // The fixed strip's contents, live. Empty while no tool is running.
+    std::vector<ToolParameter> toolParameters;
 
     double solveMicroseconds = 0.0;
 
@@ -86,6 +96,12 @@ public:
 
     HitPolicy &policy() { return policy_; }
 
+    // Activates a creation tool, or returns to selection with ToolKind::Select.
+    // Switching tools abandons whatever the previous one had in flight, which
+    // is the same thing Esc would have done.
+    void setTool(ToolKind kind);
+    ToolKind tool() const { return presentation_.tool; }
+
     // Attaches a recorder, or detaches with nullptr. Every event the session is
     // asked to handle from here on is captured, which is what makes a recording
     // a recording of the session rather than of the shell's interpretation of
@@ -96,6 +112,10 @@ public:
     void setRecorder(ScriptRecorder *recorder) { recorder_ = recorder; }
 
 private:
+    // Applies whatever a tool asked for, and tells the tool only if it landed.
+    void runTool(ToolOutput output);
+    void refreshToolPresentation();
+
     void beginDrag(EntityId grabbed, Point cursor);
     void updateDrag(Point cursor);
     void endDrag();
@@ -115,6 +135,9 @@ private:
     Viewport viewport_;
 
     ScriptRecorder *recorder_ = nullptr;
+    // Null in the home state. Creation tools are shallow, so there is at most
+    // one and it never nests.
+    std::unique_ptr<Tool> tool_;
 
     std::optional<DragSession> drag_;
     // Where the press landed, so a drag can be told from a click by distance.

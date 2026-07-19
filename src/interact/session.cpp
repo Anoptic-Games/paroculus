@@ -63,9 +63,74 @@ void Session::refresh() {
     index_.rebuild(pose());
 }
 
+void Session::setTool(ToolKind kind) {
+    if(recorder_ != nullptr) recorder_->tool(kind);
+    // Switching abandons what the previous tool had in flight. Nothing was
+    // committed while it was in flight, so there is nothing to roll back.
+    tool_.reset();
+    if(kind == ToolKind::Line) tool_ = std::make_unique<LineTool>();
+    presentation_.tool = kind;
+    // A creation tool is verb-noun and owns the pointer, so a selection left
+    // over from before would only be a set the user cannot act on without
+    // leaving the tool first.
+    if(tool_) selection_.clear();
+    refreshToolPresentation();
+}
+
+void Session::refreshToolPresentation() {
+    if(!tool_) {
+        presentation_.toolPreview = ToolPreview();
+        presentation_.toolParameters.clear();
+        return;
+    }
+    presentation_.toolPreview = tool_->preview();
+    const std::span<const ToolParameter> parameters = tool_->parameters();
+    presentation_.toolParameters.assign(parameters.begin(), parameters.end());
+}
+
+void Session::runTool(ToolOutput output) {
+    if(output.commands.empty()) {
+        refreshToolPresentation();
+        return;
+    }
+    // One placement is one undo step. The tool is told it landed only if the
+    // journal accepted every command, so a refused step cannot leave the tool
+    // chaining off geometry the document does not have.
+    const CommandError error =
+        journal_->applyStep(*doc_, std::move(output.label), std::move(output.commands));
+    if(error == CommandError::None) {
+        tool_->committed();
+        refresh();
+    }
+    refreshToolPresentation();
+}
+
 void Session::handle(const PointerEvent &event) {
     if(recorder_ != nullptr) recorder_->pointer(event);
     presentation_.rippledOffScreen = false;
+
+    if(tool_) {
+        // A creation tool owns the pointer outright: no hit testing, no
+        // marquee, no drag. Verb-noun means the noun does not exist yet, so
+        // there is nothing under the cursor for the pointer to mean instead.
+        //
+        // The placement is the raw cursor for now. The snap engine lands
+        // between here and the tool, and because preview and commit both read
+        // this one position, what the ghost shows is what commit will use.
+        switch(event.action) {
+            case PointerAction::Press:
+                if(event.button == Button::Left) runTool(tool_->press(*doc_, event.document));
+                return;
+            case PointerAction::Move:
+                tool_->move(*doc_, event.document);
+                refreshToolPresentation();
+                return;
+            case PointerAction::Release:
+                return;
+        }
+        return;
+    }
+
     const Pose current = pose();
 
     switch(event.action) {
@@ -148,6 +213,14 @@ void Session::handle(Key key, Modifier modifiers) {
     presentation_.rippledOffScreen = false;
     switch(key) {
         case Key::Escape:
+            // Inside a tool, Esc first ends what is in flight and only then
+            // leaves the tool. Two presses get home from anywhere, and
+            // selection is where home is.
+            if(tool_) {
+                if(!tool_->escape()) setTool(ToolKind::Select);
+                refreshToolPresentation();
+                return;
+            }
             // Esc ascends a level of depth, and clears once at the home state.
             // Selection is where Esc always eventually lands.
             if(!selection_.ascend(*doc_, topology_)) selection_.clear();

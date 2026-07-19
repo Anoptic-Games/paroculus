@@ -37,6 +37,7 @@
 #include "core/document.h"
 #include "interact/drag.h"
 #include "interact/events.h"
+#include "interact/tools.h"
 
 namespace paroculus {
 
@@ -47,8 +48,13 @@ enum class Key : uint8_t;
 // line-per-step and a parser reading one line fills one of these; the kind
 // says which fields carry meaning.
 struct ScriptStep {
-    enum class Kind : uint8_t { Viewport, Pointer, Key };
+    enum class Kind : uint8_t { Viewport, Pointer, Key, Tool };
     Kind kind = Kind::Pointer;
+
+    // Kind::Tool. Without this a drawing session could not be recorded at all:
+    // the same click means "select this" or "place a point here" depending on
+    // which tool is in force, so the tool changes are part of the input.
+    ToolKind tool = ToolKind::Select;
 
     // Kind::Viewport. The view in force from this step onward, so a script that
     // pans or zooms mid-session replays through the same transforms it was
@@ -114,6 +120,7 @@ public:
     void viewport(const Viewport &viewport);
     void pointer(const PointerEvent &event);
     void key(Key key, Modifier modifiers);
+    void tool(ToolKind kind);
 
     const std::vector<ScriptStep> &steps() const { return steps_; }
     void clear() { steps_.clear(); }

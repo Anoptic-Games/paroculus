@@ -21,6 +21,9 @@ constexpr SkColor SELECTED = SkColorSetRGB(0xff, 0xa8, 0x5c);
 constexpr SkColor HOVERED = SkColorSetRGB(0xff, 0xe0, 0xa0);
 constexpr SkColor RESISTING = SkColorSetRGB(0xff, 0x5c, 0x5c);
 constexpr SkColor MARQUEE = SkColorSetARGB(0x40, 0x6e, 0xc7, 0xff);
+// The ghost reads as the geometry it will become, dimmed — not as a different
+// kind of thing. What the user sees mid-gesture is what commit produces.
+constexpr SkColor GHOST = SkColorSetARGB(0x99, 0x6e, 0xc7, 0xff);
 
 // Adorners are screen-space and do not scale with zoom: a handle is a handle at
 // every magnification, which is also what makes the pixel hit radii honest.
@@ -198,6 +201,18 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
 
         dot.setColor(colour);
         canvas.drawCircle(toPixel(*p), isSelected ? SELECTED_POINT_RADIUS : POINT_RADIUS, dot);
+    }
+
+    // The tool's rubber band, over the geometry and under the marquee. Drawn
+    // last among document-space things so it is never hidden by what it will
+    // sit alongside.
+    if(adornment.ghostActive) {
+        stroke.setColor(GHOST);
+        stroke.setStrokeWidth(STROKE_WIDTH);
+        canvas.drawLine(toPixel(adornment.ghostFrom), toPixel(adornment.ghostTo), stroke);
+        dot.setColor(GHOST);
+        canvas.drawCircle(toPixel(adornment.ghostFrom), POINT_RADIUS, dot);
+        canvas.drawCircle(toPixel(adornment.ghostTo), POINT_RADIUS, dot);
     }
 
     if(adornment.marqueeActive) {

@@ -228,6 +228,10 @@ std::string serializeScript(const GestureScript &script) {
                 out += "key name=";
                 out += keyName(static_cast<Key>(s.key));
                 break;
+            case ScriptStep::Kind::Tool:
+                out += "tool name=";
+                out += toolName(s.tool);
+                break;
         }
         const std::string mods = modifierNames(s.modifiers);
         if(!mods.empty()) out += " mods=" + mods;
@@ -341,6 +345,24 @@ ScriptLoadResult parseScript(std::string_view text, GestureScript &out) {
                 }
             }
             if(!haveScreen) return fail("pointer step without a position", lineNumber);
+        } else if(kind == "tool") {
+            step.kind = ScriptStep::Kind::Tool;
+            bool haveName = false;
+            for(size_t i = 1; i < tokens.size(); i++) {
+                const auto f = field(tokens[i]);
+                if(!f) return fail("malformed field", lineNumber);
+                const auto [key, value] = *f;
+                if(key != "name") continue;
+                // Refused rather than silently falling back to select: a script
+                // that quietly replayed a different tool would place different
+                // geometry and look like a bug in the tool, not in the file.
+                if(value != "select" && value != "line") {
+                    return fail("unknown tool", lineNumber);
+                }
+                step.tool = toolFromName(value);
+                haveName = true;
+            }
+            if(!haveName) return fail("tool step without a name", lineNumber);
         } else if(kind == "key") {
             step.kind = ScriptStep::Kind::Key;
             bool haveName = false;
@@ -392,6 +414,9 @@ void applyStep(Session &session, const ScriptStep &step) {
         case ScriptStep::Kind::Key:
             session.handle(static_cast<Key>(step.key), step.modifiers);
             return;
+        case ScriptStep::Kind::Tool:
+            session.setTool(step.tool);
+            return;
     }
 }
 
@@ -413,6 +438,13 @@ void ScriptRecorder::pointer(const PointerEvent &event) {
     step.button = event.button;
     step.modifiers = event.modifiers;
     step.screen = event.screen;
+    steps_.push_back(step);
+}
+
+void ScriptRecorder::tool(ToolKind kind) {
+    ScriptStep step;
+    step.kind = ScriptStep::Kind::Tool;
+    step.tool = kind;
     steps_.push_back(step);
 }
 
