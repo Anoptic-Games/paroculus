@@ -6,7 +6,8 @@
 // interaction; the session does, and a script can drive the session identically.
 //
 // View state — pan and zoom — is owned here, per the seam layout: core owns the
-// transform *type*, the shell owns what it currently is.
+// transform *type*, render owns how a framing and a pan and zoom compose into
+// one, and the shell owns what they currently are.
 #pragma once
 
 #include <QImage>
@@ -20,6 +21,7 @@
 #include "core/undo.h"
 #include "interact/script.h"
 #include "interact/session.h"
+#include "render/view.h"
 
 class SketchView : public QQuickPaintedItem {
     Q_OBJECT
@@ -59,7 +61,8 @@ protected:
 
 private:
     // Rebuilds the viewport from the current pan/zoom and item size, and hands
-    // it to the session. Called whenever either changes.
+    // it to the session. Called whenever either changes — and only then: it
+    // reads no document state, so editing the sketch can never move the view.
     void syncViewport();
     // Keeps the backing texture at the panel's true resolution.
     void syncTextureSize();
@@ -81,12 +84,15 @@ private:
     paroculus::UndoJournal journal_;
     std::unique_ptr<paroculus::Session> session_;
 
-    // View state: a pan in pixels and a zoom factor over the fitted framing.
-    // Kept here rather than in interact because what the view currently is, is
-    // a shell concern; how to convert through it is core's.
-    Eigen::Vector2d pan_ = Eigen::Vector2d::Zero();
-    double zoom_ = 1.0;
-    paroculus::ViewTransform base_;
+    // What the view currently is. Kept here rather than in interact because
+    // that is a shell concern; how the parts compose into a transform is
+    // render's, beside the fitting it composes over.
+    paroculus::ViewState view_;
+    // A middle-button drag in flight. It never reaches the session: a pan is a
+    // change of view, not an edit, and what the session sees of it is the
+    // viewport it produces.
+    bool panning_ = false;
+    Eigen::Vector2d panFrom_ = Eigen::Vector2d::Zero();
 
     // Script playback state. While a script is running the view is a spectator:
     // it must not re-frame the viewport, because the script carries the one it

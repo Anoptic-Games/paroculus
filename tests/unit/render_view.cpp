@@ -38,6 +38,21 @@ uint32_t at(const std::vector<uint32_t> &pixels, const Eigen::Vector2d &p) {
     return pixels[static_cast<size_t>(y) * W + x];
 }
 
+// Whether anything was painted within a pixel of `p`. A one-pixel non-antialiased
+// line lands on one side or the other of a coordinate depending on how the
+// rasteriser rounds, which is not what any of these tests are about.
+bool paintedNear(const std::vector<uint32_t> &pixels, const Eigen::Vector2d &p) {
+    for(int dy = -1; dy <= 1; dy++) {
+        for(int dx = -1; dx <= 1; dx++) {
+            const int x = static_cast<int>(p.x()) + dx;
+            const int y = static_cast<int>(p.y()) + dy;
+            if(x < 0 || y < 0 || x >= W || y >= H) continue;
+            if(pixels[static_cast<size_t>(y) * W + x] != BACKGROUND) return true;
+        }
+    }
+    return false;
+}
+
 // 1:1 with the origin at the viewport centre and Y flipped, so a fixture can
 // place geometry where it wants it without reasoning about the demo's framing.
 ViewTransform centredView() {
@@ -90,7 +105,8 @@ TEST_CASE("the raster clears the whole surface") {
     Document doc;
     const Pose pose = settledDemo(doc);
     const std::vector<uint32_t> pixels = paint(pose, defaultView(W, H));
-    // A corner well away from geometry and off the 20-unit grid.
+    // A corner well away from geometry. No grid: the default adornment names
+    // no step, and render no longer keeps one of its own.
     CHECK(pixels[2u * W + 2u] == BACKGROUND);
 }
 
@@ -168,8 +184,7 @@ TEST_CASE("a marquee is drawn in screen space") {
     const std::vector<uint32_t> pixels = paint(pose, view, adornment);
     // Inside the band, and away from any geometry.
     CHECK(at(pixels, Eigen::Vector2d(30.0, 30.0)) != BACKGROUND);
-    // Outside it, background survives — sampled off the 20-unit grid, which
-    // now covers the whole viewport rather than a fixed range.
+    // Outside it, background survives.
     CHECK(at(pixels, Eigen::Vector2d(210.0, 20.0)) == BACKGROUND);
 }
 
@@ -354,4 +369,118 @@ TEST_CASE("every drawn kind takes the hover and resistance tints") {
     Adornment resisting;
     resisting.resisting = {onCircle};
     CHECK(warmPixels(paint(pose, view, resisting)) > 0u);
+}
+
+TEST_CASE("the drawn grid is the placement grid") {
+    // Render used to hold its own 20.0 while SnapPolicy held the step placement
+    // actually lands on. Two plausible numbers, and changing the policy made the
+    // drawn grid lie about where a click goes — silently, since neither looks
+    // wrong on its own.
+    Document doc;
+    const ViewTransform view = centredView();
+
+    // Nothing said, nothing drawn: a caller that supplies no step gets no grid
+    // rather than a guess at someone else's policy.
+    for(uint32_t p : paint(Pose(doc), view)) CHECK(p == BACKGROUND);
+
+    Adornment adornment;
+    adornment.gridStep = 25.0;
+    const std::vector<uint32_t> drawn = paint(Pose(doc), view, adornment);
+
+    // A line where the step says placement lands.
+    CHECK(paintedNear(drawn, view.toScreen(Point{25.0, 5.0})));
+    CHECK(paintedNear(drawn, view.toScreen(Point{5.0, 25.0})));
+    // And none where the render-side constant used to put one.
+    CHECK(!paintedNear(drawn, view.toScreen(Point{20.0, 5.0})));
+}
+
+TEST_CASE("a pan translates the view by exactly its pixels") {
+    ViewState state;
+    state.base = centredView();
+    // Under a zoom, so the assertion is that the pan is not scaled by it. At
+    // 1:1 a pan applied anywhere in the composition would look the same.
+    state.zoom = 2.0;
+    const Point p{30.0, -10.0};
+    const Eigen::Vector2d before = state.transform(W, H).toScreen(p);
+
+    state.pan = Eigen::Vector2d(13.0, -7.0);
+    const Eigen::Vector2d after = state.transform(W, H).toScreen(p);
+
+    // Pan is the outermost term, which is the property the anchored zoom below
+    // is built on: it may add a correction and know it will not be rescaled.
+    CHECK((after - before).x() == doctest::Approx(13.0));
+    CHECK((after - before).y() == doctest::Approx(-7.0));
+}
+
+TEST_CASE("zoom holds the point under the cursor") {
+    // Viewport-centre anchoring slides whatever is being examined away exactly
+    // as it is magnified, so reaching it costs a zoom and then a pan.
+    ViewState state;
+    state.base = centredView();
+
+    // Well off centre, or a centre-anchored zoom would pass by coincidence.
+    const Eigen::Vector2d cursor(W * 0.25, H * 0.8);
+    const Point anchor = state.transform(W, H).toDocument(cursor);
+
+    state.zoomAt(cursor, 2.5, W, H);
+    CHECK(state.zoom == doctest::Approx(2.5));
+    const Eigen::Vector2d landed = state.transform(W, H).toScreen(anchor);
+    CHECK(landed.x() == doctest::Approx(cursor.x()));
+    CHECK(landed.y() == doctest::Approx(cursor.y()));
+
+    // Zooming back out returns it too, so the anchoring composes rather than
+    // accumulating an error the user pays for over a scroll.
+    state.zoomAt(cursor, 1.0, W, H);
+    const Eigen::Vector2d back = state.transform(W, H).toScreen(anchor);
+    CHECK(back.x() == doctest::Approx(cursor.x()));
+    CHECK(back.y() == doctest::Approx(cursor.y()));
+}
+
+TEST_CASE("a framed view is not re-framed by what the document grows") {
+    // syncViewport re-fitted the framing to the geometry's bounding box on every
+    // call, so drawing — or merely confirming an offer — reframed the window
+    // under the cursor mid-gesture.
+    Document doc;
+    const EntityId a = addPoint(doc, -10.0, -10.0);
+    addSegment(doc, a, addPoint(doc, 10.0, 10.0));
+
+    ViewState state;
+    state.frameOnce(Pose(doc), W, H, true);
+    REQUIRE(state.framed);
+    const Eigen::Vector2d before = state.transform(W, H).toScreen(Point{0.0, 0.0});
+
+    // Geometry far outside the original bounding box: a re-fit would zoom out
+    // to hold it, moving everything the user was looking at.
+    addPoint(doc, 4000.0, 4000.0);
+    state.frameOnce(Pose(doc), W, H, true);
+    const Eigen::Vector2d after = state.transform(W, H).toScreen(Point{0.0, 0.0});
+    CHECK(after.x() == doctest::Approx(before.x()));
+    CHECK(after.y() == doctest::Approx(before.y()));
+
+    // Clearing the latch is how resetView asks to be re-framed, and it is the
+    // only thing that does.
+    state.framed = false;
+    state.frameOnce(Pose(doc), W, H, true);
+    const Eigen::Vector2d reframed = state.transform(W, H).toScreen(Point{0.0, 0.0});
+    CHECK(reframed.x() != doctest::Approx(before.x()));
+}
+
+TEST_CASE("a provisional framing does not latch") {
+    // A shell item has no size during construction. A framing fitted against
+    // 1x1 must not become the one the user keeps.
+    Document doc;
+    addPoint(doc, 0.0, 0.0);
+    addPoint(doc, 100.0, 100.0);
+
+    ViewState state;
+    state.frameOnce(Pose(doc), 1, 1, false);
+    CHECK(!state.framed);
+
+    state.frameOnce(Pose(doc), W, H, true);
+    CHECK(state.framed);
+    // Fitted to the real viewport and not to the 1x1 one it saw first, which
+    // would have crushed the whole document into the top-left pixel.
+    const Eigen::Vector2d corner = state.transform(W, H).toScreen(Point{100.0, 100.0});
+    CHECK(corner.x() > W * 0.5);
+    CHECK(corner.x() < W);
 }

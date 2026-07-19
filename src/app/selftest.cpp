@@ -6,6 +6,7 @@
 #include <cstdio>
 
 #include "core/pose.h"
+#include "interact/policies.h"
 #include "render/view.h"
 #include "solve/demosketch.h"
 #include "solve/solve.h"
@@ -68,7 +69,12 @@ int selftest() {
     const int W = 400, H = 300;
     QImage surface(W, H, QImage::Format_ARGB32_Premultiplied);
     surface.fill(Qt::transparent);
-    renderDocument(pose, defaultView(W, H), Adornment{}, surface.bits(), W, H,
+    // The grid step comes from the snap policy here for the same reason it does
+    // in the shell: there is one number, and this is meant to be the shell's
+    // painter rather than a parallel one.
+    Adornment adornment;
+    adornment.gridStep = SnapPolicy{}.gridStep;
+    renderDocument(pose, defaultView(W, H), adornment, surface.bits(), W, H,
                    static_cast<size_t>(surface.bytesPerLine()));
 
     const QRgb background = surface.pixel(2, 2);

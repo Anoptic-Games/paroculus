@@ -134,19 +134,12 @@ void SketchView::syncViewport() {
     const int w = qMax(1, qRound(width()));
     const int h = qMax(1, qRound(height()));
 
-    const paroculus::Pose pose = session_->pose();
-    base_ = paroculus::fitView(pose, w, h);
-
-    // Pan and zoom compose on top of the fitted framing, in screen space, so
-    // zooming keeps the viewport centre put rather than drifting toward the
-    // document origin.
-    Eigen::Affine2d m = Eigen::Affine2d::Identity();
-    m.translate(Eigen::Vector2d(w * 0.5, h * 0.5) + pan_);
-    m.scale(Eigen::Vector2d(zoom_, zoom_));
-    m.translate(-Eigen::Vector2d(w * 0.5, h * 0.5));
+    // The item has no size during construction, so the first framings are
+    // provisional and only a real one latches.
+    view_.frameOnce(session_->pose(), w, h, width() > 0.0 && height() > 0.0);
 
     paroculus::Viewport viewport;
-    viewport.view = paroculus::ViewTransform(m * base_.matrix());
+    viewport.view = view_.transform(w, h);
     viewport.width = w;
     viewport.height = h;
     session_->setViewport(viewport);
@@ -178,6 +171,14 @@ PointerEvent SketchView::translate(const QPointF &position, Qt::MouseButtons but
 
 void SketchView::mousePressEvent(QMouseEvent *event) {
     forceActiveFocus();
+    // The middle button pans and is not forwarded. Handing it to the session
+    // too would make one gesture both a view change and whatever the session
+    // made of a press it has no use for.
+    if(event->button() == Qt::MiddleButton) {
+        panning_ = true;
+        panFrom_ = Eigen::Vector2d(event->position().x(), event->position().y());
+        return;
+    }
     session_->handle(translate(event->position(), event->button(), event->modifiers(),
                                PointerAction::Press));
     update();
@@ -197,6 +198,17 @@ void SketchView::mouseDoubleClickEvent(QMouseEvent *event) {
 }
 
 void SketchView::mouseMoveEvent(QMouseEvent *event) {
+    if(panning_) {
+        // Pixel for pixel, because a pan is a hand on the paper: the document
+        // point under the cursor is the one that stays under it.
+        const Eigen::Vector2d at(event->position().x(), event->position().y());
+        view_.pan += at - panFrom_;
+        panFrom_ = at;
+        syncViewport();
+        update();
+        emit changed();
+        return;
+    }
     session_->handle(translate(event->position(), event->buttons(), event->modifiers(),
                                PointerAction::Move));
     update();
@@ -204,6 +216,10 @@ void SketchView::mouseMoveEvent(QMouseEvent *event) {
 }
 
 void SketchView::mouseReleaseEvent(QMouseEvent *event) {
+    if(panning_) {
+        if(event->button() == Qt::MiddleButton) panning_ = false;
+        return;
+    }
     session_->handle(translate(event->position(), event->button(), event->modifiers(),
                                PointerAction::Release));
     update();
@@ -217,9 +233,22 @@ void SketchView::hoverMoveEvent(QHoverEvent *event) {
     emit changed();
 }
 
+// Anchored on the cursor: the document point under it stays under it. Zooming
+// toward the viewport centre instead means the thing being examined slides away
+// exactly as it is magnified, so reaching it takes a zoom and then a pan.
+//
+// Pan is the composition's outermost term, so holding a point fixed is the
+// difference between where it lands before and after the zoom — a subtraction
+// rather than a second way of converting between the two spaces.
 void SketchView::wheelEvent(QWheelEvent *event) {
     const double steps = event->angleDelta().y() / 120.0;
-    zoom_ = qBound(0.05, zoom_ * std::pow(1.15, steps), 40.0);
+    const double previous = view_.zoom;
+    view_.zoomAt(Eigen::Vector2d(event->position().x(), event->position().y()),
+                 qBound(0.05, view_.zoom * std::pow(1.15, steps), 40.0),
+                 qMax(1, qRound(width())), qMax(1, qRound(height())));
+    // At the clamp nothing moved, and pushing an unchanged viewport would write
+    // a step into a recording of a session in which nothing happened.
+    if(view_.zoom == previous) return;
     syncViewport();
     update();
     emit changed();
@@ -289,7 +318,9 @@ void SketchView::keyPressEvent(QKeyEvent *event) {
             break;
         }
     }
-    syncViewport();
+    // No syncViewport: a keystroke edits the sketch, and the view is not a
+    // function of the sketch. It used to be, which is how confirming an offer
+    // mid-chain came to re-frame the window under the cursor.
     update();
     emit changed();
 }
@@ -310,28 +341,27 @@ void SketchView::itemChange(ItemChange change, const ItemChangeData &value) {
 
 void SketchView::undo() {
     session_->handle(Key::Undo);
-    syncViewport();
     update();
     emit changed();
 }
 
 void SketchView::redo() {
     session_->handle(Key::Redo);
-    syncViewport();
     update();
     emit changed();
 }
 
 void SketchView::deleteSelection() {
     session_->handle(Key::Delete);
-    syncViewport();
     update();
     emit changed();
 }
 
+// The one way back to a fitted framing, and the only thing that re-derives the
+// view from the document. Nothing else may: a view that re-frames itself is a
+// view the user cannot keep.
 void SketchView::resetView() {
-    pan_ = Eigen::Vector2d::Zero();
-    zoom_ = 1.0;
+    view_ = paroculus::ViewState{};
     syncViewport();
     update();
     emit changed();
@@ -395,7 +425,7 @@ QString SketchView::status() const {
                        .arg(QString::fromLatin1(paroculus::statusName(p.status)))
                        .arg(p.dof)
                        .arg(p.solveMicroseconds / 1000.0, 0, 'f', 2)
-                       .arg(zoom_, 0, 'f', 2);
+                       .arg(view_.zoom, 0, 'f', 2);
     if(p.saturated) {
         text += QStringLiteral("  ·  resisting: %1").arg(p.resisting.size());
     }
@@ -449,6 +479,11 @@ void SketchView::paint(QPainter *painter) {
     adornment.marqueeFrom = p.marqueeFrom;
     adornment.marqueeTo = p.marqueeTo;
     adornment.glyphs = session_->glyphs();
+    // The drawn grid is the snap policy's, so the lines are where placement
+    // actually lands. Disabled snapping draws none rather than a grid that
+    // nothing falls on.
+    const paroculus::SnapPolicy &snap = session_->snapPolicy();
+    adornment.gridStep = snap.gridEnabled ? snap.gridStep : 0.0;
     adornment.ghostActive = p.toolPreview.active;
     adornment.ghostFrom = p.toolPreview.from;
     adornment.ghostTo = p.toolPreview.to;

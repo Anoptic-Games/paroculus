@@ -139,6 +139,31 @@ ViewTransform fitView(const Pose &pose, int width, int height) {
     return ViewTransform(view);
 }
 
+ViewTransform ViewState::transform(double width, double height) const {
+    const Eigen::Vector2d centre(width * 0.5, height * 0.5);
+    Eigen::Affine2d m = Eigen::Affine2d::Identity();
+    m.translate(centre + pan);
+    m.scale(Eigen::Vector2d(zoom, zoom));
+    m.translate(-centre);
+    return ViewTransform(m * base.matrix());
+}
+
+void ViewState::frameOnce(const Pose &pose, int width, int height, bool sizeIsReal) {
+    if(framed) return;
+    base = fitView(pose, width, height);
+    framed = sizeIsReal;
+}
+
+void ViewState::zoomAt(const Eigen::Vector2d &cursor, double factor, double width,
+                       double height) {
+    if(!(factor > 0.0) || factor == zoom) return;
+    const Point anchor = transform(width, height).toDocument(cursor);
+    zoom = factor;
+    // Where the anchor lands now, against where it must land. Pan is outermost,
+    // so the difference is the correction rather than the start of one.
+    pan += cursor - transform(width, height).toScreen(anchor);
+}
+
 void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment &adornment,
                     uint8_t *pixels, int width, int height, size_t rowBytes,
                     double deviceScale) {
@@ -166,20 +191,21 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
         return SkPoint::Make(static_cast<SkScalar>(v.x()), static_cast<SkScalar>(v.y()));
     };
 
-    // Grid on 20-unit document centres, clipped to whatever the view shows.
+    // The placement grid, on the step the caller was given, clipped to whatever
+    // the view shows.
     SkPaint grid;
     grid.setAntiAlias(false);
     grid.setColor(GRID);
     grid.setStrokeWidth(1.0f);
     const Point topLeft = view.toDocument(Eigen::Vector2d(0.0, 0.0));
     const Point bottomRight = view.toDocument(Eigen::Vector2d(logicalWidth, logicalHeight));
-    const double gridStep = 20.0;
+    const double gridStep = adornment.gridStep;
     const double lowX = std::min(topLeft.x, bottomRight.x);
     const double highX = std::max(topLeft.x, bottomRight.x);
     const double lowY = std::min(topLeft.y, bottomRight.y);
     const double highY = std::max(topLeft.y, bottomRight.y);
     // Bounded so a zoomed-far-out view does not try to draw a million lines.
-    if((highX - lowX) / gridStep < 400.0) {
+    if(gridStep > 0.0 && (highX - lowX) / gridStep < 400.0) {
         for(double x = std::floor(lowX / gridStep) * gridStep; x <= highX; x += gridStep) {
             canvas.drawLine(toPixel({x, lowY}), toPixel({x, highY}), grid);
         }
