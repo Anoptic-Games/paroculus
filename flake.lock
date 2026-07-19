@@ -1,0 +1,66 @@
+{
+  "nodes": {
+    "nix-gl-host": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1732211616,
+        "narHash": "sha256-QZCKJoypcwgS3tDNSWMjlxEBZtOYPW3eXV24rMzKsac=",
+        "owner": "numtide",
+        "repo": "nix-gl-host",
+        "rev": "5269b233f83880a0b433eafe026f0bc0d8f1a4a9",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "nix-gl-host",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1782723713,
+        "narHash": "sha256-oPXCU/SSUokcGaJREHibG1CBX3+s/W7orDWQOZDsEeQ=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "b5aa0fbd538984f6e3d201be0005b4463d8b09f8",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "b5aa0fbd538984f6e3d201be0005b4463d8b09f8",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "nix-gl-host": "nix-gl-host",
+        "nixpkgs": "nixpkgs",
+        "solvespace-src": "solvespace-src"
+      }
+    },
+    "solvespace-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1774563433,
+        "narHash": "sha256-rYXmjHwCsF6kQrV+gsGViTVUJTUbdcilit9PDLAv2aE=",
+        "owner": "solvespace",
+        "repo": "solvespace",
+        "rev": "27b6a080c8b669421bd4d444650c3b8eddec5687",
+        "type": "github"
+      },
+      "original": {
+        "owner": "solvespace",
+        "repo": "solvespace",
+        "rev": "27b6a080c8b669421bd4d444650c3b8eddec5687",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
