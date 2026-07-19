@@ -72,11 +72,23 @@ struct DragUpdate {
 // committed one a single ordinary undo step.
 class DragSession {
 public:
-    // Begins dragging `grabbed`, scoping the solve to its component.
-    // Returns nullopt when the entity cannot be dragged — it is not live, or it
-    // owns no parameters of its own, as a segment does not.
+    // Begins dragging `grabbed`, scoping the solve to the components the drag
+    // touches. Returns nullopt when the grabbed entity cannot be dragged — it is
+    // not live, or it owns no parameters of its own, as a segment does not.
+    //
+    // selection: what else the user is holding. Every param-owning member of it
+    // that lands in this component joins the solver's dragged set, which is what
+    // "multi-selection drags put all selected parameters in the set" means.
+    //
+    // Held is not targeted. Only the grab is asked to be at the cursor; the rest
+    // are marked so the solver favours leaving them where they are, which pushes
+    // what has to give into the geometry the user did not select. Anything
+    // selected outside this component is not in this solve — locality outranks
+    // it, and nothing connects the two.
     static std::optional<DragSession> begin(const Document &doc, const Topology &topology,
-                                            EntityId grabbed, const HitPolicy &policy);
+                                            EntityId grabbed,
+                                            const std::vector<EntityId> &selection,
+                                            const HitPolicy &policy);
 
     // Moves the target to `cursor` and re-solves, warm-started from the last
     // pose. Cheap by design: this runs once per frame.
@@ -90,6 +102,8 @@ public:
     // The in-flight pose, for rendering and hit testing mid-gesture.
     const SolveContext &context() const { return context_; }
     EntityId grabbed() const { return grabbed_; }
+    // What the solver is told the user is holding, grab first.
+    const std::vector<EntityId> &dragged() const { return dragged_; }
 
     // The commands that make the current pose permanent. Empty when nothing
     // moved, so an abandoned or no-op drag journals nothing.
@@ -98,6 +112,9 @@ public:
 private:
     SolveContext context_;
     EntityId grabbed_;
+    // Everything whose parameters the solver is told the user is holding: the
+    // grab, plus whatever else the selection contributes to this component.
+    std::vector<EntityId> dragged_;
     HitPolicy policy_;
     uint64_t generation_ = 0;
 };

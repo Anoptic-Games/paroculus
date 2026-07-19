@@ -42,11 +42,19 @@ struct PointerEvent {
     Eigen::Vector2d screen = Eigen::Vector2d::Zero();  // pixels
     Point document;                                    // document units
 
+    // How many clicks this press is the last of. One for an ordinary press, two
+    // for a double-click, and meaningless on a move or a release.
+    //
+    // Counted by the surface rather than here, because what counts as a double
+    // click is a platform question — the interval and the slop are the window
+    // system's to answer, and the interact layer must not grow a clock.
+    int clicks = 1;
+
     // Fills both spaces from a screen position, so the two can never disagree.
     // screen: viewport pixels. view: the transform in force at event time.
     static PointerEvent at(PointerAction action, const Eigen::Vector2d &screen,
                            const ViewTransform &view, Button button = Button::None,
-                           Modifier modifiers = Modifier::None);
+                           Modifier modifiers = Modifier::None, int clicks = 1);
 };
 
 }  // namespace paroculus

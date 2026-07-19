@@ -110,30 +110,49 @@ std::vector<EntityId> connectedRun(const Document &doc, const Topology &topology
 // Descent replaces each selected shape with its parts. The parts of a segment
 // are its endpoints; the parts of a run are the segments in it.
 bool Selection::descend(const Document &doc, const Topology &topology) {
+    (void)topology;
     if(items_.empty()) return false;
 
-    std::vector<EntityId> parts;
-    bool descended = false;
-
+    // The ladder is shape, then edges, then points — which is what "descends
+    // from a shape to its edges and points" says, and what the level counter
+    // has to mean if ascent is to be its inverse. A shape selected by a click
+    // is its whole connected run, so the first descent is the one that drops
+    // the run's vertices and leaves the edges the user can now pick between.
+    bool haveEdges = false;
+    bool haveLoose = false;
     for(EntityId id : items_) {
         const EntityRecord *e = doc.entities().find(id);
         if(e == nullptr) continue;
-        const size_t points = entityInfo(e->kind).pointCount;
-        if(points == 0) {
-            // A point has no parts; it stays, so a mixed-depth selection keeps
-            // the vertex the user already picked.
-            parts.push_back(id);
-            continue;
+        if(entityInfo(e->kind).pointCount > 0) {
+            haveEdges = true;
+        } else {
+            haveLoose = true;
         }
-        for(size_t i = 0; i < points; i++) parts.push_back(e->points[i]);
-        descended = true;
     }
+    if(!haveEdges) return false;  // points have no parts; the ladder ends here
 
-    if(!descended) return false;
+    std::vector<EntityId> parts;
+    if(haveLoose) {
+        // Shape to edges. The vertices go; what is left is the geometry that
+        // still has parts of its own.
+        for(EntityId id : items_) {
+            const EntityRecord *e = doc.entities().find(id);
+            if(e != nullptr && entityInfo(e->kind).pointCount > 0) parts.push_back(id);
+        }
+    } else {
+        // Edges to points.
+        for(EntityId id : items_) {
+            const EntityRecord *e = doc.entities().find(id);
+            if(e == nullptr) continue;
+            const size_t points = entityInfo(e->kind).pointCount;
+            for(size_t i = 0; i < points; i++) parts.push_back(e->points[i]);
+        }
+    }
+    if(parts.empty()) return false;
+
     const int previous = depth_;
     set(std::move(parts));
     depth_ = previous + 1;
-    (void)topology;
     return true;
 }
 
@@ -141,8 +160,30 @@ bool Selection::ascend(const Document &doc, const Topology &topology) {
     if(depth_ <= 0) return false;
 
     std::vector<EntityId> whole;
-    for(EntityId id : items_) {
-        for(EntityId member : connectedRun(doc, topology, id)) whole.push_back(member);
+    if(depth_ == 1) {
+        // Back to the whole shape, which is the run each item belongs to.
+        for(EntityId id : items_) {
+            for(EntityId member : connectedRun(doc, topology, id)) whole.push_back(member);
+        }
+    } else {
+        // One rung only: points back to the edges built on them. Going straight
+        // to the run here would make ascent skip the level descent stopped at,
+        // so two descents and one ascent would not leave the user in the middle.
+        for(EntityId id : items_) {
+            bool used = false;
+            for(const EntityRecord &e : doc.entities().records()) {
+                const size_t points = entityInfo(e.kind).pointCount;
+                for(size_t i = 0; i < points; i++) {
+                    if(e.points[i] != id) continue;
+                    whole.push_back(e.id);
+                    used = true;
+                    break;
+                }
+            }
+            // A vertex nothing is built on has nowhere to rise to, so it stays
+            // rather than vanishing out of the selection.
+            if(!used) whole.push_back(id);
+        }
     }
 
     const int previous = depth_;

@@ -488,6 +488,18 @@ void Session::handle(const PointerEvent &event) {
                 if(!has(event.modifiers, Modifier::Shift)) selection_.clear();
                 return;
             }
+            // A second click descends a level: shape to edges, edges to points.
+            // There is no edit-mode wall — object versus component is depth,
+            // and Esc walks back up.
+            //
+            // The selection is not replaced here. The click before this one
+            // already made it, and re-selecting would reset the depth the
+            // descent is about to add to, so a double-click on an already
+            // descended shape would never reach the rung below.
+            if(event.clicks >= 2) {
+                selection_.descend(*doc_, topology_);
+                return;
+            }
             if(has(event.modifiers, Modifier::Shift)) {
                 selection_.toggle(pressed_);
             } else if(!selection_.contains(pressed_)) {
@@ -574,7 +586,9 @@ void Session::handle(Key key, Modifier modifiers) {
 }
 
 void Session::beginDrag(EntityId grabbed, Point cursor) {
-    drag_ = DragSession::begin(*doc_, topology_, grabbed, policy_);
+    // The whole selection comes along. Clicking inside a selection keeps it,
+    // which is what makes a multi-selection draggable as one thing.
+    drag_ = DragSession::begin(*doc_, topology_, grabbed, selection_.items(), policy_);
     if(!drag_) return;
     presentation_.dragging = true;
     updateCount_ = 0;

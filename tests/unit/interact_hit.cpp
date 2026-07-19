@@ -1,5 +1,9 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
+
+#include "core/topology.h"
+#include "interact/drag.h"
 #include "interact/hit.h"
 #include "support/build.h"
 
@@ -203,4 +207,102 @@ TEST_CASE("hit priority is table-driven and replaceable") {
     // Distance breaks ties within a tier.
     HitCandidate nearPoint{EntityId(5), HitKind::Point, Role::Normal, false, 1.0};
     CHECK(hitBeats(nearPoint, point));
+}
+
+TEST_CASE("a multi-selection drag holds every selected parameter") {
+    // PRINCIPLES: multi-selection drags put all selected parameters in the set.
+    // The set is the solver's soft hint — held, not targeted — so only the grab
+    // is asked to be at the cursor and the rest are marked so what has to give
+    // gives in the geometry the user did not select.
+    Document doc;
+    const EntityId a = paroculus::test::addPoint(doc, 0.0, 0.0);
+    const EntityId b = paroculus::test::addPoint(doc, 100.0, 0.0);
+    const EntityId segment = paroculus::test::addSegment(doc, a, b);
+    // A second, unconnected shape: selected, but not in this solve.
+    const EntityId far = paroculus::test::addPoint(doc, 900.0, 900.0);
+
+    Topology topology(doc);
+    HitPolicy policy;
+
+    SUBCASE("the whole selection is held") {
+        const std::optional<DragSession> drag =
+            DragSession::begin(doc, topology, b, {a, b, segment}, policy);
+        REQUIRE(drag.has_value());
+        // Grab first, so the anchor is unambiguous.
+        REQUIRE_FALSE(drag->dragged().empty());
+        CHECK(drag->dragged().front() == b);
+        CHECK(std::find(drag->dragged().begin(), drag->dragged().end(), a) !=
+              drag->dragged().end());
+        // A segment owns no parameters of its own, so there is nothing of it to
+        // hold: it moves by its endpoints, which are already in the set.
+        CHECK(std::find(drag->dragged().begin(), drag->dragged().end(), segment) ==
+              drag->dragged().end());
+    }
+
+    SUBCASE("a selection outside the dragged component is not in the solve") {
+        // Locality outranks it. Nothing connects the two, so holding the far
+        // point would only widen the solve for no possible effect.
+        const std::optional<DragSession> drag =
+            DragSession::begin(doc, topology, b, {a, b, far}, policy);
+        REQUIRE(drag.has_value());
+        CHECK(std::find(drag->dragged().begin(), drag->dragged().end(), far) ==
+              drag->dragged().end());
+        CHECK_FALSE(drag->context().contains(far));
+    }
+
+    SUBCASE("an empty selection still holds the grab") {
+        const std::optional<DragSession> drag = DragSession::begin(doc, topology, b, {}, policy);
+        REQUIRE(drag.has_value());
+        CHECK(drag->dragged().size() == 1);
+        CHECK(drag->dragged().front() == b);
+    }
+}
+
+TEST_CASE("holding a point makes the drag spend its slack elsewhere") {
+    // The observable difference the dragged set buys. Two free points joined to
+    // a pinned one: dragging the far end has to move something, and which thing
+    // moves is what "held" decides.
+    Document doc;
+    const EntityId anchor = paroculus::test::addPoint(doc, 0.0, 0.0);
+    const EntityId middle = paroculus::test::addPoint(doc, 100.0, 0.0);
+    const EntityId end = paroculus::test::addPoint(doc, 200.0, 0.0);
+    paroculus::test::addConstraint(doc, ConstraintKind::Pin, {anchor});
+    paroculus::test::addConstraint(doc, ConstraintKind::PointPointDistance, {anchor, middle},
+                                   Slot(100.0));
+    paroculus::test::addConstraint(doc, ConstraintKind::PointPointDistance, {middle, end},
+                                   Slot(100.0));
+
+    Topology topology(doc);
+    HitPolicy policy;
+    Viewport viewport;
+    Eigen::Affine2d m = Eigen::Affine2d::Identity();
+    m.translate(Eigen::Vector2d(400.0, 300.0));
+    m.scale(Eigen::Vector2d(1.0, -1.0));
+    viewport.view = ViewTransform(m);
+    viewport.width = 800.0;
+    viewport.height = 600.0;
+
+    const Point target{140.0, 120.0};
+    auto travelOfMiddle = [&](const std::vector<EntityId> &selection) {
+        std::optional<DragSession> drag =
+            DragSession::begin(doc, topology, end, selection, policy);
+        REQUIRE(drag.has_value());
+        for(int i = 1; i <= 8; i++) {
+            const double t = static_cast<double>(i) / 8.0;
+            drag->update(doc, viewport, Point{200.0 + (target.x - 200.0) * t, target.y * t},
+                         false);
+        }
+        const Point moved = *drag->context().point(middle);
+        return std::hypot(moved.x - 100.0, moved.y);
+    };
+
+    const double freeTravel = travelOfMiddle({end});
+    const double heldTravel = travelOfMiddle({end, middle});
+    // Strictly less, not merely no more. Equal would mean the set never reached
+    // the solver, which is exactly the state this finding was about — and it is
+    // the only assertion here that reaches past DragSession into SolveOptions.
+    // Held is still a preference and not a pin, so the travel is smaller rather
+    // than zero.
+    CHECK(heldTravel < freeTravel);
+    CHECK(heldTravel > 0.0);
 }

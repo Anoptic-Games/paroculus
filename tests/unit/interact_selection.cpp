@@ -87,7 +87,11 @@ TEST_CASE("a connected run follows shared geometry, not constraints") {
     CHECK(std::find(parallelRun.begin(), parallelRun.end(), two) == parallelRun.end());
 }
 
-TEST_CASE("descent goes to the parts and ascent comes back") {
+TEST_CASE("descent walks shape, edges, points and ascent walks back") {
+    // The ladder selection.h describes: a shape descends to its edges, and the
+    // edges descend to their points. One rung per descent, and ascent is the
+    // inverse — two descents and one ascent leave the user in the middle, which
+    // is the whole reason depth is a counter rather than a flag.
     TwoSegments f = buildRun();
     Topology topology(f.doc);
 
@@ -95,14 +99,30 @@ TEST_CASE("descent goes to the parts and ascent comes back") {
     selection.set(connectedRun(f.doc, topology, f.first));
     const size_t whole = selection.size();
     CHECK(selection.depth() == 0);
+    CHECK(selection.contains(f.first));
+    CHECK(selection.contains(f.a));
 
+    // Shape to edges: the vertices go, the segments stay.
     REQUIRE(selection.descend(f.doc, topology));
     CHECK(selection.depth() == 1);
-    // Descending a run of segments leaves the points that define them.
+    CHECK(selection.contains(f.first));
+    CHECK(selection.contains(f.second));
+    CHECK_FALSE(selection.contains(f.a));
+
+    // Edges to points.
+    REQUIRE(selection.descend(f.doc, topology));
+    CHECK(selection.depth() == 2);
     CHECK(selection.contains(f.a));
     CHECK(selection.contains(f.b));
     CHECK_FALSE(selection.contains(f.first));
 
+    // Back up one rung, to the edges built on those points.
+    REQUIRE(selection.ascend(f.doc, topology));
+    CHECK(selection.depth() == 1);
+    CHECK(selection.contains(f.first));
+    CHECK_FALSE(selection.contains(f.a));
+
+    // And back to the whole shape.
     REQUIRE(selection.ascend(f.doc, topology));
     CHECK(selection.depth() == 0);
     CHECK(selection.contains(f.first));

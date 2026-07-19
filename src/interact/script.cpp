@@ -258,6 +258,9 @@ std::string serializeScript(const GestureScript &script) {
                     out += " button=";
                     out += buttonName(s.button);
                 }
+                // Written only when it is not the ordinary one, so a script of
+                // plain clicks is the same file it was before the field existed.
+                if(s.clicks != 1) out += " clicks=" + std::to_string(s.clicks);
                 break;
             }
             case ScriptStep::Kind::Key:
@@ -396,6 +399,10 @@ ScriptLoadResult parseScript(std::string_view text, GestureScript &out) {
                     const std::optional<Modifier> m = modifiersFrom(value);
                     if(!m) return fail("unknown modifier", lineNumber);
                     step.modifiers = *m;
+                } else if(key == "clicks") {
+                    const std::optional<int> n = toInt(value);
+                    if(!n || *n < 1) return fail("malformed click count", lineNumber);
+                    step.clicks = *n;
                 }
             }
             if(!haveScreen) return fail("pointer step without a position", lineNumber);
@@ -498,6 +505,10 @@ ScriptLoadResult parseScript(std::string_view text, GestureScript &out) {
                     const std::optional<Modifier> m = modifiersFrom(value);
                     if(!m) return fail("unknown modifier", lineNumber);
                     step.modifiers = *m;
+                } else if(key == "clicks") {
+                    const std::optional<int> n = toInt(value);
+                    if(!n || *n < 1) return fail("malformed click count", lineNumber);
+                    step.clicks = *n;
                 }
             }
             if(!haveName) return fail("key step without a name", lineNumber);
@@ -528,7 +539,7 @@ void applyStep(Session &session, const ScriptStep &step) {
             // document coordinate is derived, never stored, so it cannot
             // disagree with the transform the rest of the replay uses.
             session.handle(PointerEvent::at(step.action, step.screen, session.viewport().view,
-                                            step.button, step.modifiers));
+                                            step.button, step.modifiers, step.clicks));
             return;
         case ScriptStep::Kind::Key:
             session.handle(static_cast<Key>(step.key), step.modifiers);
@@ -576,6 +587,7 @@ void ScriptRecorder::pointer(const PointerEvent &event) {
     step.action = event.action;
     step.button = event.button;
     step.modifiers = event.modifiers;
+    step.clicks = event.clicks;
     step.screen = event.screen;
     steps_.push_back(step);
 }

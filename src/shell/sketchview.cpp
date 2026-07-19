@@ -155,6 +155,12 @@ void SketchView::syncViewport() {
 PointerEvent SketchView::translate(const QPointF &position, Qt::MouseButtons buttons,
                                    Qt::KeyboardModifiers modifiers,
                                    PointerAction action) const {
+    return translate(position, buttons, modifiers, action, 1);
+}
+
+PointerEvent SketchView::translate(const QPointF &position, Qt::MouseButtons buttons,
+                                   Qt::KeyboardModifiers modifiers, PointerAction action,
+                                   int clicks) const {
     Button button = Button::None;
     if(buttons & Qt::LeftButton) button = Button::Left;
     else if(buttons & Qt::MiddleButton) button = Button::Middle;
@@ -167,13 +173,25 @@ PointerEvent SketchView::translate(const QPointF &position, Qt::MouseButtons but
 
     // Both spaces filled from one conversion, so they can never disagree.
     return PointerEvent::at(action, Eigen::Vector2d(position.x(), position.y()),
-                            session_->viewport().view, button, mods);
+                            session_->viewport().view, button, mods, clicks);
 }
 
 void SketchView::mousePressEvent(QMouseEvent *event) {
     forceActiveFocus();
     session_->handle(translate(event->position(), event->button(), event->modifiers(),
                                PointerAction::Press));
+    update();
+    emit changed();
+}
+
+// Qt has already applied the platform's double-click interval and slop, which
+// is the whole reason the count is decided out here: the interact layer must not
+// grow a clock, and what counts as a double click is the window system's answer
+// rather than ours.
+void SketchView::mouseDoubleClickEvent(QMouseEvent *event) {
+    forceActiveFocus();
+    session_->handle(translate(event->position(), event->button(), event->modifiers(),
+                               PointerAction::Press, 2));
     update();
     emit changed();
 }

@@ -97,7 +97,9 @@ std::optional<Point> handlePose(const SolveContext &context, const Document &doc
 }  // namespace
 
 std::optional<DragSession> DragSession::begin(const Document &doc, const Topology &topology,
-                                              EntityId grabbed, const HitPolicy &policy) {
+                                              EntityId grabbed,
+                                              const std::vector<EntityId> &selection,
+                                              const HitPolicy &policy) {
     const EntityRecord *e = doc.entities().find(grabbed);
     if(e == nullptr) return std::nullopt;
     // Only entities owning parameters can be dragged directly, which is points
@@ -112,6 +114,23 @@ std::optional<DragSession> DragSession::begin(const Document &doc, const Topolog
     if(session.context_.empty()) return std::nullopt;
     session.grabbed_ = grabbed;
     session.policy_ = policy;
+
+    // The grab first, then everything else the user is holding that has
+    // parameters of its own and is in this solve.
+    //
+    // Held is not the same as targeted. Only the grab is asked to be somewhere;
+    // the rest go into the set so the solver favours leaving them where they
+    // are, which is what pushes the deformation into the geometry the user did
+    // not select. A selected parameter outside this component is not in this
+    // solve at all — locality is the stronger rule, and nothing links them.
+    session.dragged_.push_back(grabbed);
+    for(EntityId id : selection) {
+        if(id == grabbed) continue;
+        if(!session.context_.contains(id)) continue;
+        const EntityRecord *m = doc.entities().find(id);
+        if(m == nullptr || entityInfo(m->kind).ownParamCount == 0) continue;
+        session.dragged_.push_back(id);
+    }
     return session;
 }
 
@@ -132,7 +151,7 @@ DragUpdate DragSession::update(const Document &doc, const Viewport &viewport, Po
     seedTarget(context_, doc, grabbed_, cursor);
 
     SolveOptions options;
-    options.dragged = {grabbed_};
+    options.dragged = dragged_;
     options.diagnoseFailures = false;  // the pose is what a frame needs
     options.generation = ++generation_;
 
@@ -172,7 +191,7 @@ DragUpdate DragSession::update(const Document &doc, const Viewport &viewport, Po
     // makes the resistance legible rather than merely stiff.
     if(result.saturated && diagnoseResistance && landed) {
         SolveOptions probe;
-        probe.dragged = {grabbed_};
+        probe.dragged = dragged_;
         probe.diagnoseFailures = false;
 
         // How much travel a relation has to buy back before it is worth naming,

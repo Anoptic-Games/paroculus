@@ -77,6 +77,8 @@ struct ScriptStep {
 
     // Kind::Type.
     char character = 0;
+    // Press steps only; one unless the surface reported a multi-click.
+    int clicks = 1;
 
     // Kind::Action. The name is the registry's stable token; the arguments are
     // its parameter schema, filled.

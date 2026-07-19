@@ -46,6 +46,7 @@ signals:
 
 protected:
     void mousePressEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void hoverMoveEvent(QHoverEvent *event) override;
@@ -69,6 +70,9 @@ private:
     // session as recorded rather than as this window would have framed it.
     void playScript(paroculus::GestureScript script);
     void stepScript();
+    paroculus::PointerEvent translate(const QPointF &position, Qt::MouseButtons buttons,
+                                      Qt::KeyboardModifiers modifiers,
+                                      paroculus::PointerAction action, int clicks) const;
     paroculus::PointerEvent translate(const QPointF &position, Qt::MouseButtons buttons,
                                       Qt::KeyboardModifiers modifiers,
                                       paroculus::PointerAction action) const;

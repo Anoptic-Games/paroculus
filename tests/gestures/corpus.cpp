@@ -14,6 +14,7 @@
 #include <cmath>
 
 #include "core/persist.h"
+#include "interact/script.h"
 #include "interact/session.h"
 #include "solve/demosketch.h"
 #include "support/build.h"
@@ -567,4 +568,88 @@ TEST_CASE("gesture: a drag stays within the frame budget") {
     // Generous: this is a Debug build on a shared machine, and the real gate
     // lives in the bench harness.
     CHECK(session.presentation().solveMicroseconds < 16000.0);
+}
+
+TEST_CASE("gesture: a double click descends, and Esc walks back up") {
+    // Object versus component is selection depth, not mode. Stage 3 committed
+    // to this and the machinery was built, but nothing carried a click count so
+    // depth was always zero in the app and Esc-ascend was unreachable.
+    Fixture f = buildFixture();
+    Session session(f.doc, f.journal);
+    session.setViewport(testViewport());
+
+    const Viewport &v = session.viewport();
+    const Eigen::Vector2d target = screenOf(session, f.free);
+    auto press = [&](int clicks) {
+        session.handle(PointerEvent::at(PointerAction::Press, target, v.view, Button::Left,
+                                        Modifier::None, clicks));
+        session.handle(PointerEvent::at(PointerAction::Release, target, v.view, Button::Left));
+    };
+
+    // One click selects the whole shape.
+    press(1);
+    CHECK(session.selection().depth() == 0);
+    CHECK(session.selection().contains(f.segment));
+    CHECK(session.selection().contains(f.anchor));
+
+    // A second descends to the edges.
+    press(2);
+    CHECK(session.selection().depth() == 1);
+    CHECK(session.selection().contains(f.segment));
+    CHECK_FALSE(session.selection().contains(f.anchor));
+
+    // And again to the points.
+    press(2);
+    CHECK(session.selection().depth() == 2);
+    CHECK(session.selection().contains(f.anchor));
+    CHECK_FALSE(session.selection().contains(f.segment));
+
+    // Esc ascends a rung at a time rather than clearing.
+    session.handle(Key::Escape);
+    CHECK(session.selection().depth() == 1);
+    CHECK_FALSE(session.selection().empty());
+    session.handle(Key::Escape);
+    CHECK(session.selection().depth() == 0);
+    CHECK_FALSE(session.selection().empty());
+    // Only at the home state does Esc clear.
+    session.handle(Key::Escape);
+    CHECK(session.selection().empty());
+}
+
+TEST_CASE("gesture: a click count survives the script round trip") {
+    // A recording that lost the second click would replay as a single one and
+    // land the user at a different depth than the session it recorded.
+    Fixture f = buildFixture();
+    Session session(f.doc, f.journal);
+    ScriptRecorder recorder;
+    session.setRecorder(&recorder);
+    session.setViewport(testViewport());
+
+    const Viewport &v = session.viewport();
+    const Eigen::Vector2d target = screenOf(session, f.free);
+    session.handle(PointerEvent::at(PointerAction::Press, target, v.view, Button::Left));
+    session.handle(PointerEvent::at(PointerAction::Release, target, v.view, Button::Left));
+    session.handle(PointerEvent::at(PointerAction::Press, target, v.view, Button::Left,
+                                    Modifier::None, 2));
+    session.handle(PointerEvent::at(PointerAction::Release, target, v.view, Button::Left));
+    REQUIRE(session.selection().depth() == 1);
+
+    GestureScript script;
+    script.document = buildFixture().doc;
+    script.steps = recorder.steps();
+    const std::string text = serializeScript(script);
+    CHECK(text.find("clicks=2") != std::string::npos);
+    // An ordinary press says nothing, so a script of plain clicks is the file
+    // it was before the field existed.
+    CHECK(text.find("clicks=1") == std::string::npos);
+
+    GestureScript parsed;
+    REQUIRE(parseScript(text, parsed).ok);
+    CHECK(serializeScript(parsed) == text);
+
+    Document replayedDoc = parsed.document;
+    UndoJournal replayedJournal;
+    Session replayed(replayedDoc, replayedJournal);
+    replay(replayed, parsed);
+    CHECK(replayed.selection().depth() == 1);
 }
