@@ -12,7 +12,6 @@
 // path, and this is the cheap moment to pay for it.
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -20,17 +19,6 @@
 #include "core/document.h"
 
 namespace paroculus {
-
-// One entity's seeds as they stood before a step. Stage 2 populates these from
-// the solve that the step provoked.
-struct SeedSpan {
-    EntityId entity;
-    std::array<double, MAX_ENTITY_PARAMS> seeds{};
-
-    friend bool operator==(const SeedSpan &a, const SeedSpan &b) {
-        return a.entity == b.entity && a.seeds == b.seeds;
-    }
-};
 
 // One user gesture. Composite gestures — a placement plus the inferences it
 // committed — bundle into a single record, which is what makes place-with-snaps

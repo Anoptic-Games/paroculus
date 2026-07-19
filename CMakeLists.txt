@@ -111,10 +111,22 @@ target_link_libraries(paroculus-core PUBLIC Eigen3::Eigen)
 # solver's include directory off every consumer's command line while still
 # carrying its objects through to the final link.
 add_library(paroculus-solve STATIC
+    src/solve/arena.cpp
+    src/solve/arena.h
+    src/solve/context.cpp
+    src/solve/context.h
     src/solve/demosketch.cpp
     src/solve/demosketch.h
+    src/solve/diagnose.cpp
+    src/solve/diagnose.h
+    src/solve/solve.cpp
+    src/solve/solve.h
 )
-target_link_libraries(paroculus-solve PUBLIC paroculus-core PRIVATE paroculus-solver)
+# mimalloc is PRIVATE for the same reason the solver is: every solve context
+# owns a heap, and no layer above needs to know what it is made of.
+target_link_libraries(paroculus-solve
+    PUBLIC paroculus-core
+    PRIVATE paroculus-solver PkgConfig::MIMALLOC)
 
 # render — the only target that may see Skia. Its headers speak in raw buffers,
 # so the QQuickPaintedItem shortcut can become the Ganesh/RHI path (track R)
@@ -194,7 +206,10 @@ if(PAROCULUS_TESTS)
         tests/unit/core_units.cpp
         tests/unit/interact_events.cpp
         tests/unit/render_view.cpp
+        tests/unit/solve_context.cpp
         tests/unit/solve_demosketch.cpp
+        tests/semantics/catalogue.cpp
+        tests/semantics/branches.cpp
     )
     target_link_libraries(paroculus-tests PRIVATE
         doctest::doctest
@@ -213,6 +228,13 @@ if(PAROCULUS_TESTS)
     add_test(NAME selftest COMMAND paroculus --selftest)
     set_tests_properties(selftest PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    # Benchmarks are run on demand, not by CTest: they are wall-clock numbers on
+    # a shared machine, and a timing gate in the sandbox would be a flake
+    # generator rather than a signal. Run from the work tree root so the
+    # baseline path resolves:  ./build/Debug/paroculus-bench
+    add_executable(paroculus-bench tests/bench/main.cpp)
+    target_link_libraries(paroculus-bench PRIVATE paroculus-solve)
 
     # Link-boundary canaries. Each is a translation unit that links only
     # paroculus-core and then reaches for a header belonging to a higher layer.

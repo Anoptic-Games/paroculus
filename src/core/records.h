@@ -20,6 +20,24 @@
 
 namespace paroculus {
 
+// One entity's own parameter values.
+//
+// Seeds are the persistent record of which solution branch the user was shown.
+// Constraint systems admit multiple solutions — reflections, elbow-up versus
+// elbow-down — and Newton converges to the one nearest its seed, so which
+// branch is on screen is part of the document, not an artefact of solving. The
+// same span type carries seeds into a solve, results out of one, and the
+// before/after pair in an undo record.
+struct SeedSpan {
+    EntityId entity;
+    std::array<double, MAX_ENTITY_PARAMS> seeds{};
+
+    friend bool operator==(const SeedSpan &a, const SeedSpan &b) {
+        return a.entity == b.entity && a.seeds == b.seeds;
+    }
+    friend bool operator!=(const SeedSpan &a, const SeedSpan &b) { return !(a == b); }
+};
+
 // Geometry. A point owns its coordinates as seeds; every other kind is defined
 // by the points it refers to, plus a radius seed for a circle.
 //

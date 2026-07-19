@@ -34,6 +34,11 @@ struct Solution {
     Point a0, a1;  // segment A endpoints
     Point b0, b1;  // segment B endpoints
 
+    // Measured solve time. The interactive loop's budget is a measured thing
+    // and the solver is its variable term, so the number is surfaced rather
+    // than assumed.
+    double microseconds = 0.0;
+
     // Redundant-but-consistent is a solve-time pass. Flagging redundancy is a
     // creation-time job (stage 2), not a reason to reject solved geometry.
     bool ok() const {

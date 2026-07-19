@@ -23,10 +23,15 @@ void SketchView::resolve() {
     solution_ = paroculus::solveDemoSketch(ratio_);
 }
 
+// Degrees of freedom read calmly, never as a progress bar or a warning: under-
+// constraint is the normal state, and a free DOF is exactly a thing the user
+// can still push by hand. Solve time sits beside it because the interactive
+// budget is a measured thing and this is the term that varies.
 QString SketchView::status() const {
-    return QStringLiteral("solver: %1  ·  dof: %2  ·  ratio: %3")
+    return QStringLiteral("solver: %1  ·  dof: %2  ·  solve: %3 ms  ·  ratio: %4")
         .arg(QString::fromLatin1(paroculus::statusName(solution_.status)))
         .arg(solution_.dof)
+        .arg(solution_.microseconds / 1000.0, 0, 'f', 2)
         .arg(ratio_, 0, 'f', 3);
 }
 
