@@ -70,7 +70,6 @@ void Session::setTool(ToolKind kind) {
     // committed while it was in flight, so there is nothing to roll back.
     tool_.reset();
     numeric_.cancel();
-    imposePending_ = false;
     confirmedOffers_.clear();
     pendingSnaps_.clear();
     presentation_.snapCandidates.clear();
@@ -170,12 +169,20 @@ void Session::numericBackspace() {
 
 void Session::numericCancel() {
     if(recorder_ != nullptr) recorder_->numeric(ScriptStep::Kind::NumericCancel);
+    applyNumericCancel();
+}
+
+void Session::applyNumericCancel() {
     numeric_.cancel();
     refreshToolPresentation();
 }
 
 void Session::numericAdvance() {
     if(recorder_ != nullptr) recorder_->numeric(ScriptStep::Kind::NumericAdvance);
+    applyNumericAdvance();
+}
+
+void Session::applyNumericAdvance() {
     if(!tool_) return;
     const size_t count = tool_->parameters().size();
     if(count == 0) return;
@@ -192,6 +199,10 @@ void Session::numericResolve(bool impose) {
         recorder_->numeric(impose ? ScriptStep::Kind::NumericImpose
                                   : ScriptStep::Kind::NumericResolve);
     }
+    applyNumericResolve(impose);
+}
+
+void Session::applyNumericResolve(bool impose) {
     if(!tool_ || !numeric_.active()) return;
     const std::optional<double> value = numeric_.value();
     if(!value) return;
@@ -202,13 +213,31 @@ void Session::numericResolve(bool impose) {
     if(!tool_->setParameter(target, *value)) return;
     numeric_.cancel();
 
-    // Held until the placement commits, because the dimension has to name
-    // entities that do not exist until then.
-    imposePending_ = impose;
-    imposeTarget_ = target;
-    imposeValue_ = *value;
+    // Where the digits put the placement. The tool has already moved itself
+    // there, and this is the position the commit uses — asking the pointer
+    // again would hand the placement back to the hand that could not hit the
+    // number in the first place.
+    const Point resolved = tool_->preview().to;
 
-    refreshToolPresentation();
+    // Inference still runs, at the resolved position rather than at the
+    // pointer's, but it may not move anything: a candidate is committed by the
+    // placement landing on it, and this placement has landed where the digits
+    // said. So only relations already true there are declared — a nearby vertex
+    // is near, not touched, and declaring a coincidence to it would drag the
+    // geometry off the value the user typed and lose it silently.
+    const SnapResult inference = inferAt(resolved);
+    presentation_.snapCandidates = inference.candidates;
+    std::vector<SnapCandidate> declaring;
+    for(const SnapCandidate &c : inference.autoCommitted()) {
+        if(std::abs(c.placement.x - resolved.x) < 1e-9 &&
+           std::abs(c.placement.y - resolved.y) < 1e-9) {
+            declaring.push_back(c);
+        }
+    }
+
+    std::optional<Imposition> imposition;
+    if(impose) imposition = Imposition{target, *value};
+    if(!commitPlacement(resolved, declaring, imposition)) refreshToolPresentation();
 }
 
 void Session::confirmOffer(size_t index) {
@@ -252,6 +281,69 @@ void Session::declineInference(size_t index) {
                                      static_cast<std::ptrdiff_t>(index));
         refresh();
     }
+}
+
+bool Session::commitPlacement(Point placement, const std::vector<SnapCandidate> &declaring,
+                              const std::optional<Imposition> &impose) {
+    if(!tool_) return false;
+    ToolOutput out = tool_->press(*doc_, placement);
+    if(out.commands.empty()) return false;
+
+    // Constraint ids are claimed the same way the tool claims entity ids, so
+    // what inference declared can be named exactly rather than recovered
+    // afterwards by guessing which records are new.
+    //
+    // Past whatever the tool already claimed: a macro emits its own constraints
+    // from the same allocator, and starting again at the watermark would
+    // collide with them. applyStep is all-or-nothing, so that collision does not
+    // lose one relation — it loses the whole shape.
+    uint32_t nextConstraint = doc_->constraints().allocator().next();
+    for(const Command &existing : out.commands) {
+        if(const auto *add = std::get_if<AddRecord<ConstraintRecord>>(&existing)) {
+            nextConstraint = std::max(nextConstraint, add->record.id.value() + 1);
+        }
+    }
+    std::vector<SnapCandidate> committed;
+    std::vector<ConstraintId> inferred;
+    auto declare = [&](const SnapCandidate &c, const PlacementSubjects &subjects) {
+        std::optional<ConstraintRecord> r = constraintFor(c, subjects);
+        if(!r) return;
+        r->id = ConstraintId(nextConstraint++);
+        inferred.push_back(r->id);
+        out.commands.push_back(AddRecord<ConstraintRecord>{*r});
+        committed.push_back(c);
+    };
+
+    // The held clicks, each against the entity it turned out to create. Zipped
+    // in order and only as far as both run: a tool that named fewer entities
+    // than there were held clicks drops the surplus rather than binding them to
+    // the wrong point.
+    for(size_t i = 0; i < pendingSnaps_.size() && i < out.opened.size(); i++) {
+        PlacementSubjects opened;
+        opened.point = out.opened[i];
+        for(const SnapCandidate &c : pendingSnaps_[i]) declare(c, opened);
+    }
+    for(const SnapCandidate &c : declaring) declare(c, out.placed);
+
+    // A typed value that was imposed becomes a driving dimension in the same
+    // step as the geometry it measures, so undo takes back the placement and its
+    // dimension together.
+    if(impose) {
+        if(const std::optional<ConstraintRecord> dimension =
+               tool_->dimensionFor(impose->target, impose->value, out)) {
+            ConstraintRecord r = *dimension;
+            r.id = ConstraintId(nextConstraint++);
+            inferred.push_back(r.id);
+            out.commands.push_back(AddRecord<ConstraintRecord>{r});
+        }
+    }
+
+    pendingSnaps_.clear();
+    // A confirmation is about one placement, not about the tool.
+    confirmedOffers_.clear();
+    runTool(std::move(out), std::move(inferred));
+    rememberSnaps(committed);
+    return true;
 }
 
 void Session::rememberSnaps(const std::vector<SnapCandidate> &committed) {
@@ -323,8 +415,8 @@ void Session::handle(const PointerEvent &event) {
                 const SnapResult inference = inferAt(event.document);
                 presentation_.snapCandidates = inference.candidates;
 
-                ToolOutput out = tool_->press(*doc_, inference.placement);
-                if(out.commands.empty()) {
+                if(!commitPlacement(inference.placement, inference.autoCommitted(),
+                                    std::nullopt)) {
                     // A click that opens a shape declares nothing yet: the
                     // point it binds has no id until the shape justifies it.
                     // Hold the relations rather than dropping them, or starting
@@ -333,66 +425,7 @@ void Session::handle(const PointerEvent &event) {
                     // open too — an arc opens twice before it commits.
                     pendingSnaps_.push_back(inference.autoCommitted());
                     refreshToolPresentation();
-                    return;
                 }
-
-                // Constraint ids are claimed the same way the tool claims entity
-                // ids, so what inference declared can be named exactly rather
-                // than recovered afterwards by guessing which records are new.
-                //
-                // Past whatever the tool already claimed: a macro emits its own
-                // constraints from the same allocator, and starting again at the
-                // watermark would collide with them. applyStep is all-or-nothing,
-                // so that collision does not lose one relation — it loses the
-                // whole shape.
-                uint32_t nextConstraint = doc_->constraints().allocator().next();
-                for(const Command &existing : out.commands) {
-                    if(const auto *add = std::get_if<AddRecord<ConstraintRecord>>(&existing)) {
-                        nextConstraint = std::max(nextConstraint, add->record.id.value() + 1);
-                    }
-                }
-                std::vector<SnapCandidate> committed;
-                std::vector<ConstraintId> inferred;
-                auto declare = [&](const SnapCandidate &c, const PlacementSubjects &subjects) {
-                    std::optional<ConstraintRecord> r = constraintFor(c, subjects);
-                    if(!r) return;
-                    r->id = ConstraintId(nextConstraint++);
-                    inferred.push_back(r->id);
-                    out.commands.push_back(AddRecord<ConstraintRecord>{*r});
-                    committed.push_back(c);
-                };
-
-                // The held clicks, each against the entity it turned out to
-                // create. Zipped in order and only as far as both run: a tool
-                // that named fewer entities than there were held clicks drops
-                // the surplus rather than binding them to the wrong point.
-                for(size_t i = 0; i < pendingSnaps_.size() && i < out.opened.size(); i++) {
-                    PlacementSubjects opened;
-                    opened.point = out.opened[i];
-                    for(const SnapCandidate &c : pendingSnaps_[i]) declare(c, opened);
-                }
-                for(const SnapCandidate &c : inference.autoCommitted()) {
-                    declare(c, out.placed);
-                }
-                // A typed value that was imposed becomes a driving dimension
-                // in the same step as the geometry it measures, so undo takes
-                // back the placement and its dimension together.
-                if(imposePending_) {
-                    if(const std::optional<ConstraintRecord> dimension =
-                           tool_->dimensionFor(imposeTarget_, imposeValue_, out)) {
-                        ConstraintRecord r = *dimension;
-                        r.id = ConstraintId(nextConstraint++);
-                        inferred.push_back(r.id);
-                        out.commands.push_back(AddRecord<ConstraintRecord>{r});
-                    }
-                    imposePending_ = false;
-                }
-
-                pendingSnaps_.clear();
-                // A confirmation is about one placement, not about the tool.
-                confirmedOffers_.clear();
-                runTool(std::move(out), std::move(inferred));
-                rememberSnaps(committed);
                 return;
             }
             case PointerAction::Move: {
@@ -497,8 +530,9 @@ void Session::handle(Key key, Modifier modifiers) {
             // selection is where home is.
             if(numeric_.active()) {
                 // Esc ascends one level at a time: it takes back the typed
-                // field before it takes back the placement.
-                numericCancel();
+                // field before it takes back the placement. The keystroke is
+                // already recorded, so this must not record a second step.
+                applyNumericCancel();
                 return;
             }
             if(tool_) {
@@ -529,11 +563,11 @@ void Session::handle(Key key, Modifier modifiers) {
 
         case Key::Enter:
             // One extra key turns the measurement into a declaration.
-            numericResolve(has(modifiers, Modifier::Shift));
+            applyNumericResolve(has(modifiers, Modifier::Shift));
             return;
 
         case Key::Tab:
-            numericAdvance();
+            applyNumericAdvance();
             return;
     }
     (void)modifiers;

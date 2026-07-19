@@ -75,16 +75,12 @@ TEST_CASE("typing a length resolves the placement exactly") {
     CHECK(e.session->presentation().numericActive);
     CHECK(e.session->presentation().numericText == "45");
 
+    // Enter finishes the gesture. Asking for a click afterwards would ask the
+    // hand for the precision the digits were supplying — and the click would
+    // arrive at the pointer, which is still sitting at the 37 the hand managed.
     e.session->handle(Key::Enter);
     CHECK_FALSE(e.session->presentation().numericActive);
 
-    // The rubber band is already at the typed length, before any commit.
-    const ToolPreview preview = e.session->presentation().toolPreview;
-    const double length = std::hypot(preview.to.x - preview.from.x,
-                                     preview.to.y - preview.from.y);
-    CHECK(length == doctest::Approx(45.0).epsilon(1e-12));
-
-    e.click(preview.to);
     const Pose pose = e.session->pose();
     std::vector<EntityId> points;
     for(const EntityRecord &r : e.doc.entities().records()) {
@@ -105,7 +101,6 @@ TEST_CASE("resolving alone declares nothing; imposing declares a dimension") {
         e.moveTo(Point{37.0, 0.0});
         e.typeText("45");
         e.session->handle(Key::Enter);
-        e.click(e.session->presentation().toolPreview.to);
         CHECK_FALSE(e.has(ConstraintKind::PointPointDistance));
     }
     SUBCASE("impose") {
@@ -115,7 +110,6 @@ TEST_CASE("resolving alone declares nothing; imposing declares a dimension") {
         e.typeText("45");
         // One more key.
         e.session->handle(Key::Enter, Modifier::Shift);
-        e.click(e.session->presentation().toolPreview.to);
 
         REQUIRE(e.has(ConstraintKind::PointPointDistance));
         // The stored value is exactly what was typed, not a re-parse of what
@@ -135,7 +129,6 @@ TEST_CASE("units convert at the one boundary") {
     e.moveTo(Point{10.0, 0.0});
     e.typeText("2cm");
     e.session->handle(Key::Enter, Modifier::Shift);
-    e.click(e.session->presentation().toolPreview.to);
 
     // Storage is millimetres, always. Nothing above units.h holds centimetres.
     CHECK(e.valueOf(ConstraintKind::PointPointDistance) == doctest::Approx(20.0));
@@ -157,11 +150,15 @@ TEST_CASE("a typed angle steers the placement but declares no dimension") {
     e.typeText("90");
     e.session->handle(Key::Enter, Modifier::Shift);
 
-    const ToolPreview preview = e.session->presentation().toolPreview;
-    CHECK(preview.to.x == doctest::Approx(0.0));
-    CHECK(preview.to.y > 0.0);
-
-    e.click(preview.to);
+    // Straight up from the anchor, at the length the hand had chosen.
+    const Pose pose = e.session->pose();
+    std::vector<Point> placed;
+    for(const EntityRecord &r : e.doc.entities().records()) {
+        if(r.kind == EntityKind::Point) placed.push_back(*pose.point(r.id));
+    }
+    REQUIRE(placed.size() == 2);
+    CHECK(placed[1].x == doctest::Approx(0.0));
+    CHECK(placed[1].y > 0.0);
     CHECK_FALSE(e.has(ConstraintKind::Angle));
 }
 
@@ -171,7 +168,6 @@ TEST_CASE("a typed radius pins a circle") {
     e.moveTo(Point{13.0, 0.0});
     e.typeText("30");
     e.session->handle(Key::Enter, Modifier::Shift);
-    e.click(e.session->presentation().toolPreview.to);
 
     REQUIRE(e.has(ConstraintKind::Radius));
     CHECK(e.valueOf(ConstraintKind::Radius) == 30.0);
@@ -189,7 +185,6 @@ TEST_CASE("typed width and height pin a rectangle") {
 
     e.typeText("80");
     e.session->handle(Key::Enter, Modifier::Shift);
-    e.click(e.session->presentation().toolPreview.to);
 
     REQUIRE(e.has(ConstraintKind::PointPointDistance));
     CHECK(e.valueOf(ConstraintKind::PointPointDistance) == 80.0);
@@ -207,9 +202,16 @@ TEST_CASE("typing sets magnitude and leaves direction to the hand") {
     e.typeText("80");
     e.session->handle(Key::Enter);
 
-    const ToolPreview preview = e.session->presentation().toolPreview;
-    CHECK(preview.to.x == doctest::Approx(-80.0));
-    CHECK(preview.to.y < 0.0);
+    const Pose pose = e.session->pose();
+    double minX = 0.0, minY = 0.0;
+    for(const EntityRecord &r : e.doc.entities().records()) {
+        if(r.kind != EntityKind::Point) continue;
+        const Point p = *pose.point(r.id);
+        minX = std::min(minX, p.x);
+        minY = std::min(minY, p.y);
+    }
+    CHECK(minX == doctest::Approx(-80.0));
+    CHECK(minY < 0.0);
 }
 
 TEST_CASE("Esc takes back the field before the placement") {
@@ -240,8 +242,14 @@ TEST_CASE("backspace edits the field") {
     e.session->numericBackspace();
     CHECK(e.session->presentation().numericText == "45");
     e.session->handle(Key::Enter);
-    const ToolPreview preview = e.session->presentation().toolPreview;
-    CHECK(std::hypot(preview.to.x - preview.from.x, preview.to.y - preview.from.y) ==
+
+    const Pose pose = e.session->pose();
+    std::vector<Point> placed;
+    for(const EntityRecord &r : e.doc.entities().records()) {
+        if(r.kind == EntityKind::Point) placed.push_back(*pose.point(r.id));
+    }
+    REQUIRE(placed.size() == 2);
+    CHECK(std::hypot(placed[1].x - placed[0].x, placed[1].y - placed[0].y) ==
           doctest::Approx(45.0));
 }
 
@@ -268,7 +276,6 @@ TEST_CASE("display rounding never reaches storage") {
     e.moveTo(Point{40.0, 0.0});
     e.typeText("45.123456789");
     e.session->handle(Key::Enter, Modifier::Shift);
-    e.click(e.session->presentation().toolPreview.to);
 
     const double stored = e.valueOf(ConstraintKind::PointPointDistance);
     CHECK(stored == 45.123456789);
@@ -300,12 +307,14 @@ TEST_CASE("numeric entry survives a script round-trip") {
                                     session.viewport().view));
     for(char c : std::string("60")) session.type(c);
     session.handle(Key::Enter, Modifier::Shift);
-    click(session.presentation().toolPreview.to);
     script.steps = recorder.steps();
 
     const std::string text = serializeScript(script);
     CHECK(text.find("type char=6") != std::string::npos);
-    CHECK(text.find("numeric do=impose") != std::string::npos);
+    // The keystroke, once. A surface records what it was asked to do; the work
+    // it dispatches to must not record a second step for the same event.
+    CHECK(text.find("key name=enter mods=shift") != std::string::npos);
+    CHECK(text.find("numeric do=impose") == std::string::npos);
 
     GestureScript parsed;
     REQUIRE(parseScript(text, parsed).ok);
@@ -316,4 +325,99 @@ TEST_CASE("numeric entry survives a script round-trip") {
     Session session2(replayed, journal2);
     replay(session2, parsed);
     CHECK(serialize(replayed) == serialize(doc));
+}
+
+TEST_CASE("record → replay → record is the identity over keys that drive numeric entry") {
+    // The property the format exists to guarantee, over the steps that most
+    // easily break it. handle(Key) records the keystroke and then does the work
+    // itself; if the work also recorded, a live Tab would replay as two Tabs,
+    // the replayed session would diverge from the recorded one, and every
+    // re-recording would grow another step per key.
+    Document doc;
+    UndoJournal journal;
+    Session session(doc, journal);
+    ScriptRecorder recorder;
+    session.setRecorder(&recorder);
+    session.setViewport(entryViewport());
+    session.setTool(ToolKind::Line);
+
+    auto at = [&](Point p) { return session.viewport().view.toScreen(p); };
+    session.handle(PointerEvent::at(PointerAction::Move, at(Point{0.0, 0.0}),
+                                    session.viewport().view));
+    session.handle(PointerEvent::at(PointerAction::Press, at(Point{0.0, 0.0}),
+                                    session.viewport().view, Button::Left));
+    session.handle(PointerEvent::at(PointerAction::Move, at(Point{40.0, 5.0}),
+                                    session.viewport().view));
+
+    // Every key that dispatches into numeric entry: Tab cycles the field, Esc
+    // takes it back, Enter finishes.
+    session.handle(Key::Tab);
+    const size_t firstField = session.presentation().numericTarget;
+    session.handle(Key::Tab);
+    CHECK(session.presentation().numericTarget != firstField);
+    session.handle(Key::Escape);
+    CHECK_FALSE(session.presentation().numericActive);
+    for(char c : std::string("55")) session.type(c);
+    session.handle(Key::Enter);
+
+    GestureScript first;
+    first.document = Document();
+    first.steps = recorder.steps();
+    const std::string firstText = serializeScript(first);
+
+    // Replay it under a recorder of its own, then compare the recordings.
+    Document replayedDoc = first.document;
+    UndoJournal replayedJournal;
+    Session replayedSession(replayedDoc, replayedJournal);
+    ScriptRecorder second;
+    replayedSession.setRecorder(&second);
+    replay(replayedSession, first);
+
+    GestureScript again;
+    again.document = first.document;
+    again.steps = second.steps();
+    CHECK(serializeScript(again) == firstText);
+    // And the replay reached the same document, not one that advanced twice.
+    CHECK(serialize(replayedDoc) == serialize(doc));
+}
+
+TEST_CASE("a typed space survives the round trip") {
+    // The length grammar accepts a space — "45 mm" is a value a user types —
+    // and fields on a script line are space-delimited, so an unescaped one
+    // would split the line and the parser would refuse a file the recorder had
+    // just written.
+    Document doc;
+    UndoJournal journal;
+    Session session(doc, journal);
+    ScriptRecorder recorder;
+    session.setRecorder(&recorder);
+    session.setViewport(entryViewport());
+    session.setTool(ToolKind::Line);
+
+    auto at = [&](Point p) { return session.viewport().view.toScreen(p); };
+    session.handle(PointerEvent::at(PointerAction::Move, at(Point{0.0, 0.0}),
+                                    session.viewport().view));
+    session.handle(PointerEvent::at(PointerAction::Press, at(Point{0.0, 0.0}),
+                                    session.viewport().view, Button::Left));
+    session.handle(PointerEvent::at(PointerAction::Move, at(Point{40.0, 0.0}),
+                                    session.viewport().view));
+    for(char c : std::string("45 mm")) session.type(c);
+    CHECK(session.presentation().numericText == "45 mm");
+    session.handle(Key::Enter, Modifier::Shift);
+
+    GestureScript script;
+    script.document = Document();
+    script.steps = recorder.steps();
+    const std::string text = serializeScript(script);
+
+    GestureScript parsed;
+    REQUIRE_MESSAGE(parseScript(text, parsed).ok, text);
+    CHECK(serializeScript(parsed) == text);
+    // Round-tripped as the character it was, not as whatever the escape reads
+    // like: the replay has to type the same key the user pressed.
+    bool sawSpace = false;
+    for(const ScriptStep &step : parsed.steps) {
+        if(step.kind == ScriptStep::Kind::Type && step.character == ' ') sawSpace = true;
+    }
+    CHECK(sawSpace);
 }

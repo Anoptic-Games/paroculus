@@ -22,6 +22,35 @@ std::string number(double v) {
     return std::string(buf.data(), static_cast<size_t>(r.ptr - buf.data()));
 }
 
+// A typed character as one field value.
+//
+// Fields are space-delimited, so a literal space would split the line and the
+// parser would refuse a file the recorder had just written. The length grammar
+// accepts a space — "45 mm" is a value a user types — so this is a key anyone
+// can press, not a theoretical one. Printable characters stay literal because
+// the format is meant to be hand-edited; the rest take a hex escape.
+std::string typedChar(char c) {
+    const auto u = static_cast<unsigned char>(c);
+    if(u > 0x20 && u < 0x7f && c != '\\') return std::string(1, c);
+    const char digits[] = "0123456789abcdef";
+    return std::string("\\x") + digits[(u >> 4) & 0xf] + digits[u & 0xf];
+}
+
+std::optional<char> typedCharFrom(std::string_view s) {
+    if(s.size() == 1 && s[0] != '\\') return s[0];
+    if(s.size() != 4 || s[0] != '\\' || s[1] != 'x') return std::nullopt;
+    int value = 0;
+    for(size_t i = 2; i < 4; i++) {
+        const char d = s[i];
+        const int n = d >= '0' && d <= '9'   ? d - '0'
+                      : d >= 'a' && d <= 'f' ? d - 'a' + 10
+                                             : -1;
+        if(n < 0) return std::nullopt;
+        value = value * 16 + n;
+    }
+    return static_cast<char>(value);
+}
+
 std::optional<double> toDouble(std::string_view s) {
     double v = 0.0;
     const auto r = std::from_chars(s.data(), s.data() + s.size(), v);
@@ -246,8 +275,7 @@ std::string serializeScript(const GestureScript &script) {
                 out += "decline index=" + std::to_string(s.index);
                 break;
             case ScriptStep::Kind::Type:
-                out += "type char=";
-                out += s.character;
+                out += "type char=" + typedChar(s.character);
                 break;
             case ScriptStep::Kind::NumericResolve:  out += "numeric do=resolve"; break;
             case ScriptStep::Kind::NumericImpose:   out += "numeric do=impose"; break;
@@ -432,8 +460,9 @@ ScriptLoadResult parseScript(std::string_view text, GestureScript &out) {
                 if(!f) return fail("malformed field", lineNumber);
                 const auto [key, value] = *f;
                 if(key != "char") continue;
-                if(value.size() != 1) return fail("type takes one character", lineNumber);
-                step.character = value[0];
+                const std::optional<char> c = typedCharFrom(value);
+                if(!c) return fail("type takes one character", lineNumber);
+                step.character = *c;
                 haveChar = true;
             }
             if(!haveChar) return fail("type step without a character", lineNumber);

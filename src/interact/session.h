@@ -182,9 +182,17 @@ public:
     void numericCancel();
     // Moves to the next parameter of the running tool, wrapping.
     void numericAdvance();
-    // Resolves the placement so the typed value holds exactly. When `impose`,
-    // the value also lands as a driving dimension — the one extra key that
-    // turns a measurement into a declaration.
+    // Resolves the placement so the typed value holds exactly, and commits it.
+    // When `impose`, the value also lands as a driving dimension — the one
+    // extra key that turns a measurement into a declaration, in the same undo
+    // step as the geometry it measures.
+    //
+    // Enter finishes the gesture. It has to: the reason this entrance exists is
+    // that a drag cannot land on a number, so asking for a mouse click
+    // afterwards would ask the hand for the very precision the digits were
+    // supplying — and the click would arrive at the pointer's position and
+    // overwrite the resolved one. Tab moves between fields without committing,
+    // which is how a placement with two of them is typed out in full.
     void numericResolve(bool impose);
 
     // Attaches a recorder, or detaches with nullptr. Every event the session is
@@ -200,6 +208,34 @@ private:
     // Applies whatever a tool asked for, and tells the tool only if it landed.
     void runTool(ToolOutput output, std::vector<ConstraintId> inferred = {});
     void refreshToolPresentation();
+
+    // The value a resolved placement pins as a driving dimension.
+    struct Imposition {
+        size_t target = 0;
+        double value = 0.0;
+    };
+
+    // Commits the placement in flight at `placement`, declaring `declaring`
+    // against whatever the tool created there and, when asked, the dimension
+    // that pins a typed value.
+    //
+    // The one path a placement commits through. A pointer press and a typed
+    // Enter are two entrances to the same edit, and the way that stays true is
+    // that they are one function with two callers rather than two functions
+    // that have to be kept in agreement.
+    //
+    // Returns false when the tool made nothing — the click that opens a shape
+    // rather than closing one — leaving the caller to decide what that means.
+    bool commitPlacement(Point placement, const std::vector<SnapCandidate> &declaring,
+                         const std::optional<Imposition> &impose);
+
+    // The recording surfaces record; these do the work. handle(Key) already
+    // recorded the keystroke, so dispatching to the public methods would write
+    // the step twice and replay would do it twice — record → replay → record
+    // is the identity the format exists to guarantee.
+    void applyNumericResolve(bool impose);
+    void applyNumericAdvance();
+    void applyNumericCancel();
     // Runs inference for a placement at `cursor`. One call feeds both the ghost
     // and the commit, so a previewed candidate set that differs from the
     // committed one is not a reachable state.
@@ -248,11 +284,6 @@ private:
     std::vector<SnapKind> recentSnaps_;
 
     NumericEntry numeric_;
-    // The parameter a typed value pinned, carried to the commit that follows so
-    // the dimension can be emitted against the entities that commit creates.
-    bool imposePending_ = false;
-    size_t imposeTarget_ = 0;
-    double imposeValue_ = 0.0;
 
     ScriptRecorder *recorder_ = nullptr;
     // Null in the home state. Creation tools are shallow, so there is at most
