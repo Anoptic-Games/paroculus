@@ -113,6 +113,27 @@ CommandError Document::validate(const GroupRecord &r) const {
     return CommandError::None;
 }
 
+// A style's width is a slot like any other, so it can name a parameter and is
+// checked like any other. Nothing else on the record is a reference.
+CommandError Document::validate(const StyleRecord &r) const {
+    for(ParameterId p : r.strokeWidth.references()) {
+        if(!parameters_.contains(p)) return CommandError::UnknownOperand;
+    }
+    return CommandError::None;
+}
+
+// A parameter may not reach itself, and every name it reads must exist.
+CommandError Document::validate(const ParameterRecord &r) const {
+    for(ParameterId p : r.value.references()) {
+        if(p == r.id) return CommandError::CyclicParameter;
+        if(!parameters_.contains(p)) return CommandError::UnknownOperand;
+    }
+    if(r.id.valid() && wouldCycle(parameters_, r.id, r.value)) {
+        return CommandError::CyclicParameter;
+    }
+    return CommandError::None;
+}
+
 // ---------------------------------------------------------------------------
 // Apply
 // ---------------------------------------------------------------------------
@@ -160,17 +181,8 @@ CommandResult Document::apply(const Command &command) {
     auto regionCheck = [this](const RegionRecord &r) { return validate(r); };
     auto tagCheck = [this](const TagRecord &r) { return validate(r); };
     auto groupCheck = [this](const GroupRecord &r) { return validate(r); };
-    // A parameter may not reach itself, and every name it reads must exist.
-    auto parameterCheck = [this](const ParameterRecord &r) {
-        for(ParameterId p : r.value.references()) {
-            if(p == r.id) return CommandError::CyclicParameter;
-            if(!parameters_.contains(p)) return CommandError::UnknownOperand;
-        }
-        if(r.id.valid() && wouldCycle(parameters_, r.id, r.value)) {
-            return CommandError::CyclicParameter;
-        }
-        return CommandError::None;
-    };
+    auto styleCheck = [this](const StyleRecord &r) { return validate(r); };
+    auto parameterCheck = [this](const ParameterRecord &r) { return validate(r); };
 
     return std::visit(
         [&](const auto &c) -> CommandResult {
@@ -213,11 +225,11 @@ CommandResult Document::apply(const Command &command) {
                 return applySet(tags_, c.record, tagCheck);
 
             } else if constexpr(std::is_same_v<C, AddRecord<StyleRecord>>) {
-                return applyAdd(styles_, c.record, alwaysValid);
+                return applyAdd(styles_, c.record, styleCheck);
             } else if constexpr(std::is_same_v<C, RemoveRecord<StyleRecord>>) {
                 return applyRemove(styles_, c.id);
             } else if constexpr(std::is_same_v<C, SetRecord<StyleRecord>>) {
-                return applySet(styles_, c.record, alwaysValid);
+                return applySet(styles_, c.record, styleCheck);
 
             } else if constexpr(std::is_same_v<C, AddRecord<LayerRecord>>) {
                 return applyAdd(layers_, c.record, alwaysValid);
@@ -236,6 +248,14 @@ CommandResult Document::apply(const Command &command) {
             } else if constexpr(std::is_same_v<C, AddRecord<ParameterRecord>>) {
                 return applyAdd(parameters_, c.record, parameterCheck);
             } else if constexpr(std::is_same_v<C, RemoveRecord<ParameterRecord>>) {
+                // Same refusal as an entity removal, for the same reason: a
+                // slot left reading a name that is gone evaluates to nullopt,
+                // and the solver translation would drive that dimension to
+                // zero. The parameter overload of deletionStep() is how the
+                // removal is expressed.
+                if(!dependentsOf(*this, c.id).empty()) {
+                    return CommandResult{CommandError::HasDependents, 0};
+                }
                 return applyRemove(parameters_, c.id);
             } else {
                 return applySet(parameters_, c.record, parameterCheck);
@@ -409,6 +429,55 @@ Dependents dependentsOf(const Document &doc, EntityId id) {
             }
         }
     }
+    return out;
+}
+
+ParameterDependents dependentsOf(const Document &doc, ParameterId id) {
+    ParameterDependents out;
+    auto reads = [id](const Slot &s) {
+        const std::vector<ParameterId> refs = s.references();
+        return std::find(refs.begin(), refs.end(), id) != refs.end();
+    };
+    for(const ConstraintRecord &c : doc.constraints().records()) {
+        if(reads(c.value)) out.constraints.push_back(c.id);
+    }
+    for(const StyleRecord &s : doc.styles().records()) {
+        if(reads(s.strokeWidth)) out.styles.push_back(s.id);
+    }
+    for(const ParameterRecord &p : doc.parameters().records()) {
+        if(p.id != id && reads(p.value)) out.parameters.push_back(p.id);
+    }
+    return out;
+}
+
+// Freeze every referring slot, then remove. Freezing is one pass because a
+// frozen slot reads nothing: the parameters that referred to this one become
+// constants themselves rather than a second generation of dependents.
+std::vector<Command> deletionStep(const Document &doc, ParameterId id) {
+    std::vector<Command> out;
+    const ParameterDependents deps = dependentsOf(doc, id);
+
+    // Evaluated against the document as it stands, before any freeze lands, so
+    // a chain (b = a * 2, c = b + 1) freezes every link at the value it holds
+    // now rather than at whatever a half-applied step would have produced.
+    auto frozen = [&doc](const Slot &s) { return Slot(doc.evaluate(s).value_or(0.0)); };
+
+    for(ConstraintId c : deps.constraints) {
+        ConstraintRecord r = *doc.constraints().find(c);
+        r.value = frozen(r.value);
+        out.push_back(SetRecord<ConstraintRecord>{std::move(r)});
+    }
+    for(StyleId s : deps.styles) {
+        StyleRecord r = *doc.styles().find(s);
+        r.strokeWidth = frozen(r.strokeWidth);
+        out.push_back(SetRecord<StyleRecord>{std::move(r)});
+    }
+    for(ParameterId p : deps.parameters) {
+        ParameterRecord r = *doc.parameters().find(p);
+        r.value = frozen(r.value);
+        out.push_back(SetRecord<ParameterRecord>{std::move(r)});
+    }
+    out.push_back(RemoveRecord<ParameterRecord>{id});
     return out;
 }
 

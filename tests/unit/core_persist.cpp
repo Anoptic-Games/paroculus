@@ -1,5 +1,7 @@
 #include <doctest/doctest.h>
 
+#include <clocale>
+
 #include "core/persist.h"
 #include "support/build.h"
 
@@ -262,6 +264,84 @@ TEST_CASE("names with spaces and quotes survive") {
     Document loaded;
     REQUIRE(deserialize(serialize(doc), loaded).ok);
     CHECK(loaded.layers().find(id)->name == layer.name);
+}
+
+TEST_CASE("the decimal point is a point, whatever the process locale says") {
+    // QGuiApplication calls setlocale(LC_ALL, "") on Unix, so the app runs in
+    // the user's locale while the parser is locale-fixed to '.'. A printf-family
+    // writer would put a comma in the file on half of Europe and every save
+    // would be unreadable by the loader that wrote it.
+    Document doc;
+    addPoint(doc, 1.5, -0.25);
+    const std::string expected = serialize(doc);
+    CHECK(expected.find("1.5") != std::string::npos);
+
+    const char *comma[] = {"de_DE.UTF-8", "fr_FR.UTF-8", "de_DE", "fr_FR"};
+    const char *previous = std::setlocale(LC_ALL, nullptr);
+    const std::string restore = previous ? previous : "C";
+
+    bool tried = false;
+    for(const char *name : comma) {
+        if(std::setlocale(LC_ALL, name) == nullptr) continue;
+        tried = true;
+        CHECK(serialize(doc) == expected);
+
+        Document loaded;
+        CHECK(deserialize(expected, loaded).ok);
+        CHECK(loaded == doc);
+        break;
+    }
+    std::setlocale(LC_ALL, restore.c_str());
+    // No comma-decimal locale is generated on this machine; the substring check
+    // above still holds the property, weakly.
+    MESSAGE("comma-decimal locale exercised: ", tried);
+}
+
+TEST_CASE("a file whose slot names a parameter that is not in it is refused") {
+    // The alternative is a document that loads with a slot evaluating to
+    // nullopt, which translation turns into a dimension driving to zero. Each
+    // referring record kind is checked on its own, so one loop covering for
+    // another cannot pass for coverage.
+    enum Referrer { Style, Parameter, Constraint };
+    for(Referrer who : {Style, Parameter, Constraint}) {
+        CAPTURE(int(who));
+        Document doc;
+        ParameterRecord width;
+        width.name = "width";
+        width.value = Slot(40.0);
+        const ParameterId wid(doc.apply(AddRecord<ParameterRecord>{width}).allocated);
+
+        if(who == Style) {
+            StyleRecord style;
+            style.name = "hairline";
+            style.strokeWidth = Slot::parameter(wid);
+            REQUIRE(doc.apply(AddRecord<StyleRecord>{style}).ok());
+        } else if(who == Parameter) {
+            ParameterRecord half;
+            half.name = "half";
+            half.value = Slot::binary(ExprOp::Divide, Slot::parameter(wid), Slot(2.0));
+            REQUIRE(doc.apply(AddRecord<ParameterRecord>{half}).ok());
+        } else {
+            const EntityId p = addPoint(doc, 0.0, 0.0);
+            const EntityId q = addPoint(doc, 40.0, 0.0);
+            REQUIRE(addConstraint(doc, ConstraintKind::PointPointDistance, {p, q},
+                                  Slot::parameter(wid))
+                        .valid());
+        }
+
+        const std::string text = serialize(doc);
+        Document loaded;
+        REQUIRE(deserialize(text, loaded).ok);
+
+        // Drop the parameter line by hand, as a bad merge or an older build
+        // shedding a record it did not understand would.
+        const size_t at = text.find("parameter " + std::to_string(wid.value()) + " ");
+        REQUIRE(at != std::string::npos);
+        const std::string cut = text.substr(0, at) + text.substr(text.find('\n', at) + 1);
+
+        Document broken;
+        CHECK_FALSE(deserialize(cut, broken).ok);
+    }
 }
 
 TEST_CASE("property: round-tripping reaches a fixed point on random documents") {

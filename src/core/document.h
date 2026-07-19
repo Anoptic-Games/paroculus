@@ -132,6 +132,8 @@ public:
     CommandError validate(const RegionRecord &r) const;
     CommandError validate(const TagRecord &r) const;
     CommandError validate(const GroupRecord &r) const;
+    CommandError validate(const StyleRecord &r) const;
+    CommandError validate(const ParameterRecord &r) const;
 
     friend bool operator==(const Document &, const Document &);
     friend bool operator!=(const Document &a, const Document &b) { return !(a == b); }
@@ -177,6 +179,29 @@ struct Dependents {
 
 Dependents dependentsOf(const Document &doc, EntityId id);
 
+// Everything whose slot would stop evaluating if a parameter were removed:
+// constraint values, style widths, and other parameters built on it.
+//
+// Separate from Dependents because the relationship is different in kind. A
+// constraint that lost an operand is meaningless and dies with it; a
+// constraint that lost the name in its value still relates two real entities
+// and still holds the length it was holding. So these degrade rather than die
+// — see the parameter overload of deletionStep.
+struct ParameterDependents {
+    std::vector<ConstraintId> constraints;
+    std::vector<StyleId> styles;
+    std::vector<ParameterId> parameters;
+
+    bool empty() const {
+        return constraints.empty() && styles.empty() && parameters.empty();
+    }
+    size_t count() const {
+        return constraints.size() + styles.size() + parameters.size();
+    }
+};
+
+ParameterDependents dependentsOf(const Document &doc, ParameterId id);
+
 // The ordered command sequence that removes `id` along with everything that
 // would otherwise dangle, dependents first. Apply it as one undo step.
 //
@@ -190,6 +215,20 @@ Dependents dependentsOf(const Document &doc, EntityId id);
 // the degradation states PRINCIPLES calls for, where a region whose boundary
 // lost an edge renders broken rather than vanishing.
 std::vector<Command> deletionStep(const Document &doc, EntityId id);
+
+// The ordered command sequence that removes a parameter without leaving a slot
+// reading a name that is gone. Apply it as one undo step.
+//
+// Each referring slot is frozen to the value it evaluates to right now, then
+// the parameter is removed. Freezing rather than cascading is what the two
+// kinds of reference earn: nothing on screen moves, the drawing keeps every
+// dimension it had, and all that is lost is the provenance the user just chose
+// to delete. Freezing terminates in one pass — a frozen slot refers to
+// nothing, so there is no second generation of dependents to walk.
+//
+// A slot that cannot be evaluated at all (division by zero) freezes to zero.
+// It had no value to preserve.
+std::vector<Command> deletionStep(const Document &doc, ParameterId id);
 
 // Record-content equality, ignoring the ID watermarks.
 //

@@ -2,7 +2,6 @@
 
 #include <array>
 #include <charconv>
-#include <cstdio>
 #include <vector>
 
 namespace paroculus {
@@ -25,12 +24,17 @@ struct DocumentLoader {
 
 namespace {
 
-// %.17g is the shortest form guaranteed to survive a double round-trip. The
-// file is the storage of record, so exactness outranks looking tidy.
+// to_chars, not snprintf: the printf family honours LC_NUMERIC, and
+// QGuiApplication calls setlocale(LC_ALL, "") on Unix, so under a
+// comma-decimal locale a "%g" save writes 1,5 and from_chars — which is
+// locale-fixed to '.' — refuses to read it back. Serialization is
+// machine-independent or it is not the storage of record. to_chars is also
+// shortest-round-trip rather than 17 significant digits, so 0.1 writes as 0.1.
 std::string number(double v) {
-    std::array<char, 40> buf{};
-    const int n = std::snprintf(buf.data(), buf.size(), "%.17g", v);
-    return std::string(buf.data(), static_cast<size_t>(n < 0 ? 0 : n));
+    std::array<char, 48> buf{};
+    const std::to_chars_result r = std::to_chars(buf.data(), buf.data() + buf.size(), v);
+    if(r.ec != std::errc{}) return "0";
+    return std::string(buf.data(), static_cast<size_t>(r.ptr - buf.data()));
 }
 
 // Names are quoted and escaped so a name containing a space or a quote cannot
@@ -660,9 +664,17 @@ LoadResult deserialize(std::string_view text, Document &out) {
             return fail("group " + std::to_string(r.id.value()) + " is not valid", 0);
         }
     }
+    for(const StyleRecord &r : doc.styles().records()) {
+        if(doc.validate(r) != CommandError::None) {
+            return fail("style " + std::to_string(r.id.value()) + " is not valid", 0);
+        }
+    }
+    // Covers the cycle check and the reference check together, so a parameter
+    // naming a parameter that is not in the file is refused here rather than
+    // evaluating to nullopt for the rest of the session.
     for(const ParameterRecord &r : doc.parameters().records()) {
-        if(wouldCycle(doc.parameters(), r.id, r.value)) {
-            return fail("parameter " + std::to_string(r.id.value()) + " is cyclic", 0);
+        if(doc.validate(r) != CommandError::None) {
+            return fail("parameter " + std::to_string(r.id.value()) + " is not valid", 0);
         }
     }
 

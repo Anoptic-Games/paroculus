@@ -176,6 +176,71 @@ TEST_CASE("a slot referencing a missing parameter is refused") {
                     .valid());
 }
 
+TEST_CASE("a parameter still being read cannot simply vanish") {
+    // A dangling slot is worse than a dangling operand: it evaluates to nullopt
+    // and the solver translation reads that as zero, so the dimension drives to
+    // nothing with no refusal anywhere. The deletion freezes instead.
+    Document doc;
+    ParameterRecord width;
+    width.name = "width";
+    width.value = Slot(40.0);
+    const ParameterId wid(doc.apply(AddRecord<ParameterRecord>{width}).allocated);
+
+    ParameterRecord half;
+    half.name = "half";
+    half.value = Slot::binary(ExprOp::Divide, Slot::parameter(wid), Slot(2.0));
+    const ParameterId hid(doc.apply(AddRecord<ParameterRecord>{half}).allocated);
+
+    StyleRecord style;
+    style.name = "hairline";
+    style.strokeWidth = Slot::parameter(hid);
+    const StyleId sid(doc.apply(AddRecord<StyleRecord>{style}).allocated);
+
+    const EntityId p = addPoint(doc, 0.0, 0.0);
+    const EntityId q = addPoint(doc, 40.0, 0.0);
+    const ConstraintId dim =
+        addConstraint(doc, ConstraintKind::PointPointDistance, {p, q}, Slot::parameter(wid));
+    REQUIRE(dim.valid());
+
+    const ParameterDependents deps = dependentsOf(doc, wid);
+    CHECK(deps.constraints.size() == 1);
+    CHECK(deps.parameters.size() == 1);
+    CHECK(deps.styles.empty());  // the style reads half, not width
+    CHECK(deps.count() == 2);
+
+    CHECK(doc.apply(RemoveRecord<ParameterRecord>{wid}).error == CommandError::HasDependents);
+    CHECK(doc.parameters().contains(wid));
+
+    for(const Command &c : deletionStep(doc, wid)) REQUIRE(doc.apply(c).ok());
+
+    CHECK_FALSE(doc.parameters().contains(wid));
+    // Every value the drawing had, it still has — only the name is gone.
+    CHECK(*doc.evaluate(doc.constraints().find(dim)->value) == doctest::Approx(40.0));
+    CHECK(*doc.evaluate(doc.parameters().find(hid)->value) == doctest::Approx(20.0));
+    CHECK(*doc.evaluate(doc.styles().find(sid)->strokeWidth) == doctest::Approx(20.0));
+    // A frozen slot reads nothing, so half is now deletable on its own.
+    CHECK(dependentsOf(doc, hid).count() == 1);
+}
+
+TEST_CASE("an unread parameter deletes on its own") {
+    Document doc;
+    ParameterRecord gutter;
+    gutter.name = "gutter";
+    gutter.value = Slot(8.0);
+    const ParameterId id(doc.apply(AddRecord<ParameterRecord>{gutter}).allocated);
+
+    CHECK(deletionStep(doc, id).size() == 1);
+    CHECK(doc.apply(RemoveRecord<ParameterRecord>{id}).ok());
+}
+
+TEST_CASE("a style width is a slot, and is checked like one") {
+    Document doc;
+    StyleRecord style;
+    style.name = "hairline";
+    style.strokeWidth = Slot::parameter(ParameterId(42));
+    CHECK(doc.apply(AddRecord<StyleRecord>{style}).error == CommandError::UnknownOperand);
+}
+
 TEST_CASE("regions reference edges, never points") {
     Document doc;
     const EntityId p = addPoint(doc, 0.0, 0.0);

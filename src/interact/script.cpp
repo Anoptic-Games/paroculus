@@ -2,7 +2,6 @@
 
 #include <array>
 #include <charconv>
-#include <cstdio>
 
 #include "core/persist.h"
 #include "interact/registry.h"
@@ -11,13 +10,16 @@
 namespace paroculus {
 namespace {
 
-// %.17g, for the reason persist gives: the shortest form guaranteed to survive
-// a double round-trip. A script is a recording, and a recording that replays
-// half a pixel off has stopped reproducing what it was made to reproduce.
+// to_chars, for the reason persist gives: shortest round-trip, and
+// locale-independent where the printf family is not. A script is a recording,
+// and a recording that replays half a pixel off — or not at all, because the
+// machine that wrote it spells the point as a comma — has stopped reproducing
+// what it was made to reproduce.
 std::string number(double v) {
-    std::array<char, 40> buf{};
-    const int n = std::snprintf(buf.data(), buf.size(), "%.17g", v);
-    return std::string(buf.data(), static_cast<size_t>(n < 0 ? 0 : n));
+    std::array<char, 48> buf{};
+    const std::to_chars_result r = std::to_chars(buf.data(), buf.data() + buf.size(), v);
+    if(r.ec != std::errc{}) return "0";
+    return std::string(buf.data(), static_cast<size_t>(r.ptr - buf.data()));
 }
 
 std::optional<double> toDouble(std::string_view s) {
