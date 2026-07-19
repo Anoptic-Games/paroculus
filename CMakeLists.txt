@@ -157,6 +157,7 @@ add_library(paroculus-interact STATIC
     src/interact/numeric.cpp
     src/interact/numeric.h
     src/interact/policies.cpp
+    src/interact/placement.h
     src/interact/policies.h
     src/interact/registry.cpp
     src/interact/registry.h

@@ -50,9 +50,17 @@ std::vector<GlyphMark> visibleGlyphs(const Document &doc, const Pose &pose,
 // Marks for relations a placement would declare but has not yet.
 //
 // candidates: what inference is proposing. placement: where the point would go.
-// segmentFrom / haveSegment: the in-flight segment, for the direction-valued
-// kinds, which sit on the segment rather than on either end of it.
+// roles: what the committing click will create, which is what decides whether
+// a candidate declares anything at all and which relation it declares — a rim
+// snap on a circle is a point-on-curve, not the coincidence the same candidate
+// would mean if a point were landing there. segmentFrom: the in-flight
+// segment's anchor, for the direction-valued kinds, which sit on the segment
+// rather than on either end of it.
+//
+// A candidate the commit would drop must not be ghosted. Promising a relation
+// the placement cannot deliver is worse than showing nothing, because the whole
+// contract of the preview is that it is the commit rendered early.
 std::vector<GlyphMark> ghostGlyphs(std::span<const SnapCandidate> candidates, Point placement,
-                                   bool haveSegment, Point segmentFrom);
+                                   PlacementRoles roles, Point segmentFrom);
 
 }  // namespace paroculus

@@ -23,6 +23,7 @@
 
 #include "core/document.h"
 #include "core/pose.h"
+#include "interact/placement.h"
 
 namespace paroculus {
 
@@ -55,6 +56,15 @@ struct ToolPreview {
     // Inference reads it to keep a placement from snapping to its own anchor.
     EntityId fromEntity;
 
+    // What the committing click will create. Two things read it and both must:
+    // the ghost, so a previewed relation is one the commit can deliver, and
+    // inference itself, because the direction-valued kinds describe a segment
+    // and a tool whose band is not a segment — a circle's radius, a
+    // rectangle's diagonal, an arc's chord — has no segment for them to be
+    // about. Generating them there would offer the user a parallel to a line
+    // that is never going to exist.
+    PlacementRoles willPlace;
+
     // A curve gesture describes an arc rather than a chord, and the preview has
     // to show the shape that will land rather than the one the two clicks
     // happen to span.
@@ -70,17 +80,25 @@ struct ToolOutput {
     std::string label;
     std::vector<Command> commands;
 
-    // What inference may bind to, named by the tool because only the tool knows
-    // which of the ids it claimed are the placement. A macro tool declares its
-    // own subjects the same way.
+    // What inference may bind to at the click that committed, named by the tool
+    // because only the tool knows which of the ids it claimed are the
+    // placement. A macro tool declares its own subjects the same way.
     //
-    // placedStart is valid only on the step that opens a chain, because that is
-    // the only step that creates the point the chain starts from — and the
-    // relations inferred for it were captured a click earlier, when the user
-    // was pointing at it.
-    EntityId placedStart;
-    EntityId placedPoint;
-    EntityId placedSegment;
+    // A role left null is a role the placement did not fill, and candidates
+    // bound to it declare nothing rather than being quietly rehomed onto some
+    // other entity the tool happened to make.
+    PlacementSubjects placed;
+
+    // What the gesture's earlier, non-committing clicks turned out to create,
+    // in click order.
+    //
+    // Those clicks bound relations — the user was pointing at an existing
+    // vertex when they started — but the points they belong to have no ids
+    // until the shape commits, so the relations wait. A line chain has one such
+    // click and an arc has two, which is why this is a list and not a single
+    // id: a mechanism that could remember one pending click would silently drop
+    // an arc's start or its end.
+    std::vector<EntityId> opened;
 };
 
 class Tool {
@@ -230,6 +248,12 @@ public:
         double radius = 0.0;
         double startAngle = 0.0;
         double sweep = 0.0;
+        // True when the arc runs from the second click to the first. The solver
+        // wants its endpoints counter-clockwise, and which of the two clicks
+        // that makes the start depends on which side the bulge went — so the
+        // gesture's first click is not reliably the arc's first point, and
+        // anything binding relations to a click has to ask.
+        bool reversed = false;
     };
     std::optional<Ghost> ghost() const;
 

@@ -113,23 +113,27 @@ std::vector<GlyphMark> visibleGlyphs(const Document &doc, const Pose &pose,
 }
 
 std::vector<GlyphMark> ghostGlyphs(std::span<const SnapCandidate> candidates, Point placement,
-                                   bool haveSegment, Point segmentFrom) {
+                                   PlacementRoles roles, Point segmentFrom) {
     std::vector<GlyphMark> out;
     for(const SnapCandidate &c : candidates) {
-        const SnapKindInfo &info = snapInfo(c.kind);
-        // Placement-only kinds declare nothing, so there is no relation to
-        // preview. Grid moving the point is visible in the point moving.
-        if(!info.commitsConstraint) continue;
         // Only what would actually be declared. An offer the user has not
         // confirmed is a suggestion in the strip, not a relation about to
         // exist, and ghosting it would promise something commit will not do.
         if(!c.autoCommits()) continue;
 
+        // The commit's own resolver, asked a click early. It answers both
+        // questions at once — whether this candidate survives the placement's
+        // shape, and which relation it turns out to be — so the ghost cannot
+        // name a kind the commit would not write. Placement-only kinds and
+        // candidates whose subject the placement never creates both fall out
+        // here as nullopt rather than needing a rule of their own.
+        const std::optional<ConstraintKind> kind = declaredKind(c, roles);
+        if(!kind) continue;
+
         GlyphMark mark;
-        mark.kind = info.constraint;
+        mark.kind = *kind;
         mark.ghost = true;
         if(c.subject == SnapSubject::PlacedSegment) {
-            if(!haveSegment) continue;
             mark.anchor = Point{(segmentFrom.x + placement.x) * 0.5,
                                 (segmentFrom.y + placement.y) * 0.5};
         } else {

@@ -27,6 +27,7 @@
 #include "core/document.h"
 #include "core/pose.h"
 #include "interact/hit.h"
+#include "interact/placement.h"
 #include "interact/policies.h"
 
 namespace paroculus {
@@ -109,10 +110,24 @@ SnapResult snap(const Document &doc, const Pose &pose, const SpatialIndex &index
 
 // Builds the constraint a candidate declares, once the placement has ids.
 //
-// placedPoint, placedSegment: the entities the tool created. Returns nullopt
-// for a candidate whose subject the placement did not create, and for the
-// placement-only kinds, which declare nothing by design.
+// placed: what the tool created, by role. Returns nullopt for the
+// placement-only kinds, which declare nothing by design, and for a candidate
+// whose subject the placement did not create in any form it can be said about.
+//
+// A candidate says two things coincide at a position. Which constraint says it
+// depends on what the placement put there: a point gives coincidence, and a
+// curve passing through with no point of its own gives point-on-curve. That is
+// one geometric claim with two spellings, not two rules — see the comment on
+// the implementation before adding a third.
 std::optional<ConstraintRecord> constraintFor(const SnapCandidate &candidate,
-                                              EntityId placedPoint, EntityId placedSegment);
+                                              const PlacementSubjects &placed);
+
+// Whether a placement filling exactly these roles would declare this candidate.
+//
+// The ghost's question, asked a click before the ids exist. It is answered by
+// running constraintFor itself against stand-in ids, so a previewed relation
+// and a committed one cannot disagree — that is what "preview shows truth"
+// means mechanically, and it is why this is not a second predicate.
+std::optional<ConstraintKind> declaredKind(const SnapCandidate &candidate, PlacementRoles roles);
 
 }  // namespace paroculus

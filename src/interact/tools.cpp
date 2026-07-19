@@ -76,14 +76,17 @@ ToolOutput LineTool::press(const Document &doc, Point cursor) {
     const EntityId start = anchorEntity_.valid() ? anchorEntity_ : claim();
     if(!anchorEntity_.valid()) {
         out.commands.push_back(AddRecord<EntityRecord>{pointRecord(start, anchor_)});
-        out.placedStart = start;
+        // The click that opened the chain created nothing at the time. This is
+        // the point it turned out to mean, and the relations it captured bind
+        // here. Continuing a chain opens nothing, so the list stays empty.
+        out.opened.push_back(start);
     }
     const EntityId end = claim();
     out.commands.push_back(AddRecord<EntityRecord>{pointRecord(end, cursor)});
     const EntityId segment = claim();
     out.commands.push_back(AddRecord<EntityRecord>{segmentRecord(segment, start, end)});
-    out.placedPoint = end;
-    out.placedSegment = segment;
+    out.placed.point = end;
+    out.placed.segment = segment;
     lastStart_ = start;
     lastEnd_ = end;
     pendingEnd_ = end;
@@ -124,6 +127,9 @@ ToolPreview LineTool::preview() const {
     p.from = anchor_;
     p.to = cursor_;
     p.fromEntity = anchorEntity_;
+    // A point at the far end and the segment reaching it. The band is a real
+    // segment, so the direction-valued kinds have something to be about.
+    p.willPlace = PlacementRoles{true, true, false};
     return p;
 }
 
@@ -223,10 +229,15 @@ ToolOutput CircleTool::press(const Document &doc, Point cursor) {
     circle.seeds = {radius, 0.0};
     out.commands.push_back(AddRecord<EntityRecord>{circle});
 
-    // Inference binds to the centre: it is the point the user placed, and the
-    // rim is a radius rather than a position anything can be coincident with.
-    out.placedStart = centre;
-    out.placedPoint = centre;
+    // The opening click placed the centre, and its relations bind there.
+    out.opened.push_back(centre);
+    // The committing click placed no point at all: the rim is a radius, and
+    // there is no entity sitting on it. Naming the centre as the placed point
+    // would be the plausible wrong answer — a rim snap would then declare the
+    // centre coincident with whatever the rim touched, and the circle would
+    // teleport. What a rim snap means is that the circle passes through, which
+    // is a relation about the curve.
+    out.placed.curve = circle.id;
     lastCircle_ = circle.id;
     return out;
 }
@@ -257,6 +268,10 @@ ToolPreview CircleTool::preview() const {
     p.active = haveCentre_ && haveCursor_;
     p.from = centre_;
     p.to = cursor_;
+    // The band is a radius, not a segment: nothing is being drawn from the
+    // centre to the rim, so there is nothing for horizontal or parallel to
+    // describe and they are not generated.
+    p.willPlace = PlacementRoles{false, false, true};
     return p;
 }
 
@@ -335,9 +350,11 @@ std::optional<ArcTool::Ghost> ArcTool::ghost() const {
     if(toThrough <= forward) {
         g.startAngle = startAngle;
         g.sweep = forward;
+        g.reversed = false;
     } else {
         g.startAngle = endAngle;
         g.sweep = TAU - forward;
+        g.reversed = true;
     }
     return g;
 }
@@ -366,6 +383,7 @@ ToolOutput ArcTool::press(const Document &doc, Point cursor) {
 
     uint32_t next = doc.entities().allocator().next();
     auto claim = [&next]() { return EntityId(next++); };
+    uint32_t nextConstraint = doc.constraints().allocator().next();
 
     ToolOutput out;
     out.label = "arc";
@@ -404,12 +422,30 @@ ToolOutput ArcTool::press(const Document &doc, Point cursor) {
     out.commands.push_back(AddRecord<EntityRecord>{pointRecord(through, onArc)});
 
     ConstraintRecord onCircle;
+    // Claimed, not left null for the document to allocate. Session claims its
+    // inferred relations past whatever the tool already took, and it can only
+    // see what a record names — a null id reads as nothing taken, so the first
+    // inferred coincidence would be handed this record's id and the whole step
+    // would be refused for the collision. All-or-nothing means that costs the
+    // arc, not one relation.
+    onCircle.id = ConstraintId(nextConstraint++);
     onCircle.kind = ConstraintKind::PointOnCircle;
     onCircle.operands[0] = through;
     onCircle.operands[1] = arc.id;
     out.commands.push_back(AddRecord<ConstraintRecord>{onCircle});
 
-    out.placedPoint = through;
+    // Both opening clicks bound relations, and both bind now — in click order,
+    // which is not the arc's own order when the bulge reversed it. Binding the
+    // first click's snaps to the arc's start point regardless would silently
+    // attach the user's coincidence to the wrong end of half the arcs they
+    // draw, and every asserted invariant would still hold.
+    out.opened.push_back(g->reversed ? endPoint : startPoint);
+    out.opened.push_back(g->reversed ? startPoint : endPoint);
+
+    // The third click did place a point: the through point is real geometry at
+    // the cursor, so a snap there is an ordinary coincidence.
+    out.placed.point = through;
+    out.placed.curve = arc.id;
     return out;
 }
 
@@ -439,6 +475,9 @@ ToolPreview ArcTool::preview() const {
     p.active = clicks_ >= 1 && haveCursor_;
     p.from = start_;
     p.to = clicks_ >= 2 ? end_ : cursor_;
+    // A chord, then a bulge — never a segment. The through point is the only
+    // point the commit places at the cursor.
+    p.willPlace = PlacementRoles{true, false, true};
     if(const std::optional<Ghost> g = ghost()) {
         p.arcActive = true;
         p.arcCentre = g->centre;
@@ -529,7 +568,12 @@ ToolOutput RectangleTool::press(const Document &doc, Point cursor) {
 
     // Inference binds to the corner the user placed first, so starting a
     // rectangle on an existing vertex means what it looks like it means.
-    out.placedStart = ends[0][0];
+    out.opened.push_back(ends[0][0]);
+    // And to the corner the closing click placed — corners[2], which edge 1
+    // ends at. Without this the closing snap would correct the position and
+    // declare nothing: the rectangle would sit on the vertex it landed on
+    // rather than being bound to it, and the first drag would peel them apart.
+    out.placed.point = ends[1][1];
     lastWidth_[0] = ends[0][0];
     lastWidth_[1] = ends[0][1];
     lastHeight_[0] = ends[1][0];
@@ -592,6 +636,11 @@ ToolPreview RectangleTool::preview() const {
     p.active = haveCorner_ && haveCursor_;
     p.from = corner_;
     p.to = cursor_;
+    // The band spans a diagonal, and a diagonal is not one of the four
+    // segments this places. Offering to make it horizontal — or parallel to
+    // something — would be offering a relation about a line that never exists.
+    // The edges get their axis constraints from the macro itself.
+    p.willPlace = PlacementRoles{true, false, false};
     return p;
 }
 

@@ -72,7 +72,7 @@ void Session::setTool(ToolKind kind) {
     numeric_.cancel();
     imposePending_ = false;
     confirmedOffers_.clear();
-    pendingStartSnaps_.clear();
+    pendingSnaps_.clear();
     presentation_.snapCandidates.clear();
     presentation_.inferred.clear();
     presentation_.closedLoop.clear();
@@ -113,7 +113,12 @@ SnapResult Session::inferAt(Point cursor) const {
     request.cursor = cursor;
     if(tool_) {
         const ToolPreview p = tool_->preview();
-        request.haveAnchor = p.active;
+        // An anchor means a segment is in flight, not merely that a band is on
+        // screen. Horizontal, parallel and the rest are properties of a
+        // segment, and a circle's radius or a rectangle's diagonal is not one —
+        // generating them there would offer relations about a line the commit
+        // is never going to create.
+        request.haveAnchor = p.active && p.willPlace.segment;
         request.anchor = p.from;
         request.anchorEntity = p.fromEntity;
     }
@@ -138,9 +143,11 @@ std::vector<GlyphMark> Session::glyphs() const {
     // the one the user needs to see, and there are only ever a handful.
     if(tool_) {
         const ToolPreview preview = tool_->preview();
+        // Nothing is about to be placed when there is no placement in flight,
+        // so an inactive preview promises nothing.
         const std::vector<GlyphMark> ghosts =
             ghostGlyphs(presentation_.snapCandidates, preview.active ? preview.to : lastCursor_,
-                        preview.active, preview.from);
+                        preview.active ? preview.willPlace : PlacementRoles(), preview.from);
         out.insert(out.end(), ghosts.begin(), ghosts.end());
     }
     return out;
@@ -259,8 +266,10 @@ void Session::rememberSnaps(const std::vector<SnapCandidate> &committed) {
 void Session::runTool(ToolOutput output, std::vector<ConstraintId> inferred) {
     // Kept before the commands are moved out, so closure can be asked about the
     // edge the placement created.
-    const EntityId closureSeed =
-        output.placedSegment.valid() ? output.placedSegment : output.placedStart;
+    const EntityId closureSeed = output.placed.segment.valid() ? output.placed.segment
+                                 : output.placed.point.valid() ? output.placed.point
+                                 : output.opened.empty()       ? EntityId()
+                                                               : output.opened.front();
 
     if(output.commands.empty()) {
         refreshToolPresentation();
@@ -316,12 +325,13 @@ void Session::handle(const PointerEvent &event) {
 
                 ToolOutput out = tool_->press(*doc_, inference.placement);
                 if(out.commands.empty()) {
-                    // The click that opens a chain declares nothing yet: the
-                    // point it binds has no id until a segment justifies it.
-                    // Hold the relations for one click rather than dropping
-                    // them, or starting a run on an existing corner would
-                    // silently place a free point on top of it.
-                    pendingStartSnaps_ = inference.autoCommitted();
+                    // A click that opens a shape declares nothing yet: the
+                    // point it binds has no id until the shape justifies it.
+                    // Hold the relations rather than dropping them, or starting
+                    // a run on an existing corner would silently place a free
+                    // point on top of it. Appended, because the next click may
+                    // open too — an arc opens twice before it commits.
+                    pendingSnaps_.push_back(inference.autoCommitted());
                     refreshToolPresentation();
                     return;
                 }
@@ -343,8 +353,8 @@ void Session::handle(const PointerEvent &event) {
                 }
                 std::vector<SnapCandidate> committed;
                 std::vector<ConstraintId> inferred;
-                auto declare = [&](const SnapCandidate &c, EntityId point, EntityId segment) {
-                    std::optional<ConstraintRecord> r = constraintFor(c, point, segment);
+                auto declare = [&](const SnapCandidate &c, const PlacementSubjects &subjects) {
+                    std::optional<ConstraintRecord> r = constraintFor(c, subjects);
                     if(!r) return;
                     r->id = ConstraintId(nextConstraint++);
                     inferred.push_back(r->id);
@@ -352,13 +362,17 @@ void Session::handle(const PointerEvent &event) {
                     committed.push_back(c);
                 };
 
-                if(out.placedStart.valid()) {
-                    for(const SnapCandidate &c : pendingStartSnaps_) {
-                        declare(c, out.placedStart, EntityId());
-                    }
+                // The held clicks, each against the entity it turned out to
+                // create. Zipped in order and only as far as both run: a tool
+                // that named fewer entities than there were held clicks drops
+                // the surplus rather than binding them to the wrong point.
+                for(size_t i = 0; i < pendingSnaps_.size() && i < out.opened.size(); i++) {
+                    PlacementSubjects opened;
+                    opened.point = out.opened[i];
+                    for(const SnapCandidate &c : pendingSnaps_[i]) declare(c, opened);
                 }
                 for(const SnapCandidate &c : inference.autoCommitted()) {
-                    declare(c, out.placedPoint, out.placedSegment);
+                    declare(c, out.placed);
                 }
                 // A typed value that was imposed becomes a driving dimension
                 // in the same step as the geometry it measures, so undo takes
@@ -374,7 +388,7 @@ void Session::handle(const PointerEvent &event) {
                     imposePending_ = false;
                 }
 
-                pendingStartSnaps_.clear();
+                pendingSnaps_.clear();
                 // A confirmation is about one placement, not about the tool.
                 confirmedOffers_.clear();
                 runTool(std::move(out), std::move(inferred));
@@ -491,7 +505,7 @@ void Session::handle(Key key, Modifier modifiers) {
                 // Ending the chain abandons the placement, and confirmations
                 // belong to the placement.
                 confirmedOffers_.clear();
-                pendingStartSnaps_.clear();
+                pendingSnaps_.clear();
                 if(!tool_->escape()) setTool(ToolKind::Select);
                 refreshToolPresentation();
                 return;

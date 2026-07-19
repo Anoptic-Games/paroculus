@@ -200,7 +200,8 @@ TEST_CASE("ghosts preview only what would actually be declared") {
 
     const std::vector<SnapCandidate> candidates{endpoint, parallel, grid};
     const std::vector<GlyphMark> ghosts =
-        ghostGlyphs(candidates, Point{10.0, 20.0}, true, Point{0.0, 0.0});
+        ghostGlyphs(candidates, Point{10.0, 20.0}, PlacementRoles{true, true, false},
+                    Point{0.0, 0.0});
 
     REQUIRE(ghosts.size() == 1);
     CHECK(ghosts[0].kind == ConstraintKind::Coincident);
@@ -211,7 +212,8 @@ TEST_CASE("ghosts preview only what would actually be declared") {
     std::vector<SnapCandidate> confirmed = candidates;
     confirmed[1].confirmed = true;
     const std::vector<GlyphMark> withParallel =
-        ghostGlyphs(confirmed, Point{10.0, 20.0}, true, Point{0.0, 0.0});
+        ghostGlyphs(confirmed, Point{10.0, 20.0}, PlacementRoles{true, true, false},
+                    Point{0.0, 0.0});
     REQUIRE(withParallel.size() == 2);
     // A direction-valued relation sits on the segment, not on either end.
     const GlyphMark &onSegment = withParallel[1];

@@ -202,7 +202,8 @@ TEST_CASE("grid places but never declares") {
     CHECK(r.autoCommitted().empty());
     CHECK(r.offered().empty());
     const SnapCandidate *g = find(r.candidates, SnapKind::Grid);
-    CHECK_FALSE(constraintFor(*g, EntityId(1), EntityId(2)).has_value());
+    CHECK_FALSE(constraintFor(*g, PlacementSubjects{EntityId(1), EntityId(2), EntityId()})
+                    .has_value());
 }
 
 TEST_CASE("ranking puts auto-commit above offered, whatever the distance") {
@@ -293,6 +294,222 @@ TEST_CASE("WYSIWYG: the previewed set is the committed set") {
     session.handle(Key::Undo);
     CHECK(doc.constraints().size() == 0);
     CHECK(doc.entities().size() == 1);  // back to the lone vertex
+}
+
+namespace {
+
+// Drives a session in document coordinates, the way the shell drives it in
+// screen ones. Grid off: these cases are about what the geometry declares, and
+// a grid snap winning the placement would only obscure that.
+// The document is the caller's and must already hold whatever the gesture is
+// meant to snap to: the session builds its spatial index from what it is
+// handed, so a vertex added afterwards is not there to be aimed at.
+struct Gesture {
+    Document &doc;
+    UndoJournal journal;
+    Session session;
+
+    Gesture(Document &document, ToolKind tool) : doc(document), session(document, journal) {
+        session.setViewport(snapViewport());
+        session.snapPolicy().gridEnabled = false;
+        session.setTool(tool);
+    }
+
+    void moveTo(Point p) {
+        session.handle(PointerEvent::at(PointerAction::Move,
+                                        session.viewport().view.toScreen(p),
+                                        session.viewport().view));
+    }
+    void pressAt(Point p) {
+        moveTo(p);
+        session.handle(PointerEvent::at(PointerAction::Press,
+                                        session.viewport().view.toScreen(p),
+                                        session.viewport().view, Button::Left));
+    }
+
+    // What the overlay is promising this instant, as constraint kinds. This is
+    // the preview half of WYSIWYG: whatever is in here has to come out of the
+    // press that follows.
+    std::vector<ConstraintKind> ghosted() const {
+        std::vector<ConstraintKind> out;
+        for(const GlyphMark &m : session.glyphs()) {
+            if(m.ghost) out.push_back(m.kind);
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+
+    std::vector<ConstraintKind> declared() const {
+        std::vector<ConstraintKind> out;
+        for(const ConstraintRecord &c : doc.constraints().records()) out.push_back(c.kind);
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+
+    // The relations a press added, so a macro's own constraints do not have to
+    // be subtracted by hand in every case.
+    std::vector<ConstraintRecord> addedBy(const std::vector<ConstraintId> &before) const {
+        std::vector<ConstraintRecord> out;
+        for(const ConstraintRecord &c : doc.constraints().records()) {
+            if(std::find(before.begin(), before.end(), c.id) == before.end()) out.push_back(c);
+        }
+        return out;
+    }
+    std::vector<ConstraintId> constraintIds() const {
+        std::vector<ConstraintId> out;
+        for(const ConstraintRecord &c : doc.constraints().records()) out.push_back(c.id);
+        return out;
+    }
+
+    // Whether some constraint of this kind binds `target`, and if so where the
+    // entity on the other side was drawn. Positions rather than ids, because
+    // which of a macro's points ends up bound is the macro's business and the
+    // user only ever sees where it is.
+    //
+    // Seeds, emphatically not the solved pose: a coincidence exists to make two
+    // positions equal, so by the time the solve has run a relation bound to the
+    // wrong end looks exactly like one bound to the right end. Reading the pose
+    // here would be reading the answer the constraint imposed rather than the
+    // intent it was declared from, and the test would pass either way.
+    std::optional<Point> boundAt(ConstraintKind kind, EntityId target) const {
+        auto seedOf = [&](EntityId id) -> std::optional<Point> {
+            const EntityRecord *e = doc.entities().find(id);
+            if(e == nullptr) return std::nullopt;
+            return Point{e->seeds[0], e->seeds[1]};
+        };
+        for(const ConstraintRecord &c : doc.constraints().records()) {
+            if(c.kind != kind) continue;
+            if(c.operands[0] == target) return seedOf(c.operands[1]);
+            if(c.operands[1] == target) return seedOf(c.operands[0]);
+        }
+        return std::nullopt;
+    }
+};
+
+bool near(std::optional<Point> p, Point q) {
+    return p && std::abs(p->x - q.x) < 1e-6 && std::abs(p->y - q.y) < 1e-6;
+}
+
+}  // namespace
+
+TEST_CASE("WYSIWYG: a circle's rim snap declares point-on-circle, not a moved centre") {
+    // The plausible wrong answer is to bind the rim's candidate to the only
+    // point the tool created — the centre — which would declare the centre
+    // coincident with whatever the rim touched and teleport the circle. A rim
+    // snap is a claim about the curve, so it is a claim the curve can hold.
+    Document doc;
+    const EntityId vertex = paroculus::test::addPoint(doc, 100.0, 0.0);
+    Gesture g(doc, ToolKind::Circle);
+
+    g.pressAt(Point{0.0, 0.0});  // centre, in empty space
+    g.moveTo(Point{98.0, 1.0});  // rim, just off the vertex
+
+    CHECK(g.ghosted() == std::vector<ConstraintKind>{ConstraintKind::PointOnCircle});
+    g.pressAt(Point{98.0, 1.0});
+
+    REQUIRE(g.declared() == std::vector<ConstraintKind>{ConstraintKind::PointOnCircle});
+    // The vertex is on the circle, and the circle is where it was drawn.
+    const ConstraintRecord &c = g.doc.constraints().records().front();
+    CHECK(c.operands[0] == vertex);
+    const EntityRecord *circle = g.doc.entities().find(c.operands[1]);
+    REQUIRE(circle != nullptr);
+    CHECK(circle->kind == EntityKind::Circle);
+    CHECK(near(g.session.pose().point(circle->points[0]), Point{0.0, 0.0}));
+    CHECK(g.session.pose().radius(circle->id) == doctest::Approx(100.0));
+}
+
+TEST_CASE("WYSIWYG: a circle's centre snap still binds the centre") {
+    // The other half of the same story: the opening click does place a point,
+    // and a snap there is an ordinary coincidence.
+    Document doc;
+    const EntityId vertex = paroculus::test::addPoint(doc, 40.0, 40.0);
+    Gesture g(doc, ToolKind::Circle);
+
+    g.pressAt(Point{38.0, 41.0});  // centre, on the vertex
+    g.pressAt(Point{138.0, 41.0});
+
+    CHECK(g.declared() == std::vector<ConstraintKind>{ConstraintKind::Coincident});
+    CHECK(near(g.boundAt(ConstraintKind::Coincident, vertex), Point{40.0, 40.0}));
+}
+
+TEST_CASE("WYSIWYG: both of an arc's opening clicks keep their relations") {
+    // An arc opens twice before it commits. A mechanism that remembered one
+    // pending click would drop the start and keep the end — and every asserted
+    // invariant would still hold, which is why this is asserted here.
+    for(double bulge : {60.0, -60.0}) {
+        CAPTURE(bulge);
+        Document doc;
+        const EntityId from = paroculus::test::addPoint(doc, -100.0, 0.0);
+        const EntityId to = paroculus::test::addPoint(doc, 100.0, 0.0);
+        Gesture g(doc, ToolKind::Arc);
+
+        g.pressAt(Point{-98.0, 1.0});  // start, on `from`
+        g.pressAt(Point{98.0, -1.0});  // end, on `to`
+        g.pressAt(Point{0.0, bulge});  // the bulge, in empty space
+
+        // Two coincidences from the opening clicks, plus the arc macro's own
+        // point-on-circle for the through point.
+        std::vector<ConstraintKind> expected{ConstraintKind::Coincident,
+                                             ConstraintKind::Coincident,
+                                             ConstraintKind::PointOnCircle};
+        std::sort(expected.begin(), expected.end());
+        CHECK(g.declared() == expected);
+
+        // Each opening click bound to the vertex it was aimed at — which is the
+        // assertion the bulge direction can break, because the solver's start
+        // is the second click whenever the bulge reversed the sweep.
+        CHECK(near(g.boundAt(ConstraintKind::Coincident, from), Point{-100.0, 0.0}));
+        CHECK(near(g.boundAt(ConstraintKind::Coincident, to), Point{100.0, 0.0}));
+    }
+}
+
+TEST_CASE("WYSIWYG: a rectangle's closing corner binds, it does not merely land") {
+    // Without a placed point named for the closing click the snap corrects the
+    // position and declares nothing: the rectangle sits on the vertex and the
+    // first drag peels it away again.
+    Document doc;
+    const EntityId start = paroculus::test::addPoint(doc, 0.0, 0.0);
+    const EntityId finish = paroculus::test::addPoint(doc, 120.0, 80.0);
+    Gesture g(doc, ToolKind::Rectangle);
+
+    g.pressAt(Point{2.0, -1.0});  // first corner, on `start`
+    const std::vector<ConstraintId> beforeCommit = g.constraintIds();
+    g.moveTo(Point{118.0, 81.0});
+
+    // The diagonal is not a segment this places, so nothing about it is
+    // promised — only the corner coincidence the closing click will declare.
+    CHECK(g.ghosted() == std::vector<ConstraintKind>{ConstraintKind::Coincident});
+    g.pressAt(Point{118.0, 81.0});
+
+    const std::vector<ConstraintRecord> added = g.addedBy(beforeCommit);
+    // Four corner joins and four axis relations from the macro, plus the two
+    // coincidences inference declared.
+    CHECK(added.size() == 10);
+    CHECK(near(g.boundAt(ConstraintKind::Coincident, start), Point{0.0, 0.0}));
+    CHECK(near(g.boundAt(ConstraintKind::Coincident, finish), Point{120.0, 80.0}));
+}
+
+TEST_CASE("a band that is not a segment offers no relations about one") {
+    // Horizontal, parallel and the rest describe a segment. A circle's radius
+    // and a rectangle's diagonal are bands on screen, not segments in the
+    // document, and offering relations about them would promise something no
+    // commit can deliver.
+    for(ToolKind kind : {ToolKind::Circle, ToolKind::Rectangle}) {
+        CAPTURE(toolName(kind));
+        Document doc;
+        const EntityId a = paroculus::test::addPoint(doc, 0.0, 0.0);
+        const EntityId b = paroculus::test::addPoint(doc, 100.0, 60.0);
+        paroculus::test::addSegment(doc, a, b);
+        Gesture g(doc, kind);
+
+        g.pressAt(Point{-200.0, 40.0});
+        g.moveTo(Point{-60.0, 40.0});  // a dead-flat band
+
+        for(const SnapCandidate &c : g.session.presentation().snapCandidates) {
+            CHECK(c.subject != SnapSubject::PlacedSegment);
+        }
+        CHECK(g.ghosted().empty());
+    }
 }
 
 TEST_CASE("offered candidates are not declared") {
@@ -646,7 +863,8 @@ TEST_CASE("candidates map onto taxonomy constraints in the declared operand orde
     endpoint.kind = SnapKind::Endpoint;
     endpoint.subject = SnapSubject::PlacedPoint;
     endpoint.target = bench.a;
-    const auto coincident = constraintFor(endpoint, EntityId(7), EntityId(8));
+    const PlacementSubjects line{EntityId(7), EntityId(8), EntityId()};
+    const auto coincident = constraintFor(endpoint, line);
     REQUIRE(coincident.has_value());
     CHECK(coincident->kind == ConstraintKind::Coincident);
     CHECK(coincident->operands[0] == EntityId(7));  // the placed point
@@ -655,12 +873,13 @@ TEST_CASE("candidates map onto taxonomy constraints in the declared operand orde
     SnapCandidate horizontal;
     horizontal.kind = SnapKind::Horizontal;
     horizontal.subject = SnapSubject::PlacedSegment;
-    const auto flat = constraintFor(horizontal, EntityId(7), EntityId(8));
+    const auto flat = constraintFor(horizontal, line);
     REQUIRE(flat.has_value());
     CHECK(flat->kind == ConstraintKind::Horizontal);
     CHECK(flat->operands[0] == EntityId(8));  // the placed segment
     CHECK_FALSE(flat->operands[1].valid());
 
     // A candidate whose subject the placement did not create declares nothing.
-    CHECK_FALSE(constraintFor(horizontal, EntityId(7), EntityId()).has_value());
+    CHECK_FALSE(constraintFor(horizontal, PlacementSubjects{EntityId(7), EntityId(), EntityId()})
+                    .has_value());
 }

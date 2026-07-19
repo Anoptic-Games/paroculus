@@ -217,19 +217,62 @@ SnapResult snap(const Document &doc, const Pose &pose, const SpatialIndex &index
 }
 
 std::optional<ConstraintRecord> constraintFor(const SnapCandidate &candidate,
-                                              EntityId placedPoint, EntityId placedSegment) {
+                                              const PlacementSubjects &placed) {
     const SnapKindInfo &info = snapInfo(candidate.kind);
     if(!info.commitsConstraint) return std::nullopt;
 
-    const EntityId subject =
-        candidate.subject == SnapSubject::PlacedPoint ? placedPoint : placedSegment;
-    if(!subject.valid()) return std::nullopt;
+    if(candidate.subject == SnapSubject::PlacedSegment) {
+        if(!placed.segment.valid()) return std::nullopt;
+        ConstraintRecord r;
+        r.kind = info.constraint;
+        r.operands[0] = placed.segment;
+        if(candidate.target.valid()) r.operands[1] = candidate.target;
+        return r;
+    }
 
-    ConstraintRecord r;
-    r.kind = info.constraint;
-    r.operands[0] = subject;
-    if(candidate.target.valid()) r.operands[1] = candidate.target;
-    return r;
+    if(placed.point.valid()) {
+        ConstraintRecord r;
+        r.kind = info.constraint;
+        r.operands[0] = placed.point;
+        if(candidate.target.valid()) r.operands[1] = candidate.target;
+        return r;
+    }
+
+    // The placement put no point here, but a curve may still pass through.
+    // Snapping a circle's rim onto an existing vertex is a real declaration and
+    // the obvious wrong answer is to bind it to whatever point the tool did
+    // create — for a circle that is the centre, and the circle would teleport
+    // so its centre sat on the vertex the rim touched.
+    //
+    // Only the endpoint kind reinterprets, because only it names an existing
+    // point, and point-on-curve is a relation between a point and a curve. The
+    // rest name a segment or another curve, and what the user would mean by
+    // those is tangency — a relation about whole curves rather than about this
+    // position, and not one this gesture has evidence for. They declare
+    // nothing, which is the honest answer, not an oversight.
+    if(placed.curve.valid() && candidate.kind == SnapKind::Endpoint &&
+       candidate.target.valid()) {
+        ConstraintRecord r;
+        r.kind = ConstraintKind::PointOnCircle;
+        r.operands[0] = candidate.target;  // the existing point
+        r.operands[1] = placed.curve;
+        return r;
+    }
+    return std::nullopt;
+}
+
+std::optional<ConstraintKind> declaredKind(const SnapCandidate &candidate, PlacementRoles roles) {
+    // Stand-in ids for entities the placement has not created yet. Only the
+    // shape of the answer matters here, never the ids in it, and running the
+    // real resolver is what keeps the ghost and the commit from drifting apart.
+    PlacementSubjects hypothetical;
+    if(roles.point) hypothetical.point = EntityId(1);
+    if(roles.segment) hypothetical.segment = EntityId(2);
+    if(roles.curve) hypothetical.curve = EntityId(3);
+
+    const std::optional<ConstraintRecord> r = constraintFor(candidate, hypothetical);
+    if(!r) return std::nullopt;
+    return r->kind;
 }
 
 }  // namespace paroculus

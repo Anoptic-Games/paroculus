@@ -226,11 +226,16 @@ private:
     GlyphPolicy glyphPolicy_;
     Viewport viewport_;
 
-    // The relations captured when a chain's first click landed. They cannot be
-    // declared yet — the point they bind has no id until the segment that
-    // justifies it exists — so they wait one click and are applied to the start
-    // point when it is created.
-    std::vector<SnapCandidate> pendingStartSnaps_;
+    // The relations captured at clicks that created nothing yet, one set per
+    // click, oldest first. They cannot be declared when they are captured — the
+    // point each binds has no id until the shape that justifies it exists — so
+    // they wait and are applied when the tool names what those clicks turned
+    // out to create.
+    //
+    // A queue rather than one set, because a gesture can open more than one
+    // click ahead: an arc's start and end are both placed before anything
+    // commits, and a single slot would remember the second and lose the first.
+    std::vector<std::vector<SnapCandidate>> pendingSnaps_;
     // Offers confirmed for the placement in flight, cleared when it commits or
     // is abandoned. A confirmation is about one placement, not about the tool.
     std::vector<std::pair<SnapKind, EntityId>> confirmedOffers_;
