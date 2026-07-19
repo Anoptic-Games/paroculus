@@ -107,6 +107,30 @@ SnapResult Session::inferAt(Point cursor) const {
     return snap(*doc_, pose(), index_, viewport_.view, request, snapPolicy_);
 }
 
+std::vector<GlyphMark> Session::glyphs() const {
+    GlyphContext context;
+    context.selected = selection_.items();
+    context.hovered = presentation_.hovered;
+    context.fresh = presentation_.inferred;
+    context.cursor = lastCursor_;
+    context.haveCursor = haveLastCursor_;
+
+    const Pose current = pose();
+    std::vector<GlyphMark> out = visibleGlyphs(*doc_, current, viewport_.view, viewport_.width,
+                                               viewport_.height, context, glyphPolicy_);
+
+    // Ghosts ride above the budget: a relation about to be declared is exactly
+    // the one the user needs to see, and there are only ever a handful.
+    if(tool_) {
+        const ToolPreview preview = tool_->preview();
+        const std::vector<GlyphMark> ghosts =
+            ghostGlyphs(presentation_.snapCandidates, preview.active ? preview.to : lastCursor_,
+                        preview.active, preview.from);
+        out.insert(out.end(), ghosts.begin(), ghosts.end());
+    }
+    return out;
+}
+
 void Session::confirmOffer(size_t index) {
     if(recorder_ != nullptr) recorder_->confirm(index);
     if(!tool_) return;

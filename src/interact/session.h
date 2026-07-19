@@ -18,6 +18,7 @@
 #include "core/undo.h"
 #include "interact/drag.h"
 #include "interact/events.h"
+#include "interact/glyphs.h"
 #include "interact/hit.h"
 #include "interact/selection.h"
 #include "interact/snap.h"
@@ -116,6 +117,16 @@ public:
 
     HitPolicy &policy() { return policy_; }
     SnapPolicy &snapPolicy() { return snapPolicy_; }
+    GlyphPolicy &glyphPolicy() { return glyphPolicy_; }
+
+    // The constraint marks worth drawing this frame: every relation the
+    // document holds, reduced to what the overlay's budget can carry, plus
+    // ghosts for what a placement in flight would declare.
+    //
+    // Computed on demand rather than cached in Presentation because it depends
+    // on the pose, which a drag changes every frame, and a stale overlay would
+    // put marks where the geometry no longer is.
+    std::vector<GlyphMark> glyphs() const;
 
     // Activates a creation tool, or returns to selection with ToolKind::Select.
     // Switching tools abandons whatever the previous one had in flight, which
@@ -179,6 +190,7 @@ private:
     Presentation presentation_;
     HitPolicy policy_;
     SnapPolicy snapPolicy_;
+    GlyphPolicy glyphPolicy_;
     Viewport viewport_;
 
     // The relations captured when a chain's first click landed. They cannot be

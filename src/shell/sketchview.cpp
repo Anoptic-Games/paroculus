@@ -384,6 +384,7 @@ void SketchView::paint(QPainter *painter) {
     adornment.marqueeActive = p.marqueeActive;
     adornment.marqueeFrom = p.marqueeFrom;
     adornment.marqueeTo = p.marqueeTo;
+    adornment.glyphs = session_->glyphs();
     adornment.ghostActive = p.toolPreview.active;
     adornment.ghostFrom = p.toolPreview.from;
     adornment.ghostTo = p.toolPreview.to;

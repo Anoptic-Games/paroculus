@@ -32,7 +32,66 @@ constexpr float SELECTED_POINT_RADIUS = 6.0f;
 constexpr float STROKE_WIDTH = 2.0f;
 constexpr float SELECTED_STROKE_WIDTH = 3.0f;
 
+constexpr SkColor GLYPH = SkColorSetARGB(0xcc, 0x9a, 0xb0, 0xc8);
+constexpr SkColor GLYPH_FRESH = SkColorSetRGB(0x7c, 0xe0, 0xa8);
+constexpr SkColor GLYPH_GHOST = SkColorSetARGB(0x88, 0x7c, 0xe0, 0xa8);
+
+// Adorner sizes, in logical pixels: a glyph is a glyph at every magnification.
+constexpr float GLYPH_SIZE = 4.5f;
+constexpr float GLYPH_STROKE = 1.6f;
+// Marks sit clear of the geometry they annotate rather than on top of it.
+constexpr float GLYPH_OFFSET = 9.0f;
+
 constexpr double CONTENT_WIDTH = 120.0;
+
+// One distinct mark per constraint kind, drawn as strokes rather than text
+// because no typeface is bundled yet — dimension text arrives with the styling
+// work. The shapes follow drafting convention where there is one, so the marks
+// are readable before they are learned.
+void drawGlyph(SkCanvas &canvas, SkPaint &paint, ConstraintKind kind, SkPoint at) {
+    const float s = GLYPH_SIZE;
+    switch(kind) {
+        case ConstraintKind::Horizontal:
+            canvas.drawLine({at.fX - s, at.fY}, {at.fX + s, at.fY}, paint);
+            break;
+        case ConstraintKind::Vertical:
+            canvas.drawLine({at.fX, at.fY - s}, {at.fX, at.fY + s}, paint);
+            break;
+        case ConstraintKind::Parallel:
+            // Two strokes leaning the same way.
+            canvas.drawLine({at.fX - s * 0.9f, at.fY + s}, {at.fX - s * 0.1f, at.fY - s}, paint);
+            canvas.drawLine({at.fX + s * 0.1f, at.fY + s}, {at.fX + s * 0.9f, at.fY - s}, paint);
+            break;
+        case ConstraintKind::Perpendicular:
+            canvas.drawLine({at.fX - s, at.fY + s}, {at.fX + s, at.fY + s}, paint);
+            canvas.drawLine({at.fX, at.fY + s}, {at.fX, at.fY - s}, paint);
+            break;
+        case ConstraintKind::Coincident:
+            canvas.drawCircle(at, s * 0.8f, paint);
+            break;
+        case ConstraintKind::Midpoint:
+            canvas.drawLine({at.fX - s, at.fY + s * 0.7f}, {at.fX + s, at.fY + s * 0.7f}, paint);
+            canvas.drawLine({at.fX, at.fY + s * 0.7f}, {at.fX, at.fY - s * 0.7f}, paint);
+            canvas.drawLine({at.fX - s * 0.5f, at.fY - s * 0.7f},
+                            {at.fX + s * 0.5f, at.fY - s * 0.7f}, paint);
+            break;
+        case ConstraintKind::PointOnLine:
+        case ConstraintKind::PointOnCircle:
+            canvas.drawLine({at.fX - s, at.fY + s * 0.8f}, {at.fX + s, at.fY + s * 0.8f}, paint);
+            canvas.drawCircle({at.fX, at.fY - s * 0.4f}, s * 0.45f, paint);
+            break;
+        case ConstraintKind::Pin:
+            canvas.drawLine({at.fX - s, at.fY - s}, {at.fX + s, at.fY + s}, paint);
+            canvas.drawLine({at.fX - s, at.fY + s}, {at.fX + s, at.fY - s}, paint);
+            break;
+        default:
+            // Every constraint has a mark, including the ones without a
+            // convention yet: an unlabelled mark is still reachable, and an
+            // absent one is an invisible constraint.
+            canvas.drawCircle(at, s * 0.5f, paint);
+            break;
+    }
+}
 
 bool contains(const std::vector<EntityId> &haystack, EntityId needle) {
     return std::find(haystack.begin(), haystack.end(), needle) != haystack.end();
@@ -213,6 +272,41 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
         dot.setColor(GHOST);
         canvas.drawCircle(toPixel(adornment.ghostFrom), POINT_RADIUS, dot);
         canvas.drawCircle(toPixel(adornment.ghostTo), POINT_RADIUS, dot);
+    }
+
+    // Constraint marks, above the geometry they annotate. The set arrived
+    // already chosen; drawing does not second-guess it.
+    if(!adornment.glyphs.empty()) {
+        SkPaint glyph;
+        glyph.setAntiAlias(true);
+        glyph.setStyle(SkPaint::kStroke_Style);
+        glyph.setStrokeCap(SkPaint::kRound_Cap);
+        glyph.setStrokeWidth(GLYPH_STROKE);
+
+        // Marks on the same anchor would otherwise stack invisibly, so they fan
+        // out around it — a vertex with three relations has to read as three.
+        std::vector<std::pair<SkPoint, int>> occupied;
+        for(const GlyphMark &m : adornment.glyphs) {
+            const SkPoint base = toPixel(m.anchor);
+            int index = 0;
+            for(auto &[p, n] : occupied) {
+                if(std::hypot(p.fX - base.fX, p.fY - base.fY) < 0.5f) {
+                    index = ++n;
+                    break;
+                }
+            }
+            if(index == 0) occupied.emplace_back(base, 0);
+
+            // Around the anchor rather than on it, so the mark never hides the
+            // vertex or edge it is describing.
+            const double angle = -1.0 + static_cast<double>(index) * 1.3;
+            const SkPoint at{base.fX + static_cast<SkScalar>(std::cos(angle) * GLYPH_OFFSET),
+                             base.fY + static_cast<SkScalar>(std::sin(angle) * GLYPH_OFFSET)};
+
+            glyph.setColor(m.ghost ? GLYPH_GHOST : (m.fresh ? GLYPH_FRESH : GLYPH));
+            if(m.selected || m.hovered) glyph.setColor(SELECTED);
+            drawGlyph(canvas, glyph, m.kind, at);
+        }
     }
 
     if(adornment.marqueeActive) {

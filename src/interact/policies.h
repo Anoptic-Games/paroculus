@@ -84,6 +84,30 @@ struct SnapPolicy {
     size_t recentDepth = 8;
 };
 
+// Overlay policy.
+//
+// Glyph overload is real at scale: a document with a thousand relations cannot
+// draw a thousand marks and still be readable, and the answer is not to let
+// each mark decide for itself whether it matters. Visibility is a property of
+// the overlay as a whole — a budget, filled by whatever is most worth seeing
+// this frame.
+struct GlyphPolicy {
+    // Marks per million square pixels of viewport. Density rather than a flat
+    // count is what makes this zoom-dependent in the right direction: zooming
+    // out brings more geometry on screen without bringing more clutter.
+    double density = 90.0;
+    // A rail, not the mechanism. Nothing should ever reach it.
+    size_t hardCap = 400;
+
+    // What survives the budget. Selection first, because a mark the user is
+    // looking at is the one they asked about.
+    double selectedWeight = 1000.0;
+    double hoveredWeight = 700.0;
+    double freshWeight = 500.0;
+    // Nearer the cursor takes the remainder.
+    double proximityWeight = 1.0;
+};
+
 // Ranks one candidate against another. Higher wins.
 //
 // tier: the candidate's commit tier. correction: how far the placement had to

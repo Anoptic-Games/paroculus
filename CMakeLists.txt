@@ -83,6 +83,7 @@ add_library(paroculus-core STATIC
     src/core/document.cpp
     src/core/document.h
     src/core/geom.h
+    src/core/glyphs.h
     src/core/ids.h
     src/core/parameters.cpp
     src/core/parameters.h
@@ -147,6 +148,8 @@ add_library(paroculus-interact STATIC
     src/interact/drag.h
     src/interact/events.cpp
     src/interact/events.h
+    src/interact/glyphs.cpp
+    src/interact/glyphs.h
     src/interact/hit.cpp
     src/interact/hit.h
     src/interact/policies.cpp
@@ -232,6 +235,7 @@ if(PAROCULUS_TESTS)
         tests/unit/interact_script.cpp
         tests/unit/interact_tools.cpp
         tests/unit/interact_snap.cpp
+        tests/unit/interact_glyphs.cpp
         tests/gestures/corpus.cpp
         tests/unit/solve_context.cpp
         tests/unit/solve_demosketch.cpp

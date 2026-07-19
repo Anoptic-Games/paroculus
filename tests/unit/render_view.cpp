@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -150,6 +151,63 @@ TEST_CASE("a marquee is drawn in screen space") {
     // Outside it, background survives — sampled off the 20-unit grid, which
     // now covers the whole viewport rather than a fixed range.
     CHECK(at(pixels, Eigen::Vector2d(210.0, 20.0)) == BACKGROUND);
+}
+
+TEST_CASE("constraint marks reach the raster") {
+    // No invisible constraints has to be true of the pixels, not only of the
+    // data: a mark that is computed and never drawn is an invisible constraint
+    // with extra steps.
+    Document doc;
+    const Pose pose = settledDemo(doc);
+    const ViewTransform view = defaultView(W, H);
+    const std::vector<uint32_t> plain = paint(pose, view);
+
+    GlyphMark mark;
+    mark.kind = ConstraintKind::Horizontal;
+    // Somewhere empty, so what changes is the mark and not an overlap.
+    mark.anchor = view.toDocument(Eigen::Vector2d(120.0, 250.0));
+
+    Adornment adornment;
+    adornment.glyphs = {mark};
+    const std::vector<uint32_t> marked = paint(pose, view, adornment);
+    CHECK(plain != marked);
+
+    // And a ghost draws differently from a declared one, because "about to
+    // exist" and "exists" are different claims.
+    GlyphMark ghost = mark;
+    ghost.ghost = true;
+    Adornment ghosted;
+    ghosted.glyphs = {ghost};
+    CHECK(paint(pose, view, ghosted) != marked);
+}
+
+TEST_CASE("marks on one anchor fan out rather than stacking") {
+    // A vertex with three relations has to read as three.
+    Document doc;
+    const Pose pose = settledDemo(doc);
+    const ViewTransform view = defaultView(W, H);
+    const Point anchor = view.toDocument(Eigen::Vector2d(200.0, 240.0));
+
+    GlyphMark a;
+    a.kind = ConstraintKind::Horizontal;
+    a.anchor = anchor;
+    a.constraint = ConstraintId(1);
+    GlyphMark b = a;
+    b.kind = ConstraintKind::Vertical;
+    b.constraint = ConstraintId(2);
+
+    Adornment one;
+    one.glyphs = {a};
+    Adornment two;
+    two.glyphs = {a, b};
+    // Two marks on the same anchor cover more of the surface than one does; if
+    // they stacked, the second would be invisible.
+    auto painted = [&](const Adornment &adornment) {
+        const std::vector<uint32_t> pixels = paint(pose, view, adornment);
+        return std::count_if(pixels.begin(), pixels.end(),
+                             [](uint32_t p) { return p != BACKGROUND; });
+    };
+    CHECK(painted(two) > painted(one));
 }
 
 TEST_CASE("a device scale rasterises denser without moving anything") {

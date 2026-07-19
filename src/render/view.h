@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "core/geom.h"
+#include "core/glyphs.h"
 #include "core/pose.h"
 
 namespace paroculus {
@@ -39,6 +40,11 @@ struct Adornment {
     bool ghostActive = false;
     Point ghostFrom;
     Point ghostTo;
+
+    // The constraint marks to draw, already reduced to the visible set. Render
+    // draws what it is given: deciding which relations matter this frame needs
+    // selection, hover and a density budget, none of which are raster concerns.
+    std::vector<GlyphMark> glyphs;
 };
 
 // A framing that fits everything the pose can place, with a margin. Stage 3's
