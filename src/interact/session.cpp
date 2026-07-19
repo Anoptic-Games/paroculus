@@ -13,6 +13,21 @@ namespace {
 // the same diagnoses on every machine and every run.
 constexpr int RESISTANCE_INTERVAL = 4;
 
+// Which of two component outcomes one readout should report.
+//
+// Redundant outranks plain okay because it is a warning the user is entitled
+// to; anything that did not solve outranks both, because a component the
+// document cannot satisfy is the thing that has to be visible even when every
+// other component is fine.
+SolveStatus moreSevere(SolveStatus a, SolveStatus b) {
+    auto rank = [](SolveStatus s) {
+        if(s == SolveStatus::Okay) return 0;
+        if(s == SolveStatus::RedundantOkay) return 1;
+        return 2;
+    };
+    return rank(b) > rank(a) ? b : a;
+}
+
 }  // namespace
 
 Session::Session(Document &doc, UndoJournal &journal)
@@ -46,19 +61,65 @@ void Session::refresh() {
     // edited — and because a Newton solve is not a fixpoint in the last bits,
     // opening the same file twice would produce two different files. Seeds are
     // authored intent and branch choice; they change when the user edits.
+    //
+    // Starts at the committed seeds and takes solved values back per component,
+    // so a component that does not solve simply keeps what it had.
     settled_ = SolveContext::forWholeDocument(*doc_);
-    if(!settled_.empty()) {
-        SolveOptions options;
-        options.diagnoseFailures = false;
-        const SolveOutcome outcome = solve(*doc_, settled_, options);
-        // The readout follows the document, so an undo or a deletion updates it
-        // rather than leaving a stale number on screen.
-        presentation_.dof = outcome.dof;
-        presentation_.status = outcome.status;
-        // A failed solve leaves the parameters at the seeds it was handed, so
-        // an overlay of them would only restate the document. Drop it and show
-        // what the document says, which is the honest thing to show.
-        if(!outcome.ok()) settled_ = SolveContext();
+
+    // Per component, not as one system.
+    //
+    // A document is several independent systems, and one of them failing says
+    // nothing about the others. Solving them together means one contradictory
+    // relation blanks every healthy component's display back to its committed
+    // seeds — the whole canvas stops showing solved geometry because one corner
+    // of it is over-constrained. PRINCIPLES has the document stay editable with
+    // geometry holding its last feasible solution, and there being only states
+    // with more or less diagnostic adornment; a canvas-wide fallback is neither.
+    //
+    // It also keeps the whole-document solve off the per-edit path, which is
+    // what the scale hypothesis wants anyway.
+    SolveOptions options;
+    options.diagnoseFailures = false;
+
+    int dof = 0;
+    SolveStatus worst = SolveStatus::Okay;
+    bool solvedAnything = false;
+
+    // Grouped in one pass. Asking the topology for each component's members
+    // separately would scan the document once per component, which is quadratic
+    // on exactly the documents this is meant to make cheap.
+    const size_t components = topology_.componentCount();
+    std::vector<std::vector<EntityId>> grouped(components);
+    for(const EntityRecord &e : doc_->entities().records()) {
+        const ComponentId id = topology_.componentOf(e.id);
+        if(id != NO_COMPONENT && id < components) grouped[id].push_back(e.id);
+    }
+
+    for(std::vector<EntityId> &members : grouped) {
+        if(members.empty()) continue;
+        SolveContext component = SolveContext::forMembers(*doc_, std::move(members));
+        if(component.empty()) continue;
+
+        const SolveOutcome outcome = solve(*doc_, component, options);
+        worst = moreSevere(worst, outcome.status);
+        if(!outcome.ok()) continue;  // this component holds its committed seeds
+
+        dof += outcome.dof;
+        solvedAnything = true;
+        for(const SeedSpan &solved : component.params()) {
+            for(SeedSpan &into : settled_.params()) {
+                if(into.entity == solved.entity) into.seeds = solved.seeds;
+            }
+        }
+    }
+
+    // The readout follows the document, so an undo or a deletion updates it
+    // rather than leaving a stale number on screen. Summed over what solved:
+    // a component that did not has no degrees of freedom worth reporting, and
+    // the status is what says so.
+    if(components > 0) {
+        presentation_.dof = solvedAnything ? dof : -1;
+        presentation_.status = worst;
     }
 
     index_.rebuild(pose());

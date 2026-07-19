@@ -46,6 +46,10 @@ SolveContext SolveContext::forComponents(const Document &doc, const Topology &to
     return build(doc, std::move(members));
 }
 
+SolveContext SolveContext::forMembers(const Document &doc, std::vector<EntityId> members) {
+    return build(doc, std::move(members));
+}
+
 SolveContext SolveContext::forWholeDocument(const Document &doc) {
     std::vector<EntityId> members;
     members.reserve(doc.entities().size());

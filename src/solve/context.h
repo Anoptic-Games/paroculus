@@ -40,6 +40,13 @@ public:
 
     static SolveContext forWholeDocument(const Document &doc);
 
+    // An explicit member list, for a caller that has already partitioned.
+    // Solving every component in turn would otherwise ask the topology for each
+    // one's members separately, and each of those asks is a scan of the whole
+    // document — quadratic in a document that is mostly loose geometry, which
+    // is the shape the per-component solve exists to be cheap on.
+    static SolveContext forMembers(const Document &doc, std::vector<EntityId> members);
+
     // ID-ordered. Determines translation order, and therefore determinism.
     const std::vector<EntityId> &members() const { return members_; }
 

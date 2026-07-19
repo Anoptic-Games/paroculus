@@ -653,3 +653,77 @@ TEST_CASE("gesture: a click count survives the script round trip") {
     replay(replayed, parsed);
     CHECK(replayed.selection().depth() == 1);
 }
+
+TEST_CASE("gesture: one broken component does not un-solve the canvas") {
+    // PRINCIPLES: the document stays editable, geometry holds the last feasible
+    // solution, and there are only states with more or less diagnostic
+    // adornment. Solving the document as one system broke all three at once —
+    // a single contradictory relation blanked every healthy component's display
+    // back to its committed seeds, so the whole canvas stopped showing solved
+    // geometry because one corner of it was over-constrained.
+    Document doc;
+    UndoJournal journal;
+
+    // A healthy component: a horizontal segment with its left end pinned and
+    // its right end drawn off-axis, so solving visibly moves it.
+    const EntityId a = addPoint(doc, 0.0, 0.0);
+    const EntityId b = addPoint(doc, 100.0, 40.0);
+    const EntityId healthy = addSegment(doc, a, b);
+    addConstraint(doc, ConstraintKind::Pin, {a});
+    addConstraint(doc, ConstraintKind::Horizontal, {healthy});
+
+    // A broken one, far away and unconnected: both ends pinned where they are,
+    // and a distance that contradicts the pins.
+    const EntityId c = addPoint(doc, 500.0, 0.0);
+    const EntityId d = addPoint(doc, 600.0, 0.0);
+    addSegment(doc, c, d);
+    addConstraint(doc, ConstraintKind::Pin, {c});
+    addConstraint(doc, ConstraintKind::Pin, {d});
+    addConstraint(doc, ConstraintKind::PointPointDistance, {c, d}, Slot(250.0));
+
+    Session session(doc, journal);
+    session.setViewport(testViewport());
+
+    // The healthy component is solved: its free end came down onto the axis.
+    const Pose pose = session.pose();
+    CHECK(pose.point(b)->y == doctest::Approx(0.0));
+    CHECK(pose.point(b)->x == doctest::Approx(100.0));
+    // And the pinned end of it held.
+    CHECK(pose.point(a)->x == doctest::Approx(0.0));
+
+    // The broken component holds what it had rather than showing nonsense.
+    CHECK(pose.point(c)->x == doctest::Approx(500.0));
+    CHECK(pose.point(d)->x == doctest::Approx(600.0));
+
+    // The readout still says something is wrong, because that is the one thing
+    // the user has to be able to see.
+    CHECK_FALSE(session.presentation().status == SolveStatus::Okay);
+
+    // The document is still editable, and editing the healthy side still works.
+    const Eigen::Vector2d from = screenOf(session, b);
+    dragGesture(session, from, from + Eigen::Vector2d(40.0, 0.0));
+    CHECK(session.pose().point(b)->x > 100.0);
+    CHECK(session.pose().point(b)->y == doctest::Approx(0.0));
+}
+
+TEST_CASE("gesture: degrees of freedom are summed over the components that solve") {
+    // Two independent shapes are two independent systems, and the readout is
+    // over the document rather than over whichever one was looked at last.
+    Document doc;
+    UndoJournal journal;
+    const EntityId a = addPoint(doc, 0.0, 0.0);
+    const EntityId b = addPoint(doc, 100.0, 0.0);
+    addSegment(doc, a, b);
+    addConstraint(doc, ConstraintKind::Pin, {a});
+    // Four parameters, two taken by the pin: two left.
+
+    const EntityId c = addPoint(doc, 400.0, 0.0);
+    const EntityId d = addPoint(doc, 500.0, 0.0);
+    addSegment(doc, c, d);
+    addConstraint(doc, ConstraintKind::Pin, {c});
+
+    Session session(doc, journal);
+    session.setViewport(testViewport());
+    CHECK(session.presentation().status == SolveStatus::Okay);
+    CHECK(session.presentation().dof == 4);
+}
