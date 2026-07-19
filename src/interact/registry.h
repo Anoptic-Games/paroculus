@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "core/document.h"
+#include "interact/events.h"
 #include "interact/selection.h"
 #include "interact/tools.h"
 
@@ -64,6 +65,9 @@ struct ActionContext {
     ToolKind tool = ToolKind::Select;
     size_t offers = 0;
     size_t inferred = 0;
+    // A numeric field is open. Keyboard resolution needs it: while one is, the
+    // letters that would pick a tool are the letters a unit is spelled with.
+    bool numericActive = false;
 };
 
 struct Action {
@@ -95,6 +99,53 @@ const Action *actionForBinding(std::string_view binding);
 
 // The context a session presents right now.
 ActionContext contextOf(const Session &session);
+
+// ---------------------------------------------------------------------------
+// Keyboard resolution
+// ---------------------------------------------------------------------------
+
+// One keystroke, as a surface sees it before deciding what it means.
+struct KeyStroke {
+    // The character the key produced, or 0. What a numeric field consumes, and
+    // what an action binding is spelled with.
+    char character = 0;
+    // The digit engraved on the key, 1..9, or 0 for anything else. Carried
+    // separately from `character` on purpose: shift+4 prints a dollar sign on
+    // one layout and something else on the next, and the offer at rank four is
+    // neither of them.
+    int digit = 0;
+    Modifier modifiers = Modifier::None;
+};
+
+// What a keystroke means right now.
+struct KeyBinding {
+    enum class Kind : uint8_t {
+        None,    // nothing is bound; the surface may pass the key on
+        Action,  // run `action` with `arguments`
+        Text,    // feed `character` to the numeric field, opening one if needed
+    };
+    Kind kind = Kind::None;
+    const Action *action = nullptr;
+    ActionArguments arguments;
+    char character = 0;
+};
+
+// Resolves a keystroke against the catalogue and the session's state.
+//
+// This lives here rather than in the shell because it is a policy, and a policy
+// in a Qt event handler is a policy no headless test can reach — which is
+// exactly how the digits came to be unable to open a numeric field while the
+// documentation said they could.
+//
+// The one collision worth naming: numeric entry and offer confirmation are
+// live in precisely the same state, a creation tool with a placement in
+// flight, so no test of context can tell them apart and the binding has to.
+// Digits type. Every gesture has a numeric twin and typing a value is the
+// frequent, primary path; confirming a ranked offer is the occasional one, and
+// it takes alt. Decline keeps shift because it acts on the last commit rather
+// than on the placement in flight — confirm and decline are not a pair to be
+// kept symmetric, they act on different objects.
+KeyBinding resolveKey(const ActionContext &context, const KeyStroke &stroke);
 
 // Finds, checks applicability, checks the schema, and runs. Returns false when
 // any of those fail, so one call is the whole contract a surface needs.

@@ -212,20 +212,23 @@ void SketchView::wheelEvent(QWheelEvent *event) {
 // from the keyboard without this function being edited — which is the property
 // that keeps a surface from offering something the model would refuse.
 //
-// Keys that are not actions stay here: Esc and Tab drive the interaction state
-// machine rather than the catalogue, and text is text.
+// Keys that are not actions stay here: Esc, Tab and Enter drive the interaction
+// state machine rather than the catalogue. Everything else is resolved by
+// registry.h, so what a keystroke means is decided somewhere a headless test
+// can read it rather than inside a Qt event handler.
 namespace {
 
-// The canonical binding string for one key event, in the form the table writes.
-std::string bindingOf(const QKeyEvent *event) {
-    std::string out;
-    if(event->modifiers() & Qt::ShiftModifier) out += "shift+";
-    if(event->key() == Qt::Key_Delete) return out + "del";
-    const QString text = event->text().toLower();
-    if(text.isEmpty()) return {};
-    const char c = text.at(0).toLatin1();
-    if(c < 'a' || c > 'z') return {};
-    return out + c;
+paroculus::KeyStroke strokeOf(const QKeyEvent *event) {
+    paroculus::KeyStroke stroke;
+    const QString text = event->text();
+    if(!text.isEmpty()) stroke.character = text.at(0).toLatin1();
+    if(event->key() >= Qt::Key_1 && event->key() <= Qt::Key_9) {
+        stroke.digit = event->key() - Qt::Key_1 + 1;
+    }
+    if(event->modifiers() & Qt::ShiftModifier) stroke.modifiers |= Modifier::Shift;
+    if(event->modifiers() & Qt::ControlModifier) stroke.modifiers |= Modifier::Control;
+    if(event->modifiers() & Qt::AltModifier) stroke.modifiers |= Modifier::Alt;
+    return stroke;
 }
 
 }  // namespace
@@ -249,39 +252,23 @@ void SketchView::keyPressEvent(QKeyEvent *event) {
             else paroculus::invokeAction(*session_, "edit.delete");
             break;
 
+        case Qt::Key_Delete: paroculus::invokeAction(*session_, "edit.delete"); break;
+
         default: {
-            // A digit is a value while a field is open, and an offer number
-            // otherwise. Typing is the more specific intent, so it wins.
-            if(typing && !event->text().isEmpty()) {
-                session_->type(event->text().at(0).toLatin1());
-                break;
-            }
-            if(event->key() >= Qt::Key_1 && event->key() <= Qt::Key_9) {
-                paroculus::ActionArguments arguments;
-                arguments.set("index", static_cast<double>(event->key() - Qt::Key_1));
-                paroculus::invokeAction(*session_,
-                                        (event->modifiers() & Qt::ShiftModifier)
-                                            ? "inference.decline"
-                                            : "inference.confirm",
-                                        arguments);
-                break;
-            }
-            if(const paroculus::Action *action =
-                   paroculus::actionForBinding(bindingOf(event))) {
-                paroculus::invokeAction(*session_, action->name);
-                break;
-            }
-            // Opening a numeric field: a tool is running and this reads as a
-            // number rather than as a command.
-            if(session_->tool() != paroculus::ToolKind::Select && !event->text().isEmpty()) {
-                const char c = event->text().at(0).toLatin1();
-                if((c >= '0' && c <= '9') || c == '.' || c == '-') {
-                    session_->type(c);
+            const paroculus::KeyBinding binding =
+                paroculus::resolveKey(paroculus::contextOf(*session_), strokeOf(event));
+            switch(binding.kind) {
+                case paroculus::KeyBinding::Kind::Text:
+                    session_->type(binding.character);
                     break;
-                }
+                case paroculus::KeyBinding::Kind::Action:
+                    paroculus::invokeAction(*session_, binding.action->name, binding.arguments);
+                    break;
+                case paroculus::KeyBinding::Kind::None:
+                    QQuickPaintedItem::keyPressEvent(event);
+                    return;
             }
-            QQuickPaintedItem::keyPressEvent(event);
-            return;
+            break;
         }
     }
     syncViewport();

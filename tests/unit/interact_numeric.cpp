@@ -381,6 +381,43 @@ TEST_CASE("record → replay → record is the identity over keys that drive num
     CHECK(serialize(replayedDoc) == serialize(doc));
 }
 
+TEST_CASE("a fresh placement inherits no dimension from an abandoned one") {
+    // Type a value, impose it, abandon the chain, draw something else: the new
+    // geometry must not pick up the old dimension. This used to be reachable
+    // because the imposition waited for a commit click and nothing cleared it
+    // in between; Enter commits now, so an imposition never outlives the
+    // placement that asked for it. Held as a test rather than as a comment,
+    // because the failure was silent — a length nobody typed on a shape nobody
+    // measured.
+    Entry e(ToolKind::Line);
+    e.click(Point{0.0, 0.0});
+    e.moveTo(Point{37.0, 0.0});
+    e.typeText("45");
+    e.session->handle(Key::Enter, Modifier::Shift);
+    REQUIRE(e.has(ConstraintKind::PointPointDistance));
+    CHECK(e.valueOf(ConstraintKind::PointPointDistance) == 45.0);
+
+    size_t dimensions = 0;
+    for(const ConstraintRecord &c : e.doc.constraints().records()) {
+        if(c.kind == ConstraintKind::PointPointDistance) dimensions++;
+    }
+    REQUIRE(dimensions == 1);
+
+    // Esc twice: end the chain, then leave the tool. Then draw a fresh shape.
+    e.session->handle(Key::Escape);
+    e.session->handle(Key::Escape);
+    e.session->setTool(ToolKind::Rectangle);
+    e.click(Point{200.0, 200.0});
+    e.click(Point{260.0, 240.0});
+
+    // Still exactly the one dimension, on the segment it was typed for.
+    dimensions = 0;
+    for(const ConstraintRecord &c : e.doc.constraints().records()) {
+        if(c.kind == ConstraintKind::PointPointDistance) dimensions++;
+    }
+    CHECK(dimensions == 1);
+}
+
 TEST_CASE("a typed space survives the round trip") {
     // The length grammar accepts a space — "45 mm" is a value a user types —
     // and fields on a script line are space-delimited, so an unescaped one
