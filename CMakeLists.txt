@@ -9,7 +9,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
-option(PAROCULUS_TESTS "Register the headless selftest with CTest" OFF)
+option(PAROCULUS_TESTS "Build the doctest runner and register tests with CTest" OFF)
 
 find_package(PkgConfig REQUIRED)
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Quick Qml)
@@ -62,40 +62,135 @@ set_target_properties(paroculus-solver PROPERTIES
 target_compile_options(paroculus-solver PRIVATE -w)
 
 #-----------------------------------------------------------------------------
-# paroculus — Qt Quick shell over a Qt-free sketch/render core.
+# The layer targets. Five seams, each crossable downward only:
 #
-# sketch.cpp holds the solver and Skia calls and links no Qt; sketchview.cpp is
-# the only file that knows about Qt. Keeping that seam now means the document
-# model never grows a dependency on the UI toolkit.
+#   shell + app   Qt: SketchView, input translation, QML, entry point
+#   interact      selection, hit, snap, tools, registry, policies
+#   render        tessellation, compositor, adorners            [Skia]
+#   solve         slvs translation, contexts, seeds, diagnosis  [slvs.h]
+#   core          ids, taxonomy, slots, units, document, geom   [Eigen]
+#
+# The boundaries are link boundaries, not conventions: Skia reaches only
+# paroculus-render and slvs.h only paroculus-solve, both PRIVATE, so a forbidden
+# include from any other layer is a build error. tests/boundary/ exercises that
+# mechanism directly.
+#-----------------------------------------------------------------------------
+
+# core — the bottom of the stack. Everything above reaches it; it reaches Eigen.
+# The PUBLIC src include directory is what gives every layer its "core/geom.h"
+# style include, so it is declared once here and inherited by linkage.
+add_library(paroculus-core STATIC
+    src/core/geom.h
+    src/core/solution.cpp
+    src/core/solution.h
+)
+target_include_directories(paroculus-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(paroculus-core PUBLIC Eigen3::Eigen)
+
+# solve — the only target that may see slvs.h. PRIVATE linkage keeps the
+# solver's include directory off every consumer's command line while still
+# carrying its objects through to the final link.
+add_library(paroculus-solve STATIC
+    src/solve/demosketch.cpp
+    src/solve/demosketch.h
+)
+target_link_libraries(paroculus-solve PUBLIC paroculus-core PRIVATE paroculus-solver)
+
+# render — the only target that may see Skia. Its headers speak in raw buffers,
+# so the QQuickPaintedItem shortcut can become the Ganesh/RHI path (track R)
+# without anything above this layer noticing.
+add_library(paroculus-render STATIC
+    src/render/view.cpp
+    src/render/view.h
+)
+target_link_libraries(paroculus-render PUBLIC paroculus-core PRIVATE PkgConfig::SKIA)
+
+# interact — deliberately toolkit-free and raster-free: it consumes abstract
+# input events and emits document commands, which is what makes gesture scripts
+# runnable headlessly in CI.
+add_library(paroculus-interact STATIC
+    src/interact/events.cpp
+    src/interact/events.h
+)
+target_link_libraries(paroculus-interact PUBLIC paroculus-core paroculus-solve)
+
+#-----------------------------------------------------------------------------
+# paroculus — the Qt shell and entry point, the only Qt-aware compilation.
 #-----------------------------------------------------------------------------
 qt_add_executable(paroculus
-    src/main.cpp
-    src/sketch.cpp
-    src/sketch.h
-    src/sketchview.cpp
-    src/sketchview.h
+    src/app/main.cpp
+    src/app/selftest.cpp
+    src/app/selftest.h
+    src/shell/sketchview.cpp
+    src/shell/sketchview.h
 )
 target_link_libraries(paroculus PRIVATE
     Qt6::Core Qt6::Gui Qt6::Quick Qt6::Qml
-    paroculus-solver
-    PkgConfig::SKIA
-    Eigen3::Eigen
+    paroculus-interact
+    paroculus-render
+    # Stage-0 residue: SketchView solves directly because the interact layer
+    # that will own that dispatch arrives in stage 3. Drop this line then.
+    paroculus-solve
 )
-target_include_directories(paroculus PRIVATE src)
+# qt_add_qml_module generates a registration TU that includes QML_ELEMENT
+# headers by basename (<sketchview.h>), so the shell directory has to be
+# reachable directly. Shell sources still use the layer-qualified form.
+target_include_directories(paroculus PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/shell")
 
+# Without the alias the QML file would resolve at qrc:/qt/qml/Paroculus/src/
+# shell/qml/Main.qml, which loadFromModule("Paroculus", "Main") will not find.
+set_source_files_properties(src/shell/qml/Main.qml PROPERTIES QT_RESOURCE_ALIAS Main.qml)
 qt_add_qml_module(paroculus
     URI Paroculus
     VERSION 1.0
-    QML_FILES src/Main.qml
+    QML_FILES src/shell/qml/Main.qml
 )
 
 install(TARGETS paroculus BUNDLE DESTINATION . RUNTIME DESTINATION bin)
 
+#-----------------------------------------------------------------------------
+# Tests. paroculus-tests is the doctest runner over every layer below shell;
+# the shell is covered by --selftest, which needs a QGuiApplication.
+#-----------------------------------------------------------------------------
 if(PAROCULUS_TESTS)
     enable_testing()
+    find_package(doctest REQUIRED)
+
+    add_executable(paroculus-tests
+        tests/main.cpp
+        tests/unit/core_geom.cpp
+        tests/unit/core_solution.cpp
+        tests/unit/interact_events.cpp
+        tests/unit/render_view.cpp
+        tests/unit/solve_demosketch.cpp
+    )
+    target_link_libraries(paroculus-tests PRIVATE
+        doctest::doctest
+        paroculus-core
+        paroculus-interact
+        paroculus-render
+        paroculus-solve
+    )
+    add_test(NAME unit COMMAND paroculus-tests)
+
     # Offscreen QPA: the selftest constructs a QGuiApplication, so it needs a
     # platform plugin, but the sandbox has no display server.
     add_test(NAME selftest COMMAND paroculus --selftest)
     set_tests_properties(selftest PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    # Link-boundary canaries. Each is a translation unit that links only
+    # paroculus-core and then reaches for a header belonging to a higher layer.
+    # They are excluded from the default build and compiled by CTest, which
+    # expects them to fail — that expectation is the whole test. If a canary
+    # ever compiles, a seam has been widened into a convention.
+    foreach(canary slvs skia)
+        add_executable(paroculus-canary-${canary} EXCLUDE_FROM_ALL
+            tests/boundary/canary_${canary}.cpp)
+        target_link_libraries(paroculus-canary-${canary} PRIVATE paroculus-core)
+        add_test(NAME boundary-${canary}
+                 COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}"
+                         --target paroculus-canary-${canary})
+        set_tests_properties(boundary-${canary} PROPERTIES WILL_FAIL TRUE RUN_SERIAL TRUE)
+    endforeach()
 endif()

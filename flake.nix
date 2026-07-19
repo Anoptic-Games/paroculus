@@ -161,7 +161,10 @@
             # platformbase.cpp uses the heap-arena API (mi_heap_new / _destroy / _zalloc),
             # not just the malloc override, so this is load-bearing rather than a swap.
             pkgs.mimalloc
-          ];
+          ]
+          # Header-only, test-only: paroculus-tests is the doctest runner over
+          # every layer below the shell. Only configured in when tests are on.
+          ++ lib.optional tests pkgs.doctest;
 
           postUnpack = injectSubmodule "solvespace" solvespace-src;
 
@@ -326,6 +329,8 @@
               cd "$root" || exit 1
 
               fail=0
+              # pinList holds one path=rev pair today and is meant to grow.
+              # shellcheck disable=SC2043
               for pair in ${pinList}; do
                 p="''${pair%%=*}" want="''${pair#*=}"
                 rec="$(git ls-tree HEAD "$p" 2>/dev/null | awk '{ print $3 }')"
@@ -339,6 +344,7 @@
                 exit 1
               fi
 
+              # shellcheck disable=SC2043
               for pair in ${pinList}; do
                 p="''${pair%%=*}"
                 if [ -z "$(ls -A "$p" 2>/dev/null)" ]; then
@@ -381,8 +387,6 @@
             name = "paroculus-${hostTag}";
             nativeBuildInputs = shellTools ++ [
               pkgs.qt6.qtshadertools
-              # Populates QML2_IMPORT_PATH / QT_PLUGIN_PATH in the shell so a build/
-              # binary launched by hand finds its plugins without being wrapped.
               pkgs.qt6.wrapQtAppsHook
             ];
             buildInputs = [
@@ -391,8 +395,17 @@
               pkgs.skia
               pkgs.eigen
               pkgs.mimalloc
+              pkgs.doctest
             ];
+            # A work-tree binary is never wrapped, so it inherits none of the
+            # plugin paths the installed app gets from wrapQtAppsHook. Without
+            # these, `nix run .#dev` finds no QPA platform plugin and no
+            # QtQuick.Controls.Basic, and exits 1 before the window appears.
             shellHook = ''
+              export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/lib/qt-6/plugins''${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
+              for v in QML_IMPORT_PATH QML2_IMPORT_PATH; do
+                export "$v=${pkgs.qt6.qtdeclarative}/lib/qt-6/qml"
+              done
               echo "[paroculus] ${hostTag} — $(cmake --version | head -1)"
               echo "[paroculus] configure: cmake -G Ninja -S . -B build/Debug -DPAROCULUS_TESTS=ON"
             ''

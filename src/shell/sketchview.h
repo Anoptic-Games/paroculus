@@ -1,5 +1,7 @@
-// The only file in the project that knows about Qt and about the sketch core at
-// the same time. Everything below it is toolkit-agnostic.
+// The single Qt-aware seam. Everything it consumes — solve, render — is
+// toolkit-agnostic, and the renderer sits behind a paint interface so the
+// QQuickPaintedItem shortcut can be swapped for the GPU path without anything
+// below shell noticing.
 #pragma once
 
 #include <QImage>
@@ -7,7 +9,7 @@
 #include <QString>
 #include <QtQml/qqmlregistration.h>
 
-#include "sketch.h"
+#include "core/solution.h"
 
 class SketchView : public QQuickPaintedItem {
     Q_OBJECT

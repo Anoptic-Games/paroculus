@@ -1,28 +1,25 @@
-// Toolchain proof: one process that solves a constrained sketch (SolveSpace),
-// transforms it (Eigen), rasterises it (Skia), and presents it (Qt Quick).
-//
-//   paroculus              open the window
-//   paroculus --selftest   solve + render headless, verify, exit 0 on success
-#include <QGuiApplication>
+#include "app/selftest.h"
+
 #include <QImage>
-#include <QQmlApplicationEngine>
 
 #include <cmath>
 #include <cstdio>
-#include <cstring>
 
-#include "sketch.h"
+#include "render/view.h"
+#include "solve/demosketch.h"
 
-namespace {
+namespace paroculus {
 
 // Checks the solved geometry against the constraints that were declared, not
 // merely that the solver returned OKAY. A solver that no-ops and echoes the
 // seed values back would pass the status check but fail every assertion here.
+// This is the pattern the stage-2 semantics suite generalises over the whole
+// constraint catalogue: assert residuals, never trust a status code.
 int selftest() {
     constexpr double RATIO = 1.618;
 
-    const paroculus::Solution s = paroculus::solveDemoSketch(RATIO);
-    std::printf("solver result=%d dof=%d\n", s.result, s.dof);
+    const Solution s = solveDemoSketch(RATIO);
+    std::printf("solver result=%d dof=%d\n", static_cast<int>(s.status), s.dof);
     if(!s.ok()) {
         std::fprintf(stderr, "FAIL: solver did not converge\n");
         return 1;
@@ -59,8 +56,7 @@ int selftest() {
     const int W = 400, H = 300;
     QImage surface(W, H, QImage::Format_ARGB32_Premultiplied);
     surface.fill(Qt::transparent);
-    paroculus::renderSketch(s, surface.bits(), W, H,
-                            static_cast<size_t>(surface.bytesPerLine()));
+    renderSketch(s, surface.bits(), W, H, static_cast<size_t>(surface.bytesPerLine()));
 
     const QRgb background = surface.pixel(2, 2);
     int painted = 0;
@@ -83,28 +79,4 @@ int selftest() {
     return 0;
 }
 
-}  // namespace
-
-int main(int argc, char *argv[]) {
-    bool wantSelftest = false;
-    for(int i = 1; i < argc; i++) {
-        if(std::strcmp(argv[i], "--selftest") == 0) wantSelftest = true;
-    }
-
-    // The selftest touches QImage, which needs a QGuiApplication, but must run
-    // where there is no display server.
-    if(wantSelftest && qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
-        qputenv("QT_QPA_PLATFORM", "offscreen");
-    }
-
-    QGuiApplication app(argc, argv);
-    QGuiApplication::setApplicationName(QStringLiteral("paroculus"));
-
-    if(wantSelftest) return selftest();
-
-    QQmlApplicationEngine engine;
-    QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app,
-                     []() { QCoreApplication::exit(1); }, Qt::QueuedConnection);
-    engine.loadFromModule("Paroculus", "Main");
-    return app.exec();
-}
+}  // namespace paroculus

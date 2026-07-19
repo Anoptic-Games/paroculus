@@ -1,6 +1,9 @@
-#include "sketchview.h"
+#include "shell/sketchview.h"
 
 #include <QPainter>
+
+#include "render/view.h"
+#include "solve/demosketch.h"
 
 SketchView::SketchView(QQuickItem *parent) : QQuickPaintedItem(parent) {
     resolve();
@@ -14,19 +17,15 @@ void SketchView::setRatio(qreal ratio) {
     emit solutionChanged();
 }
 
+// Stage-0 residue: the shell calls solve directly because the interact layer
+// that will own this dispatch does not exist until stage 3.
 void SketchView::resolve() {
     solution_ = paroculus::solveDemoSketch(ratio_);
 }
 
 QString SketchView::status() const {
-    static const char *names[] = {
-        "okay", "inconsistent", "did not converge", "too many unknowns", "redundant but okay",
-    };
-    const int r = solution_.result;
-    const QString name = (r >= 0 && r <= 4) ? QString::fromLatin1(names[r])
-                                            : QStringLiteral("unsolved");
     return QStringLiteral("solver: %1  ·  dof: %2  ·  ratio: %3")
-        .arg(name)
+        .arg(QString::fromLatin1(paroculus::statusName(solution_.status)))
         .arg(solution_.dof)
         .arg(ratio_, 0, 'f', 3);
 }

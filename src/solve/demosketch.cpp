@@ -1,17 +1,7 @@
-#include "sketch.h"
+#include "solve/demosketch.h"
 
 #include <slvs.h>
 
-#include <Eigen/Geometry>
-
-#include "core/SkBitmap.h"
-#include "core/SkCanvas.h"
-#include "core/SkColor.h"
-#include "core/SkImageInfo.h"
-#include "core/SkPaint.h"
-#include "core/SkPath.h"
-
-#include <algorithm>
 #include <vector>
 
 namespace paroculus {
@@ -30,11 +20,16 @@ enum : Slvs_hEntity {
 
 constexpr double SEGMENT_A_LENGTH = 120.0;
 
-}  // namespace
+// core/solution.h declares SolveStatus with these values so the mapping below
+// is a cast. If SolveSpace ever renumbers, this breaks the build here rather
+// than silently mislabelling every diagnostic above the seam.
+static_assert(static_cast<int>(SolveStatus::Okay) == SLVS_RESULT_OKAY);
+static_assert(static_cast<int>(SolveStatus::Inconsistent) == SLVS_RESULT_INCONSISTENT);
+static_assert(static_cast<int>(SolveStatus::DidNotConverge) == SLVS_RESULT_DIDNT_CONVERGE);
+static_assert(static_cast<int>(SolveStatus::TooManyUnknowns) == SLVS_RESULT_TOO_MANY_UNKNOWNS);
+static_assert(static_cast<int>(SolveStatus::RedundantOkay) == SLVS_RESULT_REDUNDANT_OKAY);
 
-bool Solution::ok() const {
-    return result == SLVS_RESULT_OKAY || result == SLVS_RESULT_REDUNDANT_OKAY;
-}
+}  // namespace
 
 // Slvs_Solve mutates sys.param in place, so the solved values are read back
 // out of the same array we seeded. Initial guesses are deliberately off-
@@ -111,7 +106,7 @@ Solution solveDemoSketch(double ratio) {
     Slvs_Solve(&sys, GROUP_SKETCH);
 
     Solution sln;
-    sln.result = sys.result;
+    sln.status = static_cast<SolveStatus>(sys.result);
     sln.dof = sys.dof;
     // Sketch params start at handle 8, which is index 7 in the array.
     const Slvs_Param *p = params.data() + 7;
@@ -120,72 +115,6 @@ Solution solveDemoSketch(double ratio) {
     sln.b0 = {p[4].val, p[5].val};
     sln.b1 = {p[6].val, p[7].val};
     return sln;
-}
-
-// Skia writes straight into the caller's buffer via installPixels, so there is
-// no intermediate copy between here and the Qt image that wraps it.
-void renderSketch(const Solution &sln, uint8_t *pixels, int width, int height,
-                  size_t rowBytes) {
-    if(width <= 0 || height <= 0 || pixels == nullptr) return;
-
-    const SkImageInfo info =
-        SkImageInfo::Make(width, height, kBGRA_8888_SkColorType, kPremul_SkAlphaType);
-    SkBitmap bitmap;
-    if(!bitmap.installPixels(info, pixels, rowBytes)) return;
-
-    SkCanvas canvas(bitmap);
-    canvas.clear(SkColorSetRGB(0x14, 0x16, 0x1a));
-
-    // Sketch space is Y-up and roughly 200 units wide; fit it to the viewport
-    // with a margin, centre it, and flip Y. Eigen owns the view transform so
-    // the same matrix can later drive hit-testing and snapping.
-    const double scale = std::min(width / 260.0, height / 200.0);
-    Eigen::Affine2d view = Eigen::Affine2d::Identity();
-    view.translate(Eigen::Vector2d(width * 0.5, height * 0.5));
-    view.scale(Eigen::Vector2d(scale, -scale));
-    view.translate(Eigen::Vector2d(-SEGMENT_A_LENGTH * 0.5, 30.0));
-
-    auto toPixel = [&](const Point &p) {
-        const Eigen::Vector2d v = view * Eigen::Vector2d(p.x, p.y);
-        return SkPoint::Make(static_cast<SkScalar>(v.x()), static_cast<SkScalar>(v.y()));
-    };
-
-    // Grid, on 20-unit sketch centres.
-    SkPaint grid;
-    grid.setAntiAlias(false);
-    grid.setColor(SkColorSetARGB(0x22, 0xff, 0xff, 0xff));
-    grid.setStrokeWidth(1.0f);
-    for(int i = -8; i <= 8; i++) {
-        const SkPoint v0 = toPixel({i * 20.0, -120.0}), v1 = toPixel({i * 20.0, 120.0});
-        const SkPoint h0 = toPixel({-160.0, i * 20.0}), h1 = toPixel({160.0, i * 20.0});
-        canvas.drawLine(v0, v1, grid);
-        canvas.drawLine(h0, h1, grid);
-    }
-
-    SkPaint stroke;
-    stroke.setAntiAlias(true);
-    stroke.setStyle(SkPaint::kStroke_Style);
-    stroke.setStrokeWidth(3.0f);
-    stroke.setStrokeCap(SkPaint::kRound_Cap);
-
-    SkPaint dot;
-    dot.setAntiAlias(true);
-    dot.setStyle(SkPaint::kFill_Style);
-
-    // A drives, B follows: colour-code the distinction.
-    struct Seg { Point p0, p1; SkColor color; };
-    const Seg segs[2] = {
-        {sln.a0, sln.a1, SkColorSetRGB(0x6e, 0xc7, 0xff)},
-        {sln.b0, sln.b1, SkColorSetRGB(0xff, 0xa8, 0x5c)},
-    };
-    for(const Seg &s : segs) {
-        const SkPoint q0 = toPixel(s.p0), q1 = toPixel(s.p1);
-        stroke.setColor(s.color);
-        canvas.drawLine(q0, q1, stroke);
-        dot.setColor(s.color);
-        canvas.drawCircle(q0, 5.0f, dot);
-        canvas.drawCircle(q1, 5.0f, dot);
-    }
 }
 
 }  // namespace paroculus

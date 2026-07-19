@@ -36,6 +36,7 @@ of source, and Skia builds through GN, which is hostile inside a Nix sandbox.
 | Skia | 144 | nixpkgs | pkg-config `skia` |
 | Eigen | 3.4.1 | nixpkgs | `find_package(Eigen3)` |
 | mimalloc | 3.3.2 | nixpkgs | pkg-config `mimalloc` |
+| doctest | 2.5.2 | nixpkgs | `find_package(doctest)`, test-only |
 | SolveSpace solver | v3.2 (`27b6a080`) | git submodule | `slvs.h` C API |
 
 SolveSpace is the one genuine submodule. The nixpkgs `solvespace` package is the
@@ -119,24 +120,39 @@ exists; it needs work.
 ## Layout
 
 ```
-CMakeLists.txt        two targets: paroculus-solver, paroculus
+CMakeLists.txt        the solver target plus five layer targets
 flake.nix             toolchain, variants, launchers, dev shell
 external/solvespace   submodule, pinned; seven files of it are compiled
-src/sketch.{h,cpp}    solver and Skia raster. Links no Qt.
-src/sketchview.{h,cpp}  QQuickPaintedItem. The only Qt-aware translation unit.
-src/main.cpp          application entry and --selftest
-src/Main.qml          the shell
+src/core/             geometry, solved state, the doc<->screen transform  [Eigen]
+src/solve/            the only layer that includes slvs.h
+src/render/           the only layer that includes Skia
+src/interact/         abstract input events; no toolkit, no raster
+src/shell/            SketchView and Main.qml. The only Qt-aware sources.
+src/app/              entry point and --selftest
+tests/                doctest runner, per-layer units, boundary canaries
 ```
 
-The seam between `sketch.cpp` and `sketchview.cpp` is deliberate. The document
-model and its rendering must not acquire a dependency on the UI toolkit, both so
-the render backend can change without touching geometry and so the solver can be
-exercised headlessly.
+Five layers, each crossable downward only: shell → interact + render,
+interact → core + solve, render → core, solve → core, core → Eigen. The
+document model and its rendering must not acquire a dependency on the UI
+toolkit, both so the render backend can change without touching geometry and so
+the solver can be exercised headlessly.
+
+Those are link boundaries, not conventions. `paroculus-solve` links the solver
+`PRIVATE` and `paroculus-render` links Skia `PRIVATE`, so neither include
+directory reaches any other layer and a forbidden include is a compile error.
+`tests/boundary/` holds two translation units that link only `paroculus-core`
+and then reach for `slvs.h` and `SkCanvas.h`; CTest builds them expecting
+failure, so a green build there is the red test.
 
 ## Verifying
 
+`nix build .#tests` configures with `-DPAROCULUS_TESTS=ON` and runs CTest in the
+sandbox: the doctest runner over every layer below the shell, the two boundary
+canaries, and `--selftest`.
+
 `paroculus --selftest` solves a sketch and rasterises it with no display server,
-and is what `nix build .#tests` runs under an offscreen QPA platform.
+under an offscreen QPA platform.
 
 It checks solved geometry against the constraints that were declared, rather
 than trusting the solver's own status code. Seeds are deliberately off-constraint
@@ -168,8 +184,10 @@ the application and confirming the window and its registered type appear.
 `SketchView::paint` routes Skia through `QQuickPaintedItem`, costing a CPU raster
 and a texture upload per frame. That is adequate for proving the toolchain and
 inadequate for a real canvas; the replacement is Skia's Ganesh backend sharing
-Qt's RHI context, or a `QQuickRhiItem`. The `sketch` / `sketchview` seam exists
-so that swap does not reach the document model.
+Qt's RHI context, or a `QQuickRhiItem`. `render` speaks in raw pixel buffers so
+that swap does not reach anything above the raster layer.
 
-The sketch itself is hardcoded in `solveDemoSketch`. There is no document, no
-persistence, no layer system, and no curve support yet.
+The sketch itself is hardcoded in `solveDemoSketch`, and `SketchView` calls it
+directly because the interact layer that will own that dispatch does not exist
+yet. There is no document, no persistence, no layer system, and no curve
+support yet.
