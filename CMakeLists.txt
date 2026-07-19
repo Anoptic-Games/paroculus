@@ -151,6 +151,8 @@ add_library(paroculus-interact STATIC
     src/interact/hit.h
     src/interact/policies.cpp
     src/interact/policies.h
+    src/interact/script.cpp
+    src/interact/script.h
     src/interact/selection.cpp
     src/interact/selection.h
     src/interact/session.cpp
@@ -163,6 +165,8 @@ target_link_libraries(paroculus-interact PUBLIC paroculus-core paroculus-solve)
 #-----------------------------------------------------------------------------
 qt_add_executable(paroculus
     src/app/main.cpp
+    src/app/scriptplay.cpp
+    src/app/scriptplay.h
     src/app/selftest.cpp
     src/app/selftest.h
     src/shell/sketchview.cpp
@@ -221,6 +225,7 @@ if(PAROCULUS_TESTS)
         tests/unit/core_pose.cpp
         tests/unit/interact_hit.cpp
         tests/unit/interact_selection.cpp
+        tests/unit/interact_script.cpp
         tests/gestures/corpus.cpp
         tests/unit/solve_context.cpp
         tests/unit/solve_demosketch.cpp

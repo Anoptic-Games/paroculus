@@ -292,13 +292,25 @@ a replaceable function; selection model — click, marquee, additive
 modifiers, double-click depth descent along coincidence runs, Esc ascent,
 signature computation; drag-as-solve with warm starts, release-commits-seeds
 as a command, no spring-back; saturation with attribution (soft dragged-set
-solve gives the saturated pose; a throttled speculative hard-pin solve
-diagnoses the resisting set via `failed` when the cursor gap opens);
-off-screen ripple detection (moved-param bounds vs viewport → edge ping
-event); delete v0 (geometry plus dependent constraints, counts surfaced);
-undo integration for all of it; the gesture harness — synthetic event
-scripts through interact — plus `--script` playback in the app for
-eyeballing corpus entries.
+solve gives the saturated pose; a throttled leave-one-out counterfactual
+names the resisting set when the cursor gap opens); off-screen ripple
+detection (moved-param bounds vs viewport → edge ping event); delete v0
+(geometry plus dependent constraints, counts surfaced); undo integration for
+all of it; the gesture harness — synthetic event scripts through interact.
+
+Amended during the stage. The hard-pin diagnosis this stage originally
+specified — pin the dragged point, solve, read `failed` — cannot work: the
+solver reports the set to remove to make the system solvable, and removing
+the pin always does that, so the pin is the only thing it ever names. The
+pin is the question, not the answer. Replaced by asking which relation, if
+suppressed, would let the point reach; `SolveOptions::suppressed` exists for
+it and stage 5's conflict walking wants the same primitive.
+
+`--script` playback moved to stage 4. It is a feel tool, not a debugging
+tool, and it has nothing to read until the recorder and text format exist —
+which this plan already places at the point feel iteration begins in
+earnest. Building a player against C++ corpus builders now would be building
+it twice.
 
 Tests: hit priority table-driven cases; signature correctness incl.
 mixed-depth selections; gesture corpus opening set — locality, saturation,
@@ -318,8 +330,13 @@ Goal: create geometry with the snap engine proposing constraints, per the
 snaps-are-proposed-constraints principle; every gesture gains its numeric
 twin.
 
-Scope: tool state machine framework in interact with live tool-parameter
-strip data and Esc discipline; line tool with chained drawing; the snap
+Scope: the gesture script format, recorder and `--script` playback in the
+app, first — everything after it in this stage is a feel window, and a
+discovery session that cannot be replayed and watched is a session whose
+judgement has to be re-made by hand every time. Held over from stage 3,
+where it would have had nothing to read; then tool state machine framework
+in interact with live tool-parameter strip data and Esc discipline; line
+tool with chained drawing; the snap
 engine as constraint-candidate generator over the taxonomy's snap kinds
 (endpoint coincidence, on-line, midpoint, horizontal, vertical, parallel,
 perpendicular, on-circle; grid as placement-only), producing corrected pose
@@ -348,7 +365,10 @@ degradation on member deletion); registry conformance sweep v0 (every
 action invocable headlessly).
 
 By hand: draw a constrained sketch from nothing; watch ghosts predict
-commits; decline an inference; type a length mid-drag.
+commits; decline an inference; type a length mid-drag; replay a recorded
+corpus entry and watch it, which is the check the corpus itself cannot make
+— a state can satisfy every asserted invariant and still be visibly wrong,
+as the stage 3 branch flip was.
 
 Exit: a sketch can be authored entirely by hand and gesture corpus covers
 drawing; feel window held for snap ranking and auto-commit tiering.

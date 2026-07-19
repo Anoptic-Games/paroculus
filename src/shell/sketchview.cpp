@@ -7,6 +7,9 @@
 #include <QQuickWindow>
 #include <QWheelEvent>
 
+#include <cstdio>
+
+#include "app/scriptplay.h"
 #include "render/view.h"
 #include "solve/demosketch.h"
 
@@ -27,9 +30,84 @@ SketchView::SketchView(QQuickItem *parent) : QQuickPaintedItem(parent) {
     document_ = paroculus::demoDocument(1.618);
     session_ = std::make_unique<paroculus::Session>(document_, journal_);
     syncViewport();
+
+    // Roughly a frame per step, so a recorded drag replays at about the speed
+    // it was performed. Fast enough to read as a gesture, slow enough to watch.
+    scriptTimer_.setInterval(16);
+    connect(&scriptTimer_, &QTimer::timeout, this, &SketchView::stepScript);
+
+    paroculus::GestureScript pending;
+    if(paroculus::pendingScript::take(pending)) {
+        playScript(std::move(pending));
+        return;
+    }
+
+    const std::string record = paroculus::pendingScript::takeRecordPath();
+    if(!record.empty()) {
+        recordPath_ = QString::fromStdString(record);
+        // Captured before anything is attached, and before the first viewport
+        // is pushed, so the file starts from what the session actually started
+        // from. Opening a document is not an edit, so this is that document.
+        recordedFrom_ = document_;
+        recorder_ = std::make_unique<paroculus::ScriptRecorder>();
+        session_->setRecorder(recorder_.get());
+        // The viewport is already set, so record it explicitly: a script whose
+        // first pointer step precedes any viewport step has no transform to
+        // read its screen coordinates through.
+        syncViewport();
+    }
 }
 
-SketchView::~SketchView() = default;
+void SketchView::playScript(paroculus::GestureScript script) {
+    script_ = std::move(script);
+    scriptStep_ = 0;
+    playing_ = true;
+
+    // The script's document replaces ours wholesale, and the journal starts
+    // empty: a replay is the recorded session, not that session appended to
+    // whatever this window was already showing.
+    document_ = script_.document;
+    journal_ = paroculus::UndoJournal();
+    session_ = std::make_unique<paroculus::Session>(document_, journal_);
+
+    scriptTimer_.start();
+    update();
+    emit changed();
+}
+
+void SketchView::stepScript() {
+    if(scriptStep_ >= script_.steps.size()) {
+        scriptTimer_.stop();
+        playing_ = false;
+        // The view stays where the script left it rather than snapping back to
+        // a fitted framing: the last frame is the one worth looking at.
+        update();
+        emit changed();
+        return;
+    }
+    paroculus::applyStep(*session_, script_.steps[scriptStep_++]);
+    update();
+    emit changed();
+}
+
+// Written at teardown rather than incrementally: a session is what happened
+// between opening and closing, and a half-file from a crashed run would be a
+// script that replays into a state nobody was ever in.
+SketchView::~SketchView() {
+    if(recorder_ == nullptr || recordPath_.isEmpty()) return;
+
+    paroculus::GestureScript script;
+    script.document = recordedFrom_;
+    script.steps = recorder_->steps();
+
+    std::string error;
+    if(paroculus::saveScriptFile(recordPath_.toStdString(), script, error)) {
+        std::fprintf(stderr, "recorded %zu steps to %s\n", script.steps.size(),
+                     recordPath_.toUtf8().constData());
+    } else {
+        std::fprintf(stderr, "%s\n", error.c_str());
+    }
+}
 
 // Device pixels per logical pixel for the screen this item is on. 1.0 until the
 // item has a window, which is the case during construction.
@@ -47,6 +125,11 @@ void SketchView::syncTextureSize() {
 }
 
 void SketchView::syncViewport() {
+    // A running script owns the viewport. Re-fitting here would replace the
+    // transform its screen coordinates were recorded against, and every event
+    // after that would land somewhere else.
+    if(playing_) return;
+
     const int w = qMax(1, qRound(width()));
     const int h = qMax(1, qRound(height()));
 
@@ -185,7 +268,16 @@ void SketchView::resetView() {
 
 QString SketchView::status() const {
     const paroculus::Presentation &p = session_->presentation();
-    QString text = QStringLiteral("%1  ·  dof: %2  ·  solve: %3 ms  ·  zoom: %4x")
+    QString text;
+    if(!script_.steps.empty()) {
+        // Progress is worth showing while watching: a gesture that looks wrong
+        // is worth locating in the file, and the step number is how.
+        text += QStringLiteral("%1 step %2/%3  ·  ")
+                    .arg(playing_ ? QStringLiteral("script") : QStringLiteral("script done"))
+                    .arg(scriptStep_)
+                    .arg(script_.steps.size());
+    }
+    text += QStringLiteral("%1  ·  dof: %2  ·  solve: %3 ms  ·  zoom: %4x")
                        .arg(QString::fromLatin1(paroculus::statusName(p.status)))
                        .arg(p.dof)
                        .arg(p.solveMicroseconds / 1000.0, 0, 'f', 2)

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "interact/script.h"
+
 namespace paroculus {
 namespace {
 
@@ -14,46 +16,55 @@ constexpr int RESISTANCE_INTERVAL = 4;
 
 Session::Session(Document &doc, UndoJournal &journal)
     : doc_(&doc), journal_(&journal), topology_(doc) {
-    settle();
     refresh();
 }
 
-void Session::settle() {
-    SolveContext context = SolveContext::forWholeDocument(*doc_);
-    if(context.empty()) return;
-    const SolveOutcome outcome = solve(*doc_, context);
-    presentation_.dof = outcome.dof;
-    presentation_.status = outcome.status;
-    if(!outcome.ok()) return;
-    for(const Command &c : context.commitCommands(*doc_)) doc_->apply(c);
+void Session::setViewport(const Viewport &viewport) {
+    viewport_ = viewport;
+    // Recorded as a step rather than as file-level preamble: a session that
+    // pans or zooms mid-gesture ran under several views, and replaying its
+    // screen coordinates under only the first one would put every event after
+    // the change somewhere else.
+    if(recorder_ != nullptr) recorder_->viewport(viewport);
 }
 
-void Session::setViewport(const Viewport &viewport) { viewport_ = viewport; }
-
 Pose Session::pose() const {
+    // Three layers, and the order is the whole story: the document's committed
+    // seeds, the solved result over them, the in-flight drag over that.
     Pose pose(*doc_);
+    pose.overlay(settled_.params());
     if(drag_) pose.overlay(drag_->context().params());
     return pose;
 }
 
 void Session::refresh() {
     topology_.markDirty();
-    const Pose current = pose();
-    index_.rebuild(current);
 
-    // The readout follows the document, so an undo or a deletion updates it
-    // rather than leaving a stale number on screen.
-    SolveContext context = SolveContext::forWholeDocument(*doc_);
-    if(!context.empty()) {
+    // Solved geometry is a derived cache, so it is kept here and never written
+    // back as seeds. Committing it on open would dirty a document nobody
+    // edited — and because a Newton solve is not a fixpoint in the last bits,
+    // opening the same file twice would produce two different files. Seeds are
+    // authored intent and branch choice; they change when the user edits.
+    settled_ = SolveContext::forWholeDocument(*doc_);
+    if(!settled_.empty()) {
         SolveOptions options;
         options.diagnoseFailures = false;
-        const SolveOutcome outcome = solve(*doc_, context, options);
+        const SolveOutcome outcome = solve(*doc_, settled_, options);
+        // The readout follows the document, so an undo or a deletion updates it
+        // rather than leaving a stale number on screen.
         presentation_.dof = outcome.dof;
         presentation_.status = outcome.status;
+        // A failed solve leaves the parameters at the seeds it was handed, so
+        // an overlay of them would only restate the document. Drop it and show
+        // what the document says, which is the honest thing to show.
+        if(!outcome.ok()) settled_ = SolveContext();
     }
+
+    index_.rebuild(pose());
 }
 
 void Session::handle(const PointerEvent &event) {
+    if(recorder_ != nullptr) recorder_->pointer(event);
     presentation_.rippledOffScreen = false;
     const Pose current = pose();
 
@@ -133,6 +144,7 @@ void Session::handle(const PointerEvent &event) {
 }
 
 void Session::handle(Key key, Modifier modifiers) {
+    if(recorder_ != nullptr) recorder_->key(key, modifiers);
     presentation_.rippledOffScreen = false;
     switch(key) {
         case Key::Escape:

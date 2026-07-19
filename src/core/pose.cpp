@@ -3,9 +3,10 @@
 namespace paroculus {
 
 void Pose::overlay(std::span<const SeedSpan> spans) {
-    overlay_.clear();
     for(const SeedSpan &s : spans) overlay_[s.entity] = s.seeds;
 }
+
+void Pose::clearOverlay() { overlay_.clear(); }
 
 const std::array<double, MAX_ENTITY_PARAMS> *Pose::valuesOf(EntityId id) const {
     const auto it = overlay_.find(id);

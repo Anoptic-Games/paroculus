@@ -23,9 +23,14 @@ public:
     // Reads the document's committed seeds. The document must outlive the pose.
     explicit Pose(const Document &doc) : doc_(&doc) {}
 
-    // Values that supersede the committed ones, for the duration of a gesture.
-    // Passing an empty span clears the overlay.
+    // Values that supersede the committed ones. Layers stack in call order and
+    // a later layer wins where two carry the same entity, because that is what
+    // the pose actually is: stored seeds, the solved result over them, and the
+    // in-flight drag over that. Passing an empty span adds nothing.
     void overlay(std::span<const SeedSpan> spans);
+
+    // Drops every overlaid layer, leaving the document's committed seeds.
+    void clearOverlay();
 
     // id: any entity. Returns its centre for a point, or nullopt for a kind
     // that owns no position of its own.

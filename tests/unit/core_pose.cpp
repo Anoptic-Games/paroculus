@@ -63,8 +63,38 @@ TEST_CASE("clearing the overlay returns to the committed pose") {
     pose.overlay(std::vector<SeedSpan>{moved});
     REQUIRE(pose.point(a)->x == 99.0);
 
-    pose.overlay({});
+    pose.clearOverlay();
     CHECK(pose.point(a)->x == 3.0);
+}
+
+TEST_CASE("overlays stack, and the later one wins") {
+    // The pose is three layers deep in a live session — committed seeds, the
+    // solved result, the in-flight drag — so an overlay has to add to what is
+    // there rather than replace it.
+    Document doc;
+    const EntityId a = paroculus::test::addPoint(doc, 1.0, 1.0);
+    const EntityId b = paroculus::test::addPoint(doc, 2.0, 2.0);
+
+    Pose pose(doc);
+    SeedSpan solvedA;
+    solvedA.entity = a;
+    solvedA.seeds = {10.0, 10.0};
+    SeedSpan solvedB;
+    solvedB.entity = b;
+    solvedB.seeds = {20.0, 20.0};
+    pose.overlay(std::vector<SeedSpan>{solvedA, solvedB});
+
+    SeedSpan draggedA;
+    draggedA.entity = a;
+    draggedA.seeds = {99.0, 99.0};
+    pose.overlay(std::vector<SeedSpan>{draggedA});
+
+    CHECK(pose.point(a)->x == 99.0);  // the drag wins where they overlap
+    CHECK(pose.point(b)->x == 20.0);  // and the earlier layer survives where it does not
+
+    pose.clearOverlay();
+    CHECK(pose.point(a)->x == 1.0);
+    CHECK(pose.point(b)->x == 2.0);
 }
 
 TEST_CASE("a circle's radius comes from the pose, not from a constraint") {

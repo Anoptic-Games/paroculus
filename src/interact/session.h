@@ -57,6 +57,8 @@ struct Presentation {
 
 enum class Key : uint8_t { Escape, Delete, Undo, Redo };
 
+class ScriptRecorder;
+
 // Owns the interaction state over a document and its journal. The document is
 // mutated only through the journal, so every visible change is undoable.
 class Session {
@@ -84,26 +86,35 @@ public:
 
     HitPolicy &policy() { return policy_; }
 
+    // Attaches a recorder, or detaches with nullptr. Every event the session is
+    // asked to handle from here on is captured, which is what makes a recording
+    // a recording of the session rather than of the shell's interpretation of
+    // one: a script recorded through this hook replays through the identical
+    // path, and re-recording the replay reproduces the file.
+    //
+    // The recorder outlives the call, not the session. Caller owns it.
+    void setRecorder(ScriptRecorder *recorder) { recorder_ = recorder; }
+
 private:
     void beginDrag(EntityId grabbed, Point cursor);
     void updateDrag(Point cursor);
     void endDrag();
     void deleteSelection();
-    // Solves the whole document and stores the result as seeds.
-    //
-    // Not journalled: opening a document and settling it is not an edit, and
-    // there is nothing for the user to undo back to. Seeds record which branch
-    // was shown, so writing them here is what makes that record true.
-    void settle();
 
     Document *doc_;
     UndoJournal *journal_;
     Topology topology_;
+    // The solved pose, kept rather than committed. This is the derived cache
+    // PRINCIPLES describes: rendering and hit testing read it through pose(),
+    // and it is rebuilt from the document rather than stored in it.
+    SolveContext settled_;
     SpatialIndex index_;
     Selection selection_;
     Presentation presentation_;
     HitPolicy policy_;
     Viewport viewport_;
+
+    ScriptRecorder *recorder_ = nullptr;
 
     std::optional<DragSession> drag_;
     // Where the press landed, so a drag can be told from a click by distance.
