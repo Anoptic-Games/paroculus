@@ -32,6 +32,20 @@ struct HitPolicy {
     // How far the cursor may outrun the geometry before the drag counts as
     // saturated and the resisting constraints are worth diagnosing.
     double saturationGap = 6.0;
+
+    // How much closer suppressing a relation must bring the dragged point
+    // before that relation is named as resisting — as a fraction of the dragged
+    // component's own extent, in document units.
+    //
+    // The odd one out, and deliberately so. Every other number here describes
+    // the hand: pointer precision, which Qt already keeps stable across display
+    // scales and which has no business changing when a window is resized. This
+    // one describes the drawing, and the regime that motivated it is a shape
+    // spanning the whole canvas, where any pixel-denominated number is either
+    // noise or unreachable. Scaling against the geometry rather than the
+    // viewport also makes it zoom-invariant: the same shape attributes the same
+    // way however close the user has zoomed in.
+    double attributionFloor = 0.02;
 };
 
 // What a hit landed on. Points sit above edges because a vertex is smaller,

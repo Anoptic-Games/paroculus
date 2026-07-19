@@ -10,6 +10,34 @@ namespace {
 // would tell the user anything anyway.
 constexpr int MAX_RESISTANCE_PROBES = 32;
 
+// The diagonal of the dragged component's bounding box, in document units.
+// What the attribution floor is measured against, so "a meaningful amount of
+// travel" means the same thing for a shape spanning the canvas as for one
+// tucked in a corner, at any zoom.
+//
+// context: a live solve context. Returns 0 for a component with no extent —
+// a lone point — which the caller substitutes for.
+double componentExtent(const SolveContext &context, const Document &doc) {
+    bool any = false;
+    double minX = 0.0, minY = 0.0, maxX = 0.0, maxY = 0.0;
+    for(const SeedSpan &span : context.params()) {
+        const EntityRecord *e = doc.entities().find(span.entity);
+        if(e == nullptr || e->kind != EntityKind::Point) continue;
+        const double x = span.seeds[0], y = span.seeds[1];
+        if(!any) {
+            minX = maxX = x;
+            minY = maxY = y;
+            any = true;
+            continue;
+        }
+        minX = std::min(minX, x);
+        maxX = std::max(maxX, x);
+        minY = std::min(minY, y);
+        maxY = std::max(maxY, y);
+    }
+    return any ? std::hypot(maxX - minX, maxY - minY) : 0.0;
+}
+
 }  // namespace
 
 std::optional<DragSession> DragSession::begin(const Document &doc, const Topology &topology,
@@ -32,6 +60,13 @@ DragUpdate DragSession::update(const Document &doc, const Viewport &viewport, Po
                                bool diagnoseResistance) {
     DragUpdate result;
 
+    // The last pose that satisfied the constraints, kept so a failed solve can
+    // be rolled back to it. A non-converged solve leaves the parameters at the
+    // seeds it was given, and the seed we just wrote is the cursor — so without
+    // this the geometry would silently follow the cursor through its own
+    // constraints and commit the violation on release.
+    const SolveContext lastGood = context_;
+
     // The target goes in as a seed, not as a constraint. The solver is asked to
     // favour it and free to disregard it, which is exactly what makes an
     // unreachable target saturate instead of failing.
@@ -50,6 +85,14 @@ DragUpdate DragSession::update(const Document &doc, const Viewport &viewport, Po
     result.status = outcome.status;
     result.microseconds = outcome.microseconds;
 
+    // A drag that cannot be solved is the strongest form of saturation, not a
+    // free one. Roll back to the last legal pose: the geometry stops dead and
+    // the cursor runs on. Warm-starting the next frame from a diverged state
+    // would poison every frame after it, and committing one on release would
+    // write a constraint-violating document.
+    const bool diverged = !outcome.ok();
+    if(diverged) context_ = lastGood;
+
     const std::optional<Point> landed = context_.point(grabbed_);
     if(landed) {
         // Measured in pixels, because saturation is a thing the user sees at a
@@ -57,7 +100,7 @@ DragUpdate DragSession::update(const Document &doc, const Viewport &viewport, Po
         const Eigen::Vector2d gap =
             viewport.view.toScreen(*landed) - viewport.view.toScreen(cursor);
         result.gap = gap.norm();
-        result.saturated = result.gap > policy_.saturationGap;
+        result.saturated = diverged || result.gap > policy_.saturationGap;
     }
 
     // Attribution, by counterfactual.
@@ -76,6 +119,18 @@ DragUpdate DragSession::update(const Document &doc, const Viewport &viewport, Po
         SolveOptions probe;
         probe.dragged = {grabbed_};
         probe.diagnoseFailures = false;
+
+        // How much travel a relation has to buy back before it is worth naming,
+        // in document units. A ratio was the wrong shape: freeing a rotational
+        // degree of freedom wins the point a roughly fixed distance whatever the
+        // cursor does, so as the user pulls further that fixed win shrinks as a
+        // *fraction* of the gap and the constraint stops being named — the hard
+        // pull loses the very explanation it should be showing.
+        const double extent = componentExtent(context_, doc);
+        const double heldGap = std::hypot(landed->x - cursor.x, landed->y - cursor.y);
+        // A component with no extent has nothing to scale against, so how far
+        // the drag has run stands in for one.
+        const double floor = policy_.attributionFloor * (extent > 0.0 ? extent : heldGap);
 
         int tested = 0;
         for(const ConstraintRecord &c : doc.constraints().records()) {
@@ -96,12 +151,11 @@ DragUpdate DragSession::update(const Document &doc, const Viewport &viewport, Po
             const std::optional<Point> freed = without.point(grabbed_);
             if(!freed) continue;
 
-            const double freedGap =
-                (viewport.view.toScreen(*freed) - viewport.view.toScreen(cursor)).norm();
-            // Materially closer means this relation was doing the resisting.
-            // Half is a policy number, and it lives here so the discovery
-            // window can move it.
-            if(freedGap < result.gap * 0.5) result.resisting.push_back(c.id);
+            // Document units on both sides, because the floor is a fraction of
+            // the geometry rather than of the screen. Saturation stays a pixel
+            // question; attribution is not one.
+            const double freedGap = std::hypot(freed->x - cursor.x, freed->y - cursor.y);
+            if(heldGap - freedGap > floor) result.resisting.push_back(c.id);
         }
     }
 

@@ -14,6 +14,7 @@
 
 #include "core/persist.h"
 #include "interact/session.h"
+#include "solve/demosketch.h"
 #include "support/build.h"
 
 using namespace paroculus;
@@ -383,6 +384,94 @@ TEST_CASE("gesture: hover reports what a click would take") {
 
     session.handle(PointerEvent::at(PointerAction::Move, Eigen::Vector2d(5.0, 5.0), v.view));
     CHECK_FALSE(session.presentation().hovered.valid());
+}
+
+TEST_CASE("gesture: attribution survives a hard pull, at any zoom") {
+    // Pulling harder must not cost the user the explanation. The earlier ratio
+    // test lost it: freeing a rotational degree of freedom buys the point a
+    // roughly fixed distance, which shrinks as a fraction of the gap the further
+    // the cursor runs, so the constraint doing the resisting quietly dropped out
+    // of the report exactly when the user was pushing hardest to discover it.
+    //
+    // Zoom is swept too, because the floor is a fraction of the geometry rather
+    // than of the screen: the same shape must attribute the same way however
+    // close the user has zoomed in.
+    for(double scale : {0.25, 1.0, 4.0}) {
+        for(double distance : {40.0, 120.0, 400.0, 1200.0}) {
+            Document doc = demoDocument(1.618);
+            UndoJournal journal;
+            Session session(doc, journal);
+            session.setViewport(testViewport(scale));
+
+            // The upper-right end, held vertically by horizontality alone.
+            const EntityId a1 = doc.entities().records()[1].id;
+            const Eigen::Vector2d from = screenOf(session, a1);
+            const Viewport &v = session.viewport();
+
+            session.handle(PointerEvent::at(PointerAction::Press, from, v.view, Button::Left));
+            for(int i = 1; i <= 12; i++) {
+                session.handle(PointerEvent::at(PointerAction::Move,
+                                                from + Eigen::Vector2d(0.0, -distance * i / 12.0),
+                                                v.view, Button::Left));
+            }
+
+            REQUIRE(session.presentation().saturated);
+            // Horizontality is what forbids this drag, so it must be named —
+            // however far the cursor went and however far in the view is zoomed.
+            bool namesHorizontal = false;
+            for(ConstraintId id : session.presentation().resisting) {
+                if(doc.constraints().find(id)->kind == ConstraintKind::Horizontal) {
+                    namesHorizontal = true;
+                }
+            }
+            INFO("zoom ", scale, ", pulled ", distance, " px");
+            CHECK(namesHorizontal);
+        }
+    }
+}
+
+TEST_CASE("gesture: a drag the solver cannot follow holds the last legal pose") {
+    // The failure mode this pins down: SolveSpace leaves the parameters at the
+    // seeds it was handed when it does not converge, and the seed a drag hands
+    // it is the cursor. Read back naively that looks like a perfect track — zero
+    // gap, no saturation — while the geometry has walked through its own
+    // constraints, and release would commit the violation as seeds.
+    //
+    // Pull the lower segment's free end far past what the length ratio allows.
+    Document doc = demoDocument(1.618);
+    UndoJournal journal;
+    Session session(doc, journal);
+    session.setViewport(testViewport());
+
+    const EntityId a0 = doc.entities().records()[0].id;
+    const EntityId a1 = doc.entities().records()[1].id;
+    const EntityId b0 = doc.entities().records()[2].id;
+    const EntityId b1 = doc.entities().records()[3].id;
+
+    auto ratioOf = [&](const Pose &pose) {
+        const Point pa0 = *pose.point(a0), pa1 = *pose.point(a1);
+        const Point pb0 = *pose.point(b0), pb1 = *pose.point(b1);
+        return std::hypot(pa1.x - pa0.x, pa1.y - pa0.y) /
+               std::hypot(pb1.x - pb0.x, pb1.y - pb0.y);
+    };
+
+    const Eigen::Vector2d from = screenOf(session, b1);
+    const Viewport &v = session.viewport();
+    session.handle(PointerEvent::at(PointerAction::Press, from, v.view, Button::Left));
+    for(int i = 1; i <= 20; i++) {
+        session.handle(PointerEvent::at(PointerAction::Move,
+                                        from + Eigen::Vector2d(20.0 * i, 0.0), v.view,
+                                        Button::Left));
+        // Every frame is legal, not merely the last one.
+        CHECK(ratioOf(session.pose()) == doctest::Approx(1.618));
+    }
+    // Unreachable is saturated, never free.
+    CHECK(session.presentation().saturated);
+
+    session.handle(PointerEvent::at(PointerAction::Release,
+                                    from + Eigen::Vector2d(400.0, 0.0), v.view, Button::Left));
+    // And what got committed is the legal pose, not the cursor's wish.
+    CHECK(ratioOf(session.pose()) == doctest::Approx(1.618));
 }
 
 TEST_CASE("gesture: a drag stays within the frame budget") {
