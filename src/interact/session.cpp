@@ -145,7 +145,8 @@ std::vector<GlyphMark> Session::glyphs() const {
         // Nothing is about to be placed when there is no placement in flight,
         // so an inactive preview promises nothing.
         const std::vector<GlyphMark> ghosts =
-            ghostGlyphs(presentation_.snapCandidates, preview.active ? preview.to : lastCursor_,
+            ghostGlyphs(presentation_.snapCandidates,
+                        preview.active ? preview.placement : lastCursor_,
                         preview.active ? preview.willPlace : PlacementRoles(), preview.from);
         out.insert(out.end(), ghosts.begin(), ghosts.end());
     }
@@ -217,7 +218,7 @@ void Session::applyNumericResolve(bool impose) {
     // there, and this is the position the commit uses — asking the pointer
     // again would hand the placement back to the hand that could not hit the
     // number in the first place.
-    const Point resolved = tool_->preview().to;
+    const Point resolved = tool_->preview().placement;
 
     // Inference still runs, at the resolved position rather than at the
     // pointer's, but it may not move anything: a candidate is committed by the
@@ -328,10 +329,40 @@ bool Session::commitPlacement(Point placement, const std::vector<SnapCandidate> 
     // A typed value that was imposed becomes a driving dimension in the same
     // step as the geometry it measures, so undo takes back the placement and its
     // dimension together.
+    presentation_.impositionVerdict = CandidateVerdict::Consistent;
+    presentation_.conflicting.clear();
     if(impose) {
         if(const std::optional<ConstraintRecord> dimension =
                tool_->dimensionFor(impose->target, impose->value, out)) {
             ConstraintRecord r = *dimension;
+
+            // Over-constraint's first moment, as PRINCIPLES puts it: the
+            // candidate is solved speculatively before it is committed.
+            //
+            // Against a copy with this step already applied, because the
+            // dimension names entities the step is about to create and a
+            // speculative constraint cannot be checked against a document that
+            // does not yet hold its operands. One copy per imposition, which is
+            // a keystroke rather than a frame — the no-copy rule is about the
+            // interaction path, and this is not on it.
+            Document speculative = *doc_;
+            for(const Command &c : out.commands) speculative.apply(c);
+            Topology speculativeTopology(speculative);
+            const CandidateCheck check = checkCandidate(speculative, speculativeTopology, r);
+
+            presentation_.impositionVerdict = check.verdict;
+            presentation_.conflicting = check.conflicting;
+            // The downgrade PRINCIPLES names: a dimension that cannot hold is
+            // added as a driven reference measurement rather than as a driving
+            // constraint. The geometry still lands, the value is still recorded
+            // and still visible, and nothing silently drives to a contradiction.
+            //
+            // Taken automatically here because stage 4 has no surface to offer
+            // it on. Stage 5 turns this into the offer, with the conflicting set
+            // highlighted — the choice moves to the user, the mechanism does
+            // not change.
+            if(!check.committable()) r.driving = false;
+
             r.id = ConstraintId(nextConstraint++);
             inferred.push_back(r.id);
             out.commands.push_back(AddRecord<ConstraintRecord>{r});

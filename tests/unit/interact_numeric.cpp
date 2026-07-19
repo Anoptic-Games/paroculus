@@ -214,6 +214,176 @@ TEST_CASE("typing sets magnitude and leaves direction to the hand") {
     CHECK(minY < 0.0);
 }
 
+TEST_CASE("a typed radius pins an arc") {
+    // Stage 4's goal line is that every gesture gains its numeric twin. The arc
+    // was the one that had not: its radius and sweep were display-only, so
+    // typing during an arc gesture did nothing at all.
+    Entry e(ToolKind::Arc);
+    e.click(Point{-50.0, 0.0});
+    e.click(Point{50.0, 0.0});
+    e.moveTo(Point{0.0, 20.0});  // a shallow bulge, by hand
+
+    e.typeText("80");
+    e.session->handle(Key::Enter, Modifier::Shift);
+
+    REQUIRE(e.has(ConstraintKind::Radius));
+    CHECK(e.valueOf(ConstraintKind::Radius) == 80.0);
+
+    const Pose pose = e.session->pose();
+    for(const EntityRecord &r : e.doc.entities().records()) {
+        if(r.kind != EntityKind::Arc) continue;
+        const std::optional<Pose::ArcGeometry> g = pose.arc(r.id);
+        REQUIRE(g.has_value());
+        CHECK(g->radius == doctest::Approx(80.0));
+    }
+}
+
+TEST_CASE("a typed sweep resolves through the chord") {
+    // Sweep and radius are the same construction seen from two sides: the chord
+    // is fixed once two clicks have landed, so c = 2r sin(t/2) turns one into
+    // the other.
+    Entry e(ToolKind::Arc);
+    e.click(Point{-50.0, 0.0});
+    e.click(Point{50.0, 0.0});
+    e.moveTo(Point{0.0, 20.0});
+
+    // Tab to the sweep field, then a half turn: the chord becomes a diameter.
+    e.session->handle(Key::Tab);
+    e.session->handle(Key::Tab);
+    CHECK(e.session->presentation().numericTarget == 1);
+    e.typeText("180");
+    e.session->handle(Key::Enter);
+
+    const Pose pose = e.session->pose();
+    bool sawArc = false;
+    for(const EntityRecord &r : e.doc.entities().records()) {
+        if(r.kind != EntityKind::Arc) continue;
+        sawArc = true;
+        const std::optional<Pose::ArcGeometry> g = pose.arc(r.id);
+        REQUIRE(g.has_value());
+        // A semicircle on a chord of 100.
+        CHECK(g->radius == doctest::Approx(50.0));
+        CHECK(g->centre.x == doctest::Approx(0.0));
+        CHECK(g->centre.y == doctest::Approx(0.0));
+    }
+    CHECK(sawArc);
+}
+
+TEST_CASE("typing an arc keeps the bulge on the side the hand chose") {
+    // The same rule the rectangle's width follows: magnitude from the digits,
+    // sign from the hand. Typing a radius must not flip an arc the user has
+    // already curved one way.
+    for(double bulge : {30.0, -30.0}) {
+        CAPTURE(bulge);
+        Entry e(ToolKind::Arc);
+        e.click(Point{-50.0, 0.0});
+        e.click(Point{50.0, 0.0});
+        e.moveTo(Point{0.0, bulge});
+        e.typeText("80");
+        e.session->handle(Key::Enter);
+
+        const Pose pose = e.session->pose();
+        bool sawArc = false;
+        for(const EntityRecord &r : e.doc.entities().records()) {
+            if(r.kind != EntityKind::Arc) continue;
+            sawArc = true;
+            const std::optional<Pose::ArcGeometry> g = pose.arc(r.id);
+            REQUIRE(g.has_value());
+            CHECK(g->radius == doctest::Approx(80.0));
+            // The centre sits opposite the bulge.
+            CHECK(g->centre.y * bulge < 0.0);
+        }
+        // Guarded, or a tool that resolved nothing would pass this vacuously —
+        // there would simply be no arc to disagree with.
+        REQUIRE(sawArc);
+    }
+}
+
+TEST_CASE("an arc refuses a radius no chord of that length admits") {
+    // No arc through a chord of length c has a radius below c/2. Asking for one
+    // is a value the gesture cannot hold, and resolving nothing is the honest
+    // answer — the placement stays where the hand left it.
+    Entry e(ToolKind::Arc);
+    e.click(Point{-50.0, 0.0});
+    e.click(Point{50.0, 0.0});
+    e.moveTo(Point{0.0, 20.0});
+
+    e.typeText("10");  // the chord is 100, so the smallest arc radius is 50
+    e.session->handle(Key::Enter);
+    // Nothing committed: an unresolvable value leaves the gesture in flight.
+    CHECK(e.doc.entities().records().empty());
+    CHECK(e.session->presentation().toolPreview.active);
+}
+
+TEST_CASE("an imposed dimension is checked before it is committed") {
+    // Over-constraint's first moment: PRINCIPLES has the candidate solved
+    // speculatively before commit, and redundancy flagged at creation because
+    // it is where later edits go to die — two constraints that agree today
+    // disagree after the next value edit, and the user who added the second one
+    // was told nothing.
+    Document doc;
+    // Two points pinned where they stand, so the distance between them is
+    // already fully determined by what is declared.
+    const EntityId a = paroculus::test::addPoint(doc, 0.0, 0.0);
+    const EntityId b = paroculus::test::addPoint(doc, 100.0, 0.0);
+    paroculus::test::addConstraint(doc, ConstraintKind::Pin, {a});
+    paroculus::test::addConstraint(doc, ConstraintKind::Pin, {b});
+
+    UndoJournal journal;
+    Session session(doc, journal);
+    session.setViewport(entryViewport());
+    session.snapPolicy().gridEnabled = false;
+    session.setTool(ToolKind::Line);
+
+    auto at = [&](Point p) { return session.viewport().view.toScreen(p); };
+    session.handle(PointerEvent::at(PointerAction::Move, at(Point{0.0, 0.0}),
+                                    session.viewport().view));
+    session.handle(PointerEvent::at(PointerAction::Press, at(Point{0.0, 0.0}),
+                                    session.viewport().view, Button::Left));
+    session.handle(PointerEvent::at(PointerAction::Move, at(Point{60.0, 0.0}),
+                                    session.viewport().view));
+
+    // A length that lands the far end exactly on the other pinned point, so
+    // both endpoints inherit a coincidence and the dimension restates what the
+    // pins already fix.
+    for(char c : std::string("100")) session.type(c);
+    session.handle(Key::Enter, Modifier::Shift);
+
+    const ConstraintRecord *dimension = nullptr;
+    for(const ConstraintRecord &c : doc.constraints().records()) {
+        if(c.kind == ConstraintKind::PointPointDistance) dimension = &c;
+    }
+    REQUIRE(dimension != nullptr);
+    CHECK(session.presentation().impositionVerdict == CandidateVerdict::Redundant);
+    // Flagged, not refused. Redundant-but-consistent is tolerated at solve time
+    // and the solver says so itself, which is the state the flag exists to warn
+    // about rather than to prevent.
+    CHECK(dimension->driving);
+    CHECK(session.presentation().status == SolveStatus::RedundantOkay);
+    CHECK(session.presentation().conflicting.empty());
+
+    // And the geometry is exactly where both pins say, so the redundancy is a
+    // warning about the next value edit rather than a fault today.
+    const Pose pose = session.pose();
+    CHECK(pose.point(a)->x == doctest::Approx(0.0));
+    CHECK(pose.point(b)->x == doctest::Approx(100.0));
+}
+
+TEST_CASE("a dimension that holds is committed driving, and says so") {
+    Entry e(ToolKind::Line);
+    e.click(Point{0.0, 0.0});
+    e.moveTo(Point{37.0, 0.0});
+    e.typeText("45");
+    e.session->handle(Key::Enter, Modifier::Shift);
+
+    REQUIRE(e.has(ConstraintKind::PointPointDistance));
+    for(const ConstraintRecord &c : e.doc.constraints().records()) {
+        if(c.kind == ConstraintKind::PointPointDistance) CHECK(c.driving);
+    }
+    CHECK(e.session->presentation().impositionVerdict == CandidateVerdict::Consistent);
+    CHECK(e.session->presentation().conflicting.empty());
+}
+
 TEST_CASE("Esc takes back the field before the placement") {
     // Esc ascends one level at a time.
     Entry e(ToolKind::Line);

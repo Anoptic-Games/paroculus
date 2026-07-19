@@ -23,6 +23,7 @@
 #include "interact/hit.h"
 #include "interact/loops.h"
 #include "interact/numeric.h"
+#include "solve/diagnose.h"
 #include "interact/selection.h"
 #include "interact/snap.h"
 #include "interact/tools.h"
@@ -85,6 +86,17 @@ struct Presentation {
     // What the last placement actually declared. No silent changes: an inferred
     // constraint is shown at commit, not discovered later.
     std::vector<ConstraintId> inferred;
+
+    // How the last imposed dimension fared against what was already declared,
+    // and the constraints the solver blamed when it could not hold. Consistent
+    // with an empty set whenever nothing was imposed.
+    //
+    // A dimension that cannot hold is committed as a reference measurement
+    // rather than refused, so this is what says the value the user typed is
+    // recorded but not driving. Stage 5 turns it into the offer PRINCIPLES
+    // describes and the highlight the conflicting set is for.
+    CandidateVerdict impositionVerdict = CandidateVerdict::Consistent;
+    std::vector<ConstraintId> conflicting;
 
     // The outline the last placement closed, in boundary order, when it closed
     // one. An offer and nothing more: filling it is a region record, and that

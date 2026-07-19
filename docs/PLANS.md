@@ -357,7 +357,7 @@ projections next stage).
 Tests: snap candidate generation table-driven (pointer pose + document →
 expected ranked candidates); WYSIWYG property on scripted draws (previewed
 set equals committed set); inference precision/recall corpus opening set;
-decline and undo-bundling semantics; numeric twin scripts (drag, type,
+decline and undo-bundling semantics; numeric twin scripts (place, type,
 enter → exact slot value; imposition variant creates the dimension);
 display-rounding hygiene (formatting never rewrites storage); arc macro
 invariants (through-point on circle within tolerance; center follows;
@@ -369,6 +369,14 @@ commits; decline an inference; type a length mid-drag; replay a recorded
 corpus entry and watch it, which is the check the corpus itself cannot make
 — a state can satisfy every asserted invariant and still be visibly wrong,
 as the stage 3 branch flip was.
+
+Amended after the stage 0-4 review (finding 15): the numeric twin here is the
+one a creation tool has — place, type, enter — for all four tools including the
+arc. Typing during a drag of geometry that already exists is deferred to stage
+5, because "the length under adjustment" is ambiguous the moment a vertex
+belongs to more than one segment, and the surface that disambiguates it is
+stage 5's inline dimension editing. PRINCIPLES still fixes the semantics; this
+is an ordering change and nothing else.
 
 Exit: a sketch can be authored entirely by hand and gesture corpus covers
 drawing; feel window held for snap ranking and auto-commit tiering.

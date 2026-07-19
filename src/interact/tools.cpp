@@ -127,6 +127,7 @@ ToolPreview LineTool::preview() const {
     p.from = anchor_;
     p.to = cursor_;
     p.fromEntity = anchorEntity_;
+    p.placement = cursor_;
     // A point at the far end and the segment reaching it. The band is a real
     // segment, so the direction-valued kinds have something to be about.
     p.willPlace = PlacementRoles{true, true, false};
@@ -268,6 +269,7 @@ ToolPreview CircleTool::preview() const {
     p.active = haveCentre_ && haveCursor_;
     p.from = centre_;
     p.to = cursor_;
+    p.placement = cursor_;
     // The band is a radius, not a segment: nothing is being drawn from the
     // centre to the rim, so there is nothing for horizontal or parallel to
     // describe and they are not generated.
@@ -446,7 +448,74 @@ ToolOutput ArcTool::press(const Document &doc, Point cursor) {
     // the cursor, so a snap there is an ordinary coincidence.
     out.placed.point = through;
     out.placed.curve = arc.id;
+    lastArc_ = arc.id;
     return out;
+}
+
+// Moves the bulge so the arc through the two placed endpoints takes exactly
+// this radius, or exactly this sweep.
+//
+// Both are the same construction. The chord is fixed once two clicks have
+// landed, so a radius names how far off the chord's midpoint the centre sits —
+// h = sqrt(r² - (c/2)²) — and a sweep names a radius through c = 2r sin(θ/2).
+// The bulge stays on the side the hand chose; typing a size must not flip an
+// arc the user has already curved one way.
+//
+// Refused when the two are incompatible: no arc through a chord of length c has
+// a radius below c/2, and asking for one is a value the gesture cannot hold.
+bool ArcTool::setParameter(size_t index, double value) {
+    if(clicks_ < 2 || !haveCursor_ || index > 1) return false;
+
+    const double cx = end_.x - start_.x;
+    const double cy = end_.y - start_.y;
+    const double chord = std::hypot(cx, cy);
+    if(chord <= 0.0) return false;
+
+    double radius = value;
+    if(index == 1) {
+        // Sweep, in degrees. A zero or full turn describes no arc through two
+        // distinct points.
+        const double sweep = value * 3.14159265358979323846 / 180.0;
+        if(sweep <= 0.0 || sweep >= TAU) return false;
+        const double half = std::sin(sweep * 0.5);
+        if(half <= 0.0) return false;
+        radius = chord / (2.0 * half);
+    }
+    if(radius < chord * 0.5) return false;
+
+    // Which side the hand put the bulge on, from the cursor it put there.
+    const double side = (cx * (cursor_.y - start_.y) - cy * (cursor_.x - start_.x)) >= 0.0
+                            ? 1.0
+                            : -1.0;
+    // The chord's normal, pointing to the bulge side.
+    const double nx = -cy / chord * side;
+    const double ny = cx / chord * side;
+
+    const Point mid{(start_.x + end_.x) * 0.5, (start_.y + end_.y) * 0.5};
+    const double half = chord * 0.5;
+    const double drop = std::sqrt(std::max(0.0, radius * radius - half * half));
+    // The centre sits away from the bulge; the apex is a radius past the
+    // midpoint on the bulge side. A semicircle puts the centre on the midpoint,
+    // where the direction from centre to apex is the normal itself.
+    const Point centre{mid.x - nx * drop, mid.y - ny * drop};
+    cursor_ = Point{centre.x + nx * radius, centre.y + ny * radius};
+
+    refreshParameters();
+    return true;
+}
+
+// Radius pins as a radius on the arc the step created. Sweep has no dimension:
+// the taxonomy's angle is an angle between two segments, and this gesture has
+// drawn no segments at all — the same honesty the line tool's angle gets.
+std::optional<ConstraintRecord> ArcTool::dimensionFor(size_t index, double value,
+                                                      const ToolOutput &out) const {
+    (void)out;
+    if(index != 0 || !lastArc_.valid()) return std::nullopt;
+    ConstraintRecord r;
+    r.kind = ConstraintKind::Radius;
+    r.operands[0] = lastArc_;
+    r.value = Slot(value);
+    return r;
 }
 
 void ArcTool::move(const Document &doc, Point cursor) {
@@ -475,6 +544,8 @@ ToolPreview ArcTool::preview() const {
     p.active = clicks_ >= 1 && haveCursor_;
     p.from = start_;
     p.to = clicks_ >= 2 ? end_ : cursor_;
+    // The band is the chord; what a click places is the through point.
+    p.placement = cursor_;
     // A chord, then a bulge — never a segment. The through point is the only
     // point the commit places at the cursor.
     p.willPlace = PlacementRoles{true, false, true};
@@ -636,6 +707,7 @@ ToolPreview RectangleTool::preview() const {
     p.active = haveCorner_ && haveCursor_;
     p.from = corner_;
     p.to = cursor_;
+    p.placement = cursor_;
     // The band spans a diagonal, and a diagonal is not one of the four
     // segments this places. Offering to make it horizontal — or parallel to
     // something — would be offering a relation about a line that never exists.

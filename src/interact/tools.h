@@ -52,6 +52,12 @@ struct ToolPreview {
     bool active = false;
     Point from;
     Point to;
+
+    // Where the committing click will put things. Usually the far end of the
+    // band and separate from it because an arc's band is its chord while the
+    // click that commits places the through point — so the two answer different
+    // questions and only one of them is what a resolved value has to land on.
+    Point placement;
     // The entity the band starts from, once the chain hangs off a real point.
     // Inference reads it to keep a placement from snapping to its own anchor.
     EntityId fromEntity;
@@ -240,6 +246,9 @@ public:
 
     ToolPreview preview() const override;
     std::span<const ToolParameter> parameters() const override { return parameters_; }
+    bool setParameter(size_t index, double value) override;
+    std::optional<ConstraintRecord> dimensionFor(size_t index, double value,
+                                                 const ToolOutput &out) const override;
 
     // The arc currently being previewed, for the ghost. Absent until there is
     // enough of a gesture to define one.
@@ -265,6 +274,8 @@ private:
     Point end_;
     Point cursor_;
     bool haveCursor_ = false;
+    // What the last press claimed, so a dimension can name it.
+    EntityId lastArc_;
     std::array<ToolParameter, 2> parameters_{ToolParameter{"radius", 0.0},
                                              ToolParameter{"sweep", 0.0}};
 };
