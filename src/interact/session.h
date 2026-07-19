@@ -21,6 +21,7 @@
 #include "interact/events.h"
 #include "interact/glyphs.h"
 #include "interact/hit.h"
+#include "interact/loops.h"
 #include "interact/numeric.h"
 #include "interact/selection.h"
 #include "interact/snap.h"
@@ -84,6 +85,12 @@ struct Presentation {
     // What the last placement actually declared. No silent changes: an inferred
     // constraint is shown at commit, not discovered later.
     std::vector<ConstraintId> inferred;
+
+    // The outline the last placement closed, in boundary order, when it closed
+    // one. An offer and nothing more: filling it is a region record, and that
+    // action lands in stage 5. Detecting must leave the document as it was, or
+    // ignoring the offer would not be free.
+    std::vector<EntityId> closedLoop;
 
     double solveMicroseconds = 0.0;
 

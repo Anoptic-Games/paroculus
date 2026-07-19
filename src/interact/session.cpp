@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "interact/loops.h"
 #include "interact/script.h"
 
 namespace paroculus {
@@ -74,6 +75,7 @@ void Session::setTool(ToolKind kind) {
     pendingStartSnaps_.clear();
     presentation_.snapCandidates.clear();
     presentation_.inferred.clear();
+    presentation_.closedLoop.clear();
     haveLastCursor_ = false;
     switch(kind) {
         case ToolKind::Line:      tool_ = std::make_unique<LineTool>(); break;
@@ -255,6 +257,11 @@ void Session::rememberSnaps(const std::vector<SnapCandidate> &committed) {
 }
 
 void Session::runTool(ToolOutput output, std::vector<ConstraintId> inferred) {
+    // Kept before the commands are moved out, so closure can be asked about the
+    // edge the placement created.
+    const EntityId closureSeed =
+        output.placedSegment.valid() ? output.placedSegment : output.placedStart;
+
     if(output.commands.empty()) {
         refreshToolPresentation();
         return;
@@ -274,6 +281,16 @@ void Session::runTool(ToolOutput output, std::vector<ConstraintId> inferred) {
         // declared, rather than discovered later by hovering.
         presentation_.inferred = std::move(inferred);
         refresh();
+
+        // Did that placement close an outline? Asked after refresh, because the
+        // topology has to see the coincidence the placement just declared
+        // before it can tell a closed run from a nearly closed one.
+        presentation_.closedLoop.clear();
+        if(closureSeed.valid()) {
+            if(const auto boundary = closedBoundaryContaining(*doc_, topology_, closureSeed)) {
+                presentation_.closedLoop = *boundary;
+            }
+        }
     }
     refreshToolPresentation();
 }

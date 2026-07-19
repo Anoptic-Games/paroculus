@@ -152,6 +152,8 @@ add_library(paroculus-interact STATIC
     src/interact/glyphs.h
     src/interact/hit.cpp
     src/interact/hit.h
+    src/interact/loops.cpp
+    src/interact/loops.h
     src/interact/numeric.cpp
     src/interact/numeric.h
     src/interact/policies.cpp
@@ -240,6 +242,7 @@ if(PAROCULUS_TESTS)
         tests/unit/interact_glyphs.cpp
         tests/unit/interact_shapes.cpp
         tests/unit/interact_numeric.cpp
+        tests/unit/interact_loops.cpp
         tests/gestures/corpus.cpp
         tests/unit/solve_context.cpp
         tests/unit/solve_demosketch.cpp

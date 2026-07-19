@@ -39,10 +39,22 @@ ApplicationWindow {
         }
 
         Text {
-            anchors { right: parent.right; rightMargin: 20; top: parent.top; topMargin: 14 }
+            // Bounded on the left by the selection label, because the status
+            // grows: a tool's live parameters, its offers, what a placement
+            // declared, whether a loop closed. Unbounded it would overrun the
+            // label rather than give way to it.
+            anchors {
+                left: label.right; leftMargin: 20
+                right: parent.right; rightMargin: 20
+                top: parent.top; topMargin: 14
+            }
             color: "#7f8794"
             font.pixelSize: 12
             font.family: "monospace"
+            horizontalAlignment: Text.AlignRight
+            // Cut from the head when it will not fit: the tail carries dof and
+            // solve time, which are the numbers being watched continuously.
+            elide: Text.ElideLeft
             text: sketch.status
         }
     }

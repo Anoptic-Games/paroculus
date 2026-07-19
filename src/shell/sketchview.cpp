@@ -358,6 +358,11 @@ QString SketchView::status() const {
         }
         text += QStringLiteral("  ·  ");
     }
+    if(!p.closedLoop.empty()) {
+        // An offer, not a fill. Making it a solid is stage 5's action; saying
+        // so at the moment it closes is what stage 4 owes the user.
+        text += QStringLiteral("closed loop (%1 edges)  ·  ").arg(p.closedLoop.size());
+    }
     if(!p.inferred.empty()) {
         // Shown at commit, not discovered later. Shift-number takes one back.
         text += QStringLiteral("declared %1  ·  ").arg(p.inferred.size());
