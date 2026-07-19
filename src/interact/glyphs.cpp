@@ -10,11 +10,22 @@ namespace {
 // two ends, the middle of it. The middle rather than an end because a mark at
 // an endpoint collides with every other relation binding the same vertex, and
 // vertices are where relations cluster.
+//
+// An arc has two ends, so its middle is the midpoint of its sweep, on the rim
+// where the arc is actually drawn. A circle has none, so its centre is the only
+// distinguished point it offers. Both must resolve to something: an operand
+// with no anchor is a constraint invisible from the geometry it binds, which is
+// the one thing mark-per-operand exists to rule out.
 std::optional<Point> anchorOn(const Document &doc, const Pose &pose, EntityId id) {
     if(const std::optional<Point> p = pose.point(id)) return p;
     if(const auto ends = pose.segment(id)) {
         return Point{(ends->first.x + ends->second.x) * 0.5,
                      (ends->first.y + ends->second.y) * 0.5};
+    }
+    if(const auto g = pose.arc(id)) {
+        const double middle = g->startAngle + g->sweep * 0.5;
+        return Point{g->centre.x + g->radius * std::cos(middle),
+                     g->centre.y + g->radius * std::sin(middle)};
     }
     const EntityRecord *e = doc.entities().find(id);
     if(e != nullptr && pose.radius(id)) return pose.point(e->points[0]);

@@ -190,6 +190,40 @@ TEST_CASE("the marquee takes what it wholly contains") {
     CHECK(std::find(caught.begin(), caught.end(), straddling) == caught.end());
 }
 
+TEST_CASE("the marquee takes the curves it wholly contains") {
+    // Written for points and segments and never extended, the marquee took a
+    // circle's centre and left the circle — a selection holding half of what
+    // the user dragged a box around.
+    Document doc;
+    const EntityId centre = addPoint(doc, 0.0, 0.0);
+    const EntityId circle = paroculus::test::addCircle(doc, centre, 20.0);
+    const EntityId wideCentre = addPoint(doc, 0.0, 0.0);
+    const EntityId wide = paroculus::test::addCircle(doc, wideCentre, 200.0);
+
+    // A quarter arc in the upper right, sweeping counter-clockwise from due
+    // west to due south of its centre. Its swept path stays inside the box; the
+    // circle it belongs to reaches out to (70, 70) and does not.
+    const EntityId arcCentre = addPoint(doc, 40.0, 40.0);
+    const EntityId arcStart = addPoint(doc, 10.0, 40.0);
+    const EntityId arcEnd = addPoint(doc, 40.0, 10.0);
+    const EntityId arc = paroculus::test::addArc(doc, arcCentre, arcStart, arcEnd);
+
+    const Pose pose(doc);
+    const ViewTransform view = unitView();
+    const std::vector<EntityId> caught = marquee(
+        pose, view, view.toScreen(Point{-50.0, -50.0}), view.toScreen(Point{50.0, 50.0}));
+    auto took = [&](EntityId id) {
+        return std::find(caught.begin(), caught.end(), id) != caught.end();
+    };
+
+    CHECK(took(circle));
+    // Centre inside, rim far outside: grazed, not contained.
+    CHECK(!took(wide));
+    // Exact, not the enclosing square. Here the bound is the test — there is no
+    // shortlist a loose one gets refined against, so a square would refuse this.
+    CHECK(took(arc));
+}
+
 TEST_CASE("hit priority is table-driven and replaceable") {
     // The policy stage 3's discovery window is expected to rewrite. Pinned here
     // so a rewrite is a deliberate corpus update rather than a silent drift.

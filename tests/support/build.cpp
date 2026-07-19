@@ -27,6 +27,14 @@ EntityId addCircle(Document &doc, EntityId centre, double radius) {
     return result.ok() ? EntityId(result.allocated) : EntityId();
 }
 
+EntityId addArc(Document &doc, EntityId centre, EntityId start, EntityId end) {
+    EntityRecord r;
+    r.kind = EntityKind::Arc;
+    r.points = {centre, start, end};
+    const CommandResult result = doc.apply(AddRecord<EntityRecord>{r});
+    return result.ok() ? EntityId(result.allocated) : EntityId();
+}
+
 ConstraintId addConstraint(Document &doc, ConstraintKind kind, std::vector<EntityId> operands,
                            Slot value) {
     ConstraintRecord r;

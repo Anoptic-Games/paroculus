@@ -46,6 +46,10 @@ EntityId addSegment(Document &doc, EntityId a, EntityId b);
 // Adds a circle around an existing centre point, seeded at `radius`.
 EntityId addCircle(Document &doc, EntityId centre, double radius);
 
+// Adds an arc from three existing points: centre, start, end. Sweep runs
+// counter-clockwise from start to end, as the solver reads it.
+EntityId addArc(Document &doc, EntityId centre, EntityId start, EntityId end);
+
 // Adds a constraint with the given operands and value.
 ConstraintId addConstraint(Document &doc, ConstraintKind kind,
                            std::vector<EntityId> operands, Slot value = Slot());

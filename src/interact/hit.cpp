@@ -189,6 +189,27 @@ std::vector<EntityId> marquee(const Pose &pose, const ViewTransform &view,
         return p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY;
     };
 
+    // Every extreme of an arc's swept path: its two ends, plus the cardinal
+    // point of each quadrant boundary the sweep crosses. Exact rather than the
+    // enclosing circle's square, because here the bound is the test — the
+    // shortlist a loose bound feeds in hit testing has no counterpart, so a
+    // square would refuse an arc that lies wholly within the marquee.
+    auto arcInside = [&](const Pose::ArcGeometry &g) {
+        constexpr double TAU = 6.283185307179586476925;
+        auto rim = [&](double angle) {
+            return Point{g.centre.x + g.radius * std::cos(angle),
+                         g.centre.y + g.radius * std::sin(angle)};
+        };
+        if(!inside(rim(g.startAngle)) || !inside(rim(g.startAngle + g.sweep))) return false;
+        for(int k = 0; k < 4; k++) {
+            double offset = static_cast<double>(k) * (TAU * 0.25) - g.startAngle;
+            while(offset < 0.0) offset += TAU;
+            while(offset >= TAU) offset -= TAU;
+            if(offset <= g.sweep && !inside(rim(g.startAngle + offset))) return false;
+        }
+        return true;
+    };
+
     std::vector<EntityId> out;
     for(const EntityRecord &e : pose.document().entities().records()) {
         if(const std::optional<Point> p = pose.point(e.id)) {
@@ -199,6 +220,21 @@ std::vector<EntityId> marquee(const Pose &pose, const ViewTransform &view,
             // Wholly inside: a marquee that grabs what it merely grazes is how
             // a selection ends up holding things the user never saw.
             if(inside(s->first) && inside(s->second)) out.push_back(e.id);
+            continue;
+        }
+        if(const auto g = pose.arc(e.id)) {
+            if(arcInside(*g)) out.push_back(e.id);
+            continue;
+        }
+        // A circle is its bounding square, and two opposite corners decide an
+        // axis-aligned containment.
+        const std::optional<Point> centre = pose.curveCentre(e.id);
+        const std::optional<double> radius = pose.curveRadius(e.id);
+        if(centre && radius) {
+            if(inside(Point{centre->x - *radius, centre->y - *radius}) &&
+               inside(Point{centre->x + *radius, centre->y + *radius})) {
+                out.push_back(e.id);
+            }
         }
     }
     return out;  // already ID-ordered, the entity table is

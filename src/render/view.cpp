@@ -199,6 +199,28 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
         }
     }
 
+    // How an entity is tinted, in one place for every kind that draws. Written
+    // out per loop it was written out four times and one copy drifted: circles
+    // took no hover and no resistance, so a circle resisting a saturated drag
+    // was attributed everywhere except on itself. Precedence runs
+    // role, then selection, then hover, then resistance — the transient states
+    // over the persistent ones, and resistance last because it is the answer to
+    // a question the user is asking right now.
+    auto tintOf = [&](const EntityRecord &e) {
+        SkColor colour = e.role == Role::Construction ? CONSTRUCTION : GEOMETRY;
+        if(contains(adornment.selected, e.id)) colour = SELECTED;
+        if(adornment.hovered == e.id) colour = HOVERED;
+        if(contains(resistingEntities, e.id)) colour = RESISTING;
+        return colour;
+    };
+
+    // Construction geometry reads as a guide: dashed would be better and is a
+    // stage 6 styling concern; for now it is thinner and dimmer.
+    auto strokeWidthOf = [&](const EntityRecord &e) {
+        if(e.role == Role::Construction) return 1.0f;
+        return contains(adornment.selected, e.id) ? SELECTED_STROKE_WIDTH : STROKE_WIDTH;
+    };
+
     SkPaint stroke;
     stroke.setAntiAlias(true);
     stroke.setStyle(SkPaint::kStroke_Style);
@@ -210,18 +232,8 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
         const auto ends = pose.segment(e.id);
         if(!ends) continue;
 
-        const bool isSelected = contains(adornment.selected, e.id);
-        const bool isResisting = contains(resistingEntities, e.id);
-        SkColor colour = e.role == Role::Construction ? CONSTRUCTION : GEOMETRY;
-        if(isSelected) colour = SELECTED;
-        if(adornment.hovered == e.id) colour = HOVERED;
-        if(isResisting) colour = RESISTING;
-
-        stroke.setColor(colour);
-        stroke.setStrokeWidth(isSelected ? SELECTED_STROKE_WIDTH : STROKE_WIDTH);
-        // Construction geometry reads as a guide: dashed would be better and is
-        // a stage 6 styling concern; for now it is thinner and dimmer.
-        if(e.role == Role::Construction) stroke.setStrokeWidth(1.0f);
+        stroke.setColor(tintOf(e));
+        stroke.setStrokeWidth(strokeWidthOf(e));
         canvas.drawLine(toPixel(ends->first), toPixel(ends->second), stroke);
     }
 
@@ -233,15 +245,8 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
         const std::optional<Pose::ArcGeometry> g = pose.arc(e.id);
         if(!g) continue;
 
-        const bool isSelected = contains(adornment.selected, e.id);
-        const bool isResisting = contains(resistingEntities, e.id);
-        SkColor colour = e.role == Role::Construction ? CONSTRUCTION : GEOMETRY;
-        if(isSelected) colour = SELECTED;
-        if(adornment.hovered == e.id) colour = HOVERED;
-        if(isResisting) colour = RESISTING;
-        stroke.setColor(colour);
-        stroke.setStrokeWidth(isSelected ? SELECTED_STROKE_WIDTH : STROKE_WIDTH);
-        if(e.role == Role::Construction) stroke.setStrokeWidth(1.0f);
+        stroke.setColor(tintOf(e));
+        stroke.setStrokeWidth(strokeWidthOf(e));
 
         // Enough segments that the flat spots are under a pixel at this zoom,
         // bounded so a huge arc does not cost a thousand line calls.
@@ -268,10 +273,8 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
         const std::optional<Point> centre = pose.point(e.points[0]);
         if(!centre) continue;
 
-        const bool isSelected = contains(adornment.selected, e.id);
-        stroke.setColor(isSelected ? SELECTED
-                                   : (e.role == Role::Construction ? CONSTRUCTION : GEOMETRY));
-        stroke.setStrokeWidth(isSelected ? SELECTED_STROKE_WIDTH : STROKE_WIDTH);
+        stroke.setColor(tintOf(e));
+        stroke.setStrokeWidth(strokeWidthOf(e));
         // The radius is a document length, so it scales with the view.
         const Eigen::Vector2d edge = view.toScreen(Point{centre->x + *radius, centre->y});
         const Eigen::Vector2d middle = view.toScreen(*centre);
@@ -287,15 +290,11 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
         const std::optional<Point> p = pose.point(e.id);
         if(!p) continue;
 
-        const bool isSelected = contains(adornment.selected, e.id);
-        const bool isResisting = contains(resistingEntities, e.id);
-        SkColor colour = e.role == Role::Construction ? CONSTRUCTION : GEOMETRY;
-        if(isSelected) colour = SELECTED;
-        if(adornment.hovered == e.id) colour = HOVERED;
-        if(isResisting) colour = RESISTING;
-
-        dot.setColor(colour);
-        canvas.drawCircle(toPixel(*p), isSelected ? SELECTED_POINT_RADIUS : POINT_RADIUS, dot);
+        dot.setColor(tintOf(e));
+        canvas.drawCircle(toPixel(*p),
+                          contains(adornment.selected, e.id) ? SELECTED_POINT_RADIUS
+                                                             : POINT_RADIUS,
+                          dot);
     }
 
     // The tool's rubber band, over the geometry and under the marquee. Drawn

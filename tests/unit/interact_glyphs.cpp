@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cmath>
 
 #include "interact/glyphs.h"
 #include "interact/session.h"
@@ -27,6 +28,36 @@ size_t marksOf(const std::vector<GlyphMark> &marks, ConstraintId id) {
 }
 
 }  // namespace
+
+TEST_CASE("an arc carries the marks of what binds it") {
+    // anchorOn() handled points, segments and circles and returned nullopt for
+    // an arc, so the arc macro's own point-on-circle was invisible from the arc
+    // side. Mark-per-operand is not per-operand if a kind can silently opt out.
+    Document doc;
+    const EntityId centre = paroculus::test::addPoint(doc, 0.0, 0.0);
+    const EntityId start = paroculus::test::addPoint(doc, 50.0, 0.0);
+    const EntityId end = paroculus::test::addPoint(doc, 0.0, 50.0);
+    const EntityId arc = paroculus::test::addArc(doc, centre, start, end);
+    const EntityId through = paroculus::test::addPoint(doc, 50.0, 0.0);
+
+    const ConstraintId onArc =
+        paroculus::test::addConstraint(doc, ConstraintKind::PointOnCircle, {through, arc});
+    REQUIRE(onArc.valid());
+
+    const Pose pose(doc);
+    std::vector<GlyphMark> marks;
+    for(const ConstraintRecord &r : doc.constraints().records()) marksFor(doc, pose, r, marks);
+
+    CHECK(marksOf(marks, onArc) == 2);
+
+    const auto onCurve = std::find_if(marks.begin(), marks.end(),
+                                      [&](const GlyphMark &m) { return m.on == arc; });
+    REQUIRE(onCurve != marks.end());
+    // On the rim at the middle of the sweep, where the arc is drawn — not on
+    // its centre, which is construction geometry carrying its own marks.
+    CHECK(onCurve->anchor.x == doctest::Approx(50.0 * std::cos(0.785398163)));
+    CHECK(onCurve->anchor.y == doctest::Approx(50.0 * std::sin(0.785398163)));
+}
 
 TEST_CASE("every constraint gets a mark on every operand it binds") {
     // No invisible constraints, ever. A parallel that marked only one of its

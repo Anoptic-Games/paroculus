@@ -38,6 +38,26 @@ uint32_t at(const std::vector<uint32_t> &pixels, const Eigen::Vector2d &p) {
     return pixels[static_cast<size_t>(y) * W + x];
 }
 
+// 1:1 with the origin at the viewport centre and Y flipped, so a fixture can
+// place geometry where it wants it without reasoning about the demo's framing.
+ViewTransform centredView() {
+    Eigen::Affine2d m = Eigen::Affine2d::Identity();
+    m.translate(Eigen::Vector2d(W * 0.5, H * 0.5));
+    m.scale(Eigen::Vector2d(1.0, -1.0));
+    return ViewTransform(m);
+}
+
+// Pixels whose red beats their blue. Every adorned tint is warm and both the
+// background and ordinary geometry are cool, so this counts what is adorned
+// without pinning an exact colour word an antialiased rim may never produce.
+size_t warmPixels(const std::vector<uint32_t> &pixels) {
+    size_t count = 0;
+    for(uint32_t p : pixels) {
+        if(((p >> 16) & 0xffu) > (p & 0xffu)) count++;
+    }
+    return count;
+}
+
 // The demo, solved, as the shell would show it.
 Pose settledDemo(Document &doc) {
     doc = demoDocument(1.618);
@@ -291,4 +311,47 @@ TEST_CASE("construction geometry draws differently from ordinary geometry") {
     const std::vector<uint32_t> ordinary = paint(Pose(plain), view);
     const std::vector<uint32_t> construction = paint(Pose(guided), view);
     CHECK(ordinary != construction);
+}
+
+TEST_CASE("every drawn kind takes the hover and resistance tints") {
+    // The tint rule was written out once per entity kind, and the copy under
+    // circles drifted: it read selection and role only. A circle resisting a
+    // saturated drag was then attributed everywhere except on the circle, which
+    // is the one place the user is looking.
+    //
+    // Counted rather than sampled, because the tint colours are warm and the
+    // geometry colour is blue: red over blue in any pixel means some adorned
+    // state reached the raster, and that survives antialiasing on a rim.
+    Document doc;
+    const EntityId a = addPoint(doc, -120.0, -80.0);
+    const EntityId b = addPoint(doc, -40.0, -80.0);
+    const EntityId segment = addSegment(doc, a, b);
+
+    const EntityId circleCentre = addPoint(doc, 60.0, -50.0);
+    const EntityId circle = paroculus::test::addCircle(doc, circleCentre, 25.0);
+
+    const EntityId arcCentre = addPoint(doc, 60.0, 50.0);
+    const EntityId arcStart = addPoint(doc, 95.0, 50.0);
+    const EntityId arcEnd = addPoint(doc, 60.0, 85.0);
+    const EntityId arc = paroculus::test::addArc(doc, arcCentre, arcStart, arcEnd);
+
+    const ConstraintId onCircle = paroculus::test::addConstraint(
+        doc, ConstraintKind::PointOnCircle, {arcStart, circle});
+    REQUIRE(onCircle.valid());
+
+    const Pose pose(doc);
+    const ViewTransform view = centredView();
+    REQUIRE(warmPixels(paint(pose, view)) == 0u);
+
+    for(EntityId id : {segment, circle, arc, a}) {
+        Adornment hover;
+        hover.hovered = id;
+        CHECK(warmPixels(paint(pose, view, hover)) > 0u);
+    }
+
+    // And resistance, which reaches the circle through the constraint's
+    // operands rather than by being named directly.
+    Adornment resisting;
+    resisting.resisting = {onCircle};
+    CHECK(warmPixels(paint(pose, view, resisting)) > 0u);
 }
