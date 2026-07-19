@@ -47,7 +47,16 @@ ViewTransform defaultView(int width, int height);
 // Paints the document into a caller-owned BGRA8888 premultiplied buffer.
 // pixels must have at least height*rowBytes bytes; rowBytes at least 4*width.
 // No-ops on a degenerate viewport or a null buffer.
+//
+// width, height: the buffer's own dimensions, in device pixels.
+// deviceScale: device pixels per logical pixel, > 0. Everything else here —
+//   the view transform, the adornment's screen coordinates, and every cosmetic
+//   size below — speaks logical pixels, matching the units hit testing and the
+//   feel policies use. This is the one place the two meet, so a HiDPI display
+//   rasterises at its true resolution without a pixel ratio leaking upward into
+//   interact, where a handle radius must stay a property of the hand.
 void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment &adornment,
-                    uint8_t *pixels, int width, int height, size_t rowBytes);
+                    uint8_t *pixels, int width, int height, size_t rowBytes,
+                    double deviceScale = 1.0);
 
 }  // namespace paroculus

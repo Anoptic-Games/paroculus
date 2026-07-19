@@ -78,8 +78,10 @@ ViewTransform fitView(const Pose &pose, int width, int height) {
 }
 
 void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment &adornment,
-                    uint8_t *pixels, int width, int height, size_t rowBytes) {
+                    uint8_t *pixels, int width, int height, size_t rowBytes,
+                    double deviceScale) {
     if(width <= 0 || height <= 0 || pixels == nullptr) return;
+    if(!(deviceScale > 0.0)) return;
 
     const SkImageInfo info =
         SkImageInfo::Make(width, height, kBGRA_8888_SkColorType, kPremul_SkAlphaType);
@@ -88,6 +90,14 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
 
     SkCanvas canvas(bitmap);
     canvas.clear(BACKGROUND);
+
+    // One canvas scale carries the whole device-pixel story. Everything below
+    // draws in logical pixels — including the cosmetic constants, which is what
+    // keeps a 2 px stroke two *logical* pixels on a HiDPI panel rather than a
+    // hairline. Nothing above this line needs to know the ratio exists.
+    canvas.scale(static_cast<SkScalar>(deviceScale), static_cast<SkScalar>(deviceScale));
+    const double logicalWidth = width / deviceScale;
+    const double logicalHeight = height / deviceScale;
 
     auto toPixel = [&](const Point &p) {
         const Eigen::Vector2d v = view.toScreen(p);
@@ -100,8 +110,7 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
     grid.setColor(GRID);
     grid.setStrokeWidth(1.0f);
     const Point topLeft = view.toDocument(Eigen::Vector2d(0.0, 0.0));
-    const Point bottomRight =
-        view.toDocument(Eigen::Vector2d(static_cast<double>(width), static_cast<double>(height)));
+    const Point bottomRight = view.toDocument(Eigen::Vector2d(logicalWidth, logicalHeight));
     const double gridStep = 20.0;
     const double lowX = std::min(topLeft.x, bottomRight.x);
     const double highX = std::max(topLeft.x, bottomRight.x);

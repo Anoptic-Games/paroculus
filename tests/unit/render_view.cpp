@@ -152,6 +152,70 @@ TEST_CASE("a marquee is drawn in screen space") {
     CHECK(at(pixels, Eigen::Vector2d(210.0, 20.0)) == BACKGROUND);
 }
 
+TEST_CASE("a device scale rasterises denser without moving anything") {
+    // The HiDPI contract. The view transform, the adornment's coordinates and
+    // every cosmetic size stay logical — that is what lets interact keep hit
+    // radii in units of the hand — and only the raster gets denser. So geometry
+    // must land at the logical position scaled up, not somewhere else.
+    Document doc;
+    const Pose pose = settledDemo(doc);
+    const ViewTransform view = defaultView(W, H);
+
+    constexpr int SCALE = 2;
+    constexpr int DW = W * SCALE, DH = H * SCALE;
+    std::vector<uint32_t> hi(static_cast<size_t>(DW) * DH, 0u);
+    renderDocument(pose, view, Adornment{}, reinterpret_cast<uint8_t *>(hi.data()), DW, DH,
+                   static_cast<size_t>(DW) * 4, SCALE);
+
+    auto hiAt = [&](Eigen::Vector2d p) {
+        const int x = static_cast<int>(p.x()), y = static_cast<int>(p.y());
+        REQUIRE(x >= 0);
+        REQUIRE(y >= 0);
+        REQUIRE(x < DW);
+        REQUIRE(y < DH);
+        return hi[static_cast<size_t>(y) * DW + x];
+    };
+
+    for(const EntityRecord &e : doc.entities().records()) {
+        const std::optional<Point> p = pose.point(e.id);
+        if(!p) continue;
+        CHECK(hiAt(view.toScreen(*p) * SCALE) != BACKGROUND);
+    }
+
+    // The grid is clipped to the *logical* viewport, so a doubled buffer must
+    // not read as a doubled view: the same corner is still empty background.
+    CHECK(hiAt(Eigen::Vector2d(2.0 * SCALE, 2.0 * SCALE)) == BACKGROUND);
+
+    // And a vertex covers more device pixels than it does at 1x, which is what
+    // separates a genuinely denser raster from a 1x image in a bigger buffer.
+    const std::vector<uint32_t> lo = paint(pose, view);
+    const Eigen::Vector2d vertex = view.toScreen(*pose.point(doc.entities().records().front().id));
+    auto coverage = [&](const std::vector<uint32_t> &px, int stride, Eigen::Vector2d centre) {
+        int painted = 0;
+        for(int dy = -10; dy <= 10; dy++) {
+            for(int dx = -10; dx <= 10; dx++) {
+                const int x = static_cast<int>(centre.x()) + dx;
+                const int y = static_cast<int>(centre.y()) + dy;
+                if(x < 0 || y < 0 || x >= stride) continue;
+                if(px[static_cast<size_t>(y) * stride + x] != BACKGROUND) painted++;
+            }
+        }
+        return painted;
+    };
+    CHECK(coverage(hi, DW, vertex * SCALE) > coverage(lo, W, vertex));
+}
+
+TEST_CASE("a degenerate device scale paints nothing") {
+    Document doc;
+    const Pose pose = settledDemo(doc);
+    std::vector<uint32_t> pixels(16u, 0u);
+    for(double scale : {0.0, -1.0}) {
+        renderDocument(pose, defaultView(W, H), Adornment{},
+                       reinterpret_cast<uint8_t *>(pixels.data()), 4, 4, 16, scale);
+    }
+    for(uint32_t p : pixels) CHECK(p == 0u);
+}
+
 TEST_CASE("construction geometry draws differently from ordinary geometry") {
     // A guide is an ordinary line with a render role; only the presentation
     // differs.

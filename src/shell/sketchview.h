@@ -50,11 +50,17 @@ protected:
     void wheelEvent(QWheelEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override;
+    // Catches the item gaining a window and being dragged to a screen of a
+    // different density, both of which change the resolution to rasterise at.
+    void itemChange(ItemChange change, const ItemChangeData &value) override;
 
 private:
     // Rebuilds the viewport from the current pan/zoom and item size, and hands
     // it to the session. Called whenever either changes.
     void syncViewport();
+    // Keeps the backing texture at the panel's true resolution.
+    void syncTextureSize();
+    double devicePixelRatio() const;
     paroculus::PointerEvent translate(const QPointF &position, Qt::MouseButtons buttons,
                                       Qt::KeyboardModifiers modifiers,
                                       paroculus::PointerAction action) const;

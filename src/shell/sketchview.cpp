@@ -4,6 +4,7 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QQuickWindow>
 #include <QWheelEvent>
 
 #include "render/view.h"
@@ -29,6 +30,21 @@ SketchView::SketchView(QQuickItem *parent) : QQuickPaintedItem(parent) {
 }
 
 SketchView::~SketchView() = default;
+
+// Device pixels per logical pixel for the screen this item is on. 1.0 until the
+// item has a window, which is the case during construction.
+double SketchView::devicePixelRatio() const {
+    return window() != nullptr ? window()->effectiveDevicePixelRatio() : 1.0;
+}
+
+// QQuickPaintedItem's texture defaults to the item's logical size, so on a
+// HiDPI display the sketch would rasterise at 1x and be scaled up. Sizing it
+// explicitly is what buys the real resolution; paint() still works in logical
+// coordinates, because Qt applies the compensating scale to the painter.
+void SketchView::syncTextureSize() {
+    const double dpr = devicePixelRatio();
+    setTextureSize(QSize(qMax(1, qRound(width() * dpr)), qMax(1, qRound(height() * dpr))));
+}
 
 void SketchView::syncViewport() {
     const int w = qMax(1, qRound(width()));
@@ -126,7 +142,16 @@ void SketchView::keyPressEvent(QKeyEvent *event) {
 
 void SketchView::geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) {
     QQuickPaintedItem::geometryChange(newGeometry, oldGeometry);
+    syncTextureSize();
     syncViewport();
+}
+
+void SketchView::itemChange(ItemChange change, const ItemChangeData &value) {
+    QQuickPaintedItem::itemChange(change, value);
+    if(change == ItemSceneChange || change == ItemDevicePixelRatioHasChanged) {
+        syncTextureSize();
+        update();
+    }
 }
 
 void SketchView::undo() {
@@ -187,12 +212,26 @@ QString SketchView::selectionText() const {
 // Skia renders into the QImage's own pixels, so the only copy is Qt's final
 // blit. Format_ARGB32_Premultiplied is byte-for-byte kBGRA_8888/kPremul on
 // little-endian, which is what renderDocument writes.
+//
+// Two coordinate systems meet here and only here. Qt hands this item logical
+// pixels — which is what interact wants, since a hit radius describes the hand
+// and must not change with display density — while the raster has to be built
+// at the panel's true resolution or the sketch is drawn at 1x and upscaled.
+// syncTextureSize() gives QQuickPaintedItem a texture big enough to hold it;
+// paint() keeps its own coordinates logical regardless, per Qt's contract for
+// an explicit textureSize.
 void SketchView::paint(QPainter *painter) {
     const QSize size = QSize(qRound(width()), qRound(height()));
     if(size.isEmpty()) return;
 
-    if(surface_.size() != size) {
-        surface_ = QImage(size, QImage::Format_ARGB32_Premultiplied);
+    const double dpr = devicePixelRatio();
+    const QSize device(qRound(size.width() * dpr), qRound(size.height() * dpr));
+
+    if(surface_.size() != device) {
+        surface_ = QImage(device, QImage::Format_ARGB32_Premultiplied);
+        // So drawImage below lays it down at logical size rather than blowing
+        // it up to device size and overflowing the item.
+        surface_.setDevicePixelRatio(dpr);
     }
 
     const paroculus::Presentation &p = session_->presentation();
@@ -205,7 +244,7 @@ void SketchView::paint(QPainter *painter) {
     adornment.marqueeTo = p.marqueeTo;
 
     paroculus::renderDocument(session_->pose(), session_->viewport().view, adornment,
-                              surface_.bits(), size.width(), size.height(),
-                              static_cast<size_t>(surface_.bytesPerLine()));
+                              surface_.bits(), device.width(), device.height(),
+                              static_cast<size_t>(surface_.bytesPerLine()), dpr);
     painter->drawImage(0, 0, surface_);
 }
