@@ -209,8 +209,20 @@ void SketchView::wheelEvent(QWheelEvent *event) {
 void SketchView::keyPressEvent(QKeyEvent *event) {
     switch(event->key()) {
         case Qt::Key_Escape: session_->handle(Key::Escape); break;
-        case Qt::Key_Delete:
-        case Qt::Key_Backspace: session_->handle(Key::Delete); break;
+        case Qt::Key_Return:
+        case Qt::Key_Enter:
+            session_->handle(Key::Enter,
+                             (event->modifiers() & Qt::ShiftModifier) ? Modifier::Shift
+                                                                      : Modifier::None);
+            break;
+        case Qt::Key_Tab: session_->handle(Key::Tab); break;
+        case Qt::Key_Backspace:
+            // Backspace edits the field while one is open, and deletes only
+            // when there is nothing being typed.
+            if(session_->presentation().numericActive) session_->numericBackspace();
+            else session_->handle(Key::Delete);
+            break;
+        case Qt::Key_Delete: session_->handle(Key::Delete); break;
         case Qt::Key_Z:
             // Undo and redo through the session, so the journal and the derived
             // indexes stay in step.
@@ -228,6 +240,12 @@ void SketchView::keyPressEvent(QKeyEvent *event) {
             // them in. Shift declines instead: confirming what is proposed and
             // taking back what was declared are opposite actions and share the
             // digit that names the relation.
+            // A digit is a value while a field is open, and an offer number
+            // otherwise. Typing is the more specific intent, so it wins.
+            if(session_->presentation().numericActive && !event->text().isEmpty()) {
+                session_->type(event->text().at(0).toLatin1());
+                break;
+            }
             if(event->key() >= Qt::Key_1 && event->key() <= Qt::Key_9) {
                 const size_t index = static_cast<size_t>(event->key() - Qt::Key_1);
                 if(event->modifiers() & Qt::ShiftModifier) {
@@ -236,6 +254,13 @@ void SketchView::keyPressEvent(QKeyEvent *event) {
                     session_->confirmOffer(index);
                 }
                 break;
+            }
+            if(session_->tool() != paroculus::ToolKind::Select && !event->text().isEmpty()) {
+                const char c = event->text().at(0).toLatin1();
+                if((c >= '0' && c <= '9') || c == '.' || c == '-') {
+                    session_->type(c);
+                    break;
+                }
             }
             QQuickPaintedItem::keyPressEvent(event);
             return;
@@ -323,6 +348,13 @@ QString SketchView::status() const {
             const std::string_view name = paroculus::snapInfo(c.kind).name;
             text += QStringLiteral("  %1").arg(
                 QString::fromLatin1(name.data(), int(name.size())));
+        }
+        if(p.numericActive) {
+            const QString name = p.numericTarget < p.toolParameters.size()
+                                     ? QString::fromLatin1(p.toolParameters[p.numericTarget].name)
+                                     : QString();
+            text += QStringLiteral("  %1 [%2_]").arg(name).arg(
+                QString::fromStdString(p.numericText));
         }
         text += QStringLiteral("  ·  ");
     }

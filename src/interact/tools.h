@@ -16,6 +16,7 @@
 // tool whose work could not be undone.
 #pragma once
 
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -105,6 +106,26 @@ public:
 
     virtual ToolPreview preview() const = 0;
     virtual std::span<const ToolParameter> parameters() const = 0;
+
+    // Resolves the placement in flight so parameter `index` takes `value`
+    // exactly. Returns false when the tool cannot honour it — a length of zero,
+    // or a parameter that has no geometric meaning yet.
+    //
+    // Exactly, not nearly: this is the entrance that exists because dragging
+    // cannot hit a number, so landing near it would defeat the point.
+    virtual bool setParameter(size_t index, double value) { (void)index; (void)value; return false; }
+
+    // The dimension that would pin parameter `index` at `value`, expressed
+    // against the entities this step created. Absent when the parameter has no
+    // constraint that says it — an angle needs a second segment to be an angle
+    // to, and the tool has only drawn one.
+    virtual std::optional<ConstraintRecord> dimensionFor(size_t index, double value,
+                                                         const ToolOutput &out) const {
+        (void)index;
+        (void)value;
+        (void)out;
+        return std::nullopt;
+    }
 };
 
 // Chained segments: click to anchor, click to complete, and the completed end
@@ -125,6 +146,9 @@ public:
 
     ToolPreview preview() const override;
     std::span<const ToolParameter> parameters() const override { return parameters_; }
+    bool setParameter(size_t index, double value) override;
+    std::optional<ConstraintRecord> dimensionFor(size_t index, double value,
+                                                 const ToolOutput &out) const override;
 
 private:
     void refreshParameters();
@@ -138,6 +162,10 @@ private:
     // The endpoint the pending step will create, promoted to the anchor only
     // once that step is known to have applied.
     EntityId pendingEnd_;
+    // What the last press claimed, so a dimension can name it without
+    // reconstructing the emission order by arithmetic.
+    EntityId lastStart_;
+    EntityId lastEnd_;
 
     Point cursor_;
     bool haveCursor_ = false;
@@ -160,12 +188,16 @@ public:
 
     ToolPreview preview() const override;
     std::span<const ToolParameter> parameters() const override { return parameters_; }
+    bool setParameter(size_t index, double value) override;
+    std::optional<ConstraintRecord> dimensionFor(size_t index, double value,
+                                                 const ToolOutput &out) const override;
 
 private:
     bool haveCentre_ = false;
     Point centre_;
     Point cursor_;
     bool haveCursor_ = false;
+    EntityId lastCircle_;
     std::array<ToolParameter, 1> parameters_{ToolParameter{"radius", 0.0}};
 };
 
@@ -232,6 +264,9 @@ public:
 
     ToolPreview preview() const override;
     std::span<const ToolParameter> parameters() const override { return parameters_; }
+    bool setParameter(size_t index, double value) override;
+    std::optional<ConstraintRecord> dimensionFor(size_t index, double value,
+                                                 const ToolOutput &out) const override;
 
     bool spanning() const { return haveCorner_ && haveCursor_; }
     Point corner() const { return corner_; }
@@ -242,6 +277,9 @@ private:
     Point corner_;
     Point cursor_;
     bool haveCursor_ = false;
+    // The endpoints of the width edge and the height edge, from the last press.
+    EntityId lastWidth_[2];
+    EntityId lastHeight_[2];
     std::array<ToolParameter, 2> parameters_{ToolParameter{"width", 0.0},
                                              ToolParameter{"height", 0.0}};
 };

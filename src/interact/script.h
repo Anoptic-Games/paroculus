@@ -55,13 +55,23 @@ enum class Key : uint8_t;
 // line-per-step and a parser reading one line fills one of these; the kind
 // says which fields carry meaning.
 struct ScriptStep {
-    enum class Kind : uint8_t { Viewport, Pointer, Key, Tool, Confirm, Decline };
+    enum class Kind : uint8_t {
+        Viewport, Pointer, Key, Tool, Confirm, Decline,
+        // Typed entry. One character per step rather than a whole field,
+        // because a half-typed value is a state the user was really in and a
+        // replay that skipped to the finished string would skip the feel.
+        Type, NumericResolve, NumericImpose, NumericBackspace, NumericAdvance,
+        NumericCancel,
+    };
     Kind kind = Kind::Pointer;
 
     // Kind::Confirm and Kind::Decline. An index into the offered candidates or
     // into the constraints the last placement declared — both are rank-ordered
     // lists the user was looking at, so the index is what they actually chose.
     size_t index = 0;
+
+    // Kind::Type.
+    char character = 0;
 
     // Kind::Tool. Without this a drawing session could not be recorded at all:
     // the same click means "select this" or "place a point here" depending on
@@ -135,6 +145,8 @@ public:
     void tool(ToolKind kind);
     void confirm(size_t index);
     void decline(size_t index);
+    void type(char c);
+    void numeric(ScriptStep::Kind kind);
 
     const std::vector<ScriptStep> &steps() const { return steps_; }
     void clear() { steps_.clear(); }

@@ -84,6 +84,8 @@ ToolOutput LineTool::press(const Document &doc, Point cursor) {
     out.commands.push_back(AddRecord<EntityRecord>{segmentRecord(segment, start, end)});
     out.placedPoint = end;
     out.placedSegment = segment;
+    lastStart_ = start;
+    lastEnd_ = end;
     pendingEnd_ = end;
     return out;
 }
@@ -139,6 +141,52 @@ void LineTool::refreshParameters() {
     parameters_[1].value = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
 }
 
+
+bool LineTool::setParameter(size_t index, double value) {
+    if(!anchored_ || !haveCursor_) return false;
+    const double dx = cursor_.x - anchor_.x;
+    const double dy = cursor_.y - anchor_.y;
+    const double length = std::hypot(dx, dy);
+
+    if(index == 0) {
+        if(value <= 0.0) return false;
+        // Along the direction the hand chose, at the length the digits chose.
+        // With no direction yet, a typed length has nowhere to point.
+        if(length == 0.0) return false;
+        cursor_ = Point{anchor_.x + dx / length * value, anchor_.y + dy / length * value};
+        refreshParameters();
+        return true;
+    }
+    if(index == 1) {
+        // Keep the length the hand chose and take the angle from the digits.
+        const double radians = value * 3.14159265358979323846 / 180.0;
+        const double keep = length > 0.0 ? length : 0.0;
+        if(keep == 0.0) return false;
+        cursor_ = Point{anchor_.x + std::cos(radians) * keep,
+                        anchor_.y + std::sin(radians) * keep};
+        refreshParameters();
+        return true;
+    }
+    return false;
+}
+
+std::optional<ConstraintRecord> LineTool::dimensionFor(size_t index, double value,
+                                                       const ToolOutput &out) const {
+    // Length pins as a distance between the endpoints the step created. Angle
+    // has no dimension here: an angle constraint is an angle *to* something,
+    // and this gesture has drawn only one segment.
+    if(index != 0) return std::nullopt;
+    (void)out;
+    if(!lastStart_.valid() || !lastEnd_.valid()) return std::nullopt;
+
+    ConstraintRecord r;
+    r.kind = ConstraintKind::PointPointDistance;
+    r.operands[0] = lastStart_;
+    r.operands[1] = lastEnd_;
+    r.value = Slot(value);
+    return r;
+}
+
 // ---------------------------------------------------------------------------
 // Circle
 // ---------------------------------------------------------------------------
@@ -179,6 +227,7 @@ ToolOutput CircleTool::press(const Document &doc, Point cursor) {
     // rim is a radius rather than a position anything can be coincident with.
     out.placedStart = centre;
     out.placedPoint = centre;
+    lastCircle_ = circle.id;
     return out;
 }
 
@@ -209,6 +258,33 @@ ToolPreview CircleTool::preview() const {
     p.from = centre_;
     p.to = cursor_;
     return p;
+}
+
+
+bool CircleTool::setParameter(size_t index, double value) {
+    if(index != 0 || !haveCentre_ || value <= 0.0) return false;
+    const double dx = cursor_.x - centre_.x;
+    const double dy = cursor_.y - centre_.y;
+    const double length = std::hypot(dx, dy);
+    // Direction from the hand where there is one, and due east when the cursor
+    // is still sitting on the centre, so a typed radius always resolves.
+    const double ux = length > 0.0 ? dx / length : 1.0;
+    const double uy = length > 0.0 ? dy / length : 0.0;
+    cursor_ = Point{centre_.x + ux * value, centre_.y + uy * value};
+    haveCursor_ = true;
+    parameters_[0].value = value;
+    return true;
+}
+
+std::optional<ConstraintRecord> CircleTool::dimensionFor(size_t index, double value,
+                                                         const ToolOutput &out) const {
+    (void)out;
+    if(index != 0 || !lastCircle_.valid()) return std::nullopt;
+    ConstraintRecord r;
+    r.kind = ConstraintKind::Radius;
+    r.operands[0] = lastCircle_;
+    r.value = Slot(value);
+    return r;
 }
 
 // ---------------------------------------------------------------------------
@@ -454,7 +530,39 @@ ToolOutput RectangleTool::press(const Document &doc, Point cursor) {
     // Inference binds to the corner the user placed first, so starting a
     // rectangle on an existing vertex means what it looks like it means.
     out.placedStart = ends[0][0];
+    lastWidth_[0] = ends[0][0];
+    lastWidth_[1] = ends[0][1];
+    lastHeight_[0] = ends[1][0];
+    lastHeight_[1] = ends[1][1];
     return out;
+}
+
+
+bool RectangleTool::setParameter(size_t index, double value) {
+    if(!haveCorner_ || index > 1 || value <= 0.0) return false;
+    // Sign from the hand, magnitude from the digits: typing a width must not
+    // flip a rectangle the user has drawn to the left.
+    const double sx = cursor_.x >= corner_.x ? 1.0 : -1.0;
+    const double sy = cursor_.y >= corner_.y ? 1.0 : -1.0;
+    if(index == 0) cursor_.x = corner_.x + sx * value;
+    if(index == 1) cursor_.y = corner_.y + sy * value;
+    haveCursor_ = true;
+    parameters_[0].value = std::abs(cursor_.x - corner_.x);
+    parameters_[1].value = std::abs(cursor_.y - corner_.y);
+    return true;
+}
+
+std::optional<ConstraintRecord> RectangleTool::dimensionFor(size_t index, double value,
+                                                            const ToolOutput &out) const {
+    (void)out;
+    const EntityId *edge = index == 0 ? lastWidth_ : lastHeight_;
+    if(index > 1 || !edge[0].valid() || !edge[1].valid()) return std::nullopt;
+    ConstraintRecord r;
+    r.kind = ConstraintKind::PointPointDistance;
+    r.operands[0] = edge[0];
+    r.operands[1] = edge[1];
+    r.value = Slot(value);
+    return r;
 }
 
 void RectangleTool::move(const Document &doc, Point cursor) {

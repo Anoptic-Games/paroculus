@@ -68,6 +68,8 @@ void Session::setTool(ToolKind kind) {
     // Switching abandons what the previous tool had in flight. Nothing was
     // committed while it was in flight, so there is nothing to roll back.
     tool_.reset();
+    numeric_.cancel();
+    imposePending_ = false;
     confirmedOffers_.clear();
     pendingStartSnaps_.clear();
     presentation_.snapCandidates.clear();
@@ -92,11 +94,16 @@ void Session::refreshToolPresentation() {
     if(!tool_) {
         presentation_.toolPreview = ToolPreview();
         presentation_.toolParameters.clear();
+        presentation_.numericActive = false;
+        presentation_.numericText.clear();
         return;
     }
     presentation_.toolPreview = tool_->preview();
     const std::span<const ToolParameter> parameters = tool_->parameters();
     presentation_.toolParameters.assign(parameters.begin(), parameters.end());
+    presentation_.numericActive = numeric_.active();
+    presentation_.numericTarget = numeric_.target();
+    presentation_.numericText = numeric_.text();
 }
 
 SnapResult Session::inferAt(Point cursor) const {
@@ -135,6 +142,64 @@ std::vector<GlyphMark> Session::glyphs() const {
         out.insert(out.end(), ghosts.begin(), ghosts.end());
     }
     return out;
+}
+
+
+void Session::type(char c) {
+    if(recorder_ != nullptr) recorder_->type(c);
+    if(!tool_ || tool_->parameters().empty()) return;
+    if(!numeric_.active()) numeric_.begin(0);
+    numeric_.type(c);
+    refreshToolPresentation();
+}
+
+void Session::numericBackspace() {
+    if(recorder_ != nullptr) recorder_->numeric(ScriptStep::Kind::NumericBackspace);
+    numeric_.backspace();
+    refreshToolPresentation();
+}
+
+void Session::numericCancel() {
+    if(recorder_ != nullptr) recorder_->numeric(ScriptStep::Kind::NumericCancel);
+    numeric_.cancel();
+    refreshToolPresentation();
+}
+
+void Session::numericAdvance() {
+    if(recorder_ != nullptr) recorder_->numeric(ScriptStep::Kind::NumericAdvance);
+    if(!tool_) return;
+    const size_t count = tool_->parameters().size();
+    if(count == 0) return;
+    if(!numeric_.active()) {
+        numeric_.begin(0);
+    } else {
+        numeric_.retarget((numeric_.target() + 1) % count);
+    }
+    refreshToolPresentation();
+}
+
+void Session::numericResolve(bool impose) {
+    if(recorder_ != nullptr) {
+        recorder_->numeric(impose ? ScriptStep::Kind::NumericImpose
+                                  : ScriptStep::Kind::NumericResolve);
+    }
+    if(!tool_ || !numeric_.active()) return;
+    const std::optional<double> value = numeric_.value();
+    if(!value) return;
+
+    const size_t target = numeric_.target();
+    // Exactly, not nearly. The whole reason this entrance exists is that a drag
+    // cannot land on a number.
+    if(!tool_->setParameter(target, *value)) return;
+    numeric_.cancel();
+
+    // Held until the placement commits, because the dimension has to name
+    // entities that do not exist until then.
+    imposePending_ = impose;
+    imposeTarget_ = target;
+    imposeValue_ = *value;
+
+    refreshToolPresentation();
 }
 
 void Session::confirmOffer(size_t index) {
@@ -247,7 +312,18 @@ void Session::handle(const PointerEvent &event) {
                 // Constraint ids are claimed the same way the tool claims entity
                 // ids, so what inference declared can be named exactly rather
                 // than recovered afterwards by guessing which records are new.
+                //
+                // Past whatever the tool already claimed: a macro emits its own
+                // constraints from the same allocator, and starting again at the
+                // watermark would collide with them. applyStep is all-or-nothing,
+                // so that collision does not lose one relation — it loses the
+                // whole shape.
                 uint32_t nextConstraint = doc_->constraints().allocator().next();
+                for(const Command &existing : out.commands) {
+                    if(const auto *add = std::get_if<AddRecord<ConstraintRecord>>(&existing)) {
+                        nextConstraint = std::max(nextConstraint, add->record.id.value() + 1);
+                    }
+                }
                 std::vector<SnapCandidate> committed;
                 std::vector<ConstraintId> inferred;
                 auto declare = [&](const SnapCandidate &c, EntityId point, EntityId segment) {
@@ -267,6 +343,20 @@ void Session::handle(const PointerEvent &event) {
                 for(const SnapCandidate &c : inference.autoCommitted()) {
                     declare(c, out.placedPoint, out.placedSegment);
                 }
+                // A typed value that was imposed becomes a driving dimension
+                // in the same step as the geometry it measures, so undo takes
+                // back the placement and its dimension together.
+                if(imposePending_) {
+                    if(const std::optional<ConstraintRecord> dimension =
+                           tool_->dimensionFor(imposeTarget_, imposeValue_, out)) {
+                        ConstraintRecord r = *dimension;
+                        r.id = ConstraintId(nextConstraint++);
+                        inferred.push_back(r.id);
+                        out.commands.push_back(AddRecord<ConstraintRecord>{r});
+                    }
+                    imposePending_ = false;
+                }
+
                 pendingStartSnaps_.clear();
                 // A confirmation is about one placement, not about the tool.
                 confirmedOffers_.clear();
@@ -374,6 +464,12 @@ void Session::handle(Key key, Modifier modifiers) {
             // Inside a tool, Esc first ends what is in flight and only then
             // leaves the tool. Two presses get home from anywhere, and
             // selection is where home is.
+            if(numeric_.active()) {
+                // Esc ascends one level at a time: it takes back the typed
+                // field before it takes back the placement.
+                numericCancel();
+                return;
+            }
             if(tool_) {
                 // Ending the chain abandons the placement, and confirmations
                 // belong to the placement.
@@ -398,6 +494,15 @@ void Session::handle(Key key, Modifier modifiers) {
 
         case Key::Redo:
             if(journal_->redo(*doc_)) refresh();
+            return;
+
+        case Key::Enter:
+            // One extra key turns the measurement into a declaration.
+            numericResolve(has(modifiers, Modifier::Shift));
+            return;
+
+        case Key::Tab:
+            numericAdvance();
             return;
     }
     (void)modifiers;

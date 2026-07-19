@@ -66,6 +66,8 @@ std::string_view keyName(Key k) {
         case Key::Delete: return "delete";
         case Key::Undo:   return "undo";
         case Key::Redo:   return "redo";
+        case Key::Enter:  return "enter";
+        case Key::Tab:    return "tab";
     }
     return "escape";
 }
@@ -75,6 +77,8 @@ std::optional<Key> keyFrom(std::string_view s) {
     if(s == "delete") return Key::Delete;
     if(s == "undo") return Key::Undo;
     if(s == "redo") return Key::Redo;
+    if(s == "enter") return Key::Enter;
+    if(s == "tab") return Key::Tab;
     return std::nullopt;
 }
 
@@ -238,6 +242,15 @@ std::string serializeScript(const GestureScript &script) {
             case ScriptStep::Kind::Decline:
                 out += "decline index=" + std::to_string(s.index);
                 break;
+            case ScriptStep::Kind::Type:
+                out += "type char=";
+                out += s.character;
+                break;
+            case ScriptStep::Kind::NumericResolve:  out += "numeric do=resolve"; break;
+            case ScriptStep::Kind::NumericImpose:   out += "numeric do=impose"; break;
+            case ScriptStep::Kind::NumericBackspace: out += "numeric do=backspace"; break;
+            case ScriptStep::Kind::NumericAdvance:  out += "numeric do=advance"; break;
+            case ScriptStep::Kind::NumericCancel:   out += "numeric do=cancel"; break;
         }
         const std::string mods = modifierNames(s.modifiers);
         if(!mods.empty()) out += " mods=" + mods;
@@ -385,6 +398,35 @@ ScriptLoadResult parseScript(std::string_view text, GestureScript &out) {
                 haveIndex = true;
             }
             if(!haveIndex) return fail("step without an index", lineNumber);
+        } else if(kind == "type") {
+            step.kind = ScriptStep::Kind::Type;
+            bool haveChar = false;
+            for(size_t i = 1; i < tokens.size(); i++) {
+                const auto f = field(tokens[i]);
+                if(!f) return fail("malformed field", lineNumber);
+                const auto [key, value] = *f;
+                if(key != "char") continue;
+                if(value.size() != 1) return fail("type takes one character", lineNumber);
+                step.character = value[0];
+                haveChar = true;
+            }
+            if(!haveChar) return fail("type step without a character", lineNumber);
+        } else if(kind == "numeric") {
+            bool haveWhat = false;
+            for(size_t i = 1; i < tokens.size(); i++) {
+                const auto f = field(tokens[i]);
+                if(!f) return fail("malformed field", lineNumber);
+                const auto [key, value] = *f;
+                if(key != "do") continue;
+                if(value == "resolve") step.kind = ScriptStep::Kind::NumericResolve;
+                else if(value == "impose") step.kind = ScriptStep::Kind::NumericImpose;
+                else if(value == "backspace") step.kind = ScriptStep::Kind::NumericBackspace;
+                else if(value == "advance") step.kind = ScriptStep::Kind::NumericAdvance;
+                else if(value == "cancel") step.kind = ScriptStep::Kind::NumericCancel;
+                else return fail("unknown numeric action", lineNumber);
+                haveWhat = true;
+            }
+            if(!haveWhat) return fail("numeric step without an action", lineNumber);
         } else if(kind == "key") {
             step.kind = ScriptStep::Kind::Key;
             bool haveName = false;
@@ -445,6 +487,14 @@ void applyStep(Session &session, const ScriptStep &step) {
         case ScriptStep::Kind::Decline:
             session.declineInference(step.index);
             return;
+        case ScriptStep::Kind::Type:
+            session.type(step.character);
+            return;
+        case ScriptStep::Kind::NumericResolve:   session.numericResolve(false); return;
+        case ScriptStep::Kind::NumericImpose:    session.numericResolve(true); return;
+        case ScriptStep::Kind::NumericBackspace: session.numericBackspace(); return;
+        case ScriptStep::Kind::NumericAdvance:   session.numericAdvance(); return;
+        case ScriptStep::Kind::NumericCancel:    session.numericCancel(); return;
     }
 }
 
@@ -487,6 +537,19 @@ void ScriptRecorder::decline(size_t index) {
     ScriptStep step;
     step.kind = ScriptStep::Kind::Decline;
     step.index = index;
+    steps_.push_back(step);
+}
+
+void ScriptRecorder::type(char c) {
+    ScriptStep step;
+    step.kind = ScriptStep::Kind::Type;
+    step.character = c;
+    steps_.push_back(step);
+}
+
+void ScriptRecorder::numeric(ScriptStep::Kind kind) {
+    ScriptStep step;
+    step.kind = kind;
     steps_.push_back(step);
 }
 

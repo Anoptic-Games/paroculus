@@ -11,6 +11,7 @@
 #pragma once
 
 #include <optional>
+#include <string>
 #include <vector>
 
 #include <memory>
@@ -20,6 +21,7 @@
 #include "interact/events.h"
 #include "interact/glyphs.h"
 #include "interact/hit.h"
+#include "interact/numeric.h"
 #include "interact/selection.h"
 #include "interact/snap.h"
 #include "interact/tools.h"
@@ -73,6 +75,12 @@ struct Presentation {
         }
         return out;
     }
+    // The numeric entry in flight: which parameter, and the text so far. Empty
+    // text with active true is a field the user has just opened.
+    bool numericActive = false;
+    size_t numericTarget = 0;
+    std::string numericText;
+
     // What the last placement actually declared. No silent changes: an inferred
     // constraint is shown at commit, not discovered later.
     std::vector<ConstraintId> inferred;
@@ -86,7 +94,7 @@ struct Presentation {
     SolveStatus status = SolveStatus::Unsolved;
 };
 
-enum class Key : uint8_t { Escape, Delete, Undo, Redo };
+enum class Key : uint8_t { Escape, Delete, Undo, Redo, Enter, Tab };
 
 class ScriptRecorder;
 
@@ -154,6 +162,20 @@ public:
     // inference is not the same as regretting the stroke.
     void declineInference(size_t index);
 
+    // Feeds one character to the numeric entry, opening one on the tool's first
+    // parameter if none is running. Approximate gesture and exact entry are two
+    // entrances to the same edit, so this drives the tool already in flight
+    // rather than opening anything that replaces it.
+    void type(char c);
+    void numericBackspace();
+    void numericCancel();
+    // Moves to the next parameter of the running tool, wrapping.
+    void numericAdvance();
+    // Resolves the placement so the typed value holds exactly. When `impose`,
+    // the value also lands as a driving dimension — the one extra key that
+    // turns a measurement into a declaration.
+    void numericResolve(bool impose);
+
     // Attaches a recorder, or detaches with nullptr. Every event the session is
     // asked to handle from here on is captured, which is what makes a recording
     // a recording of the session rather than of the shell's interpretation of
@@ -208,6 +230,13 @@ private:
     // Kinds committed recently in this document, most recent first. Ranking is
     // contextual and document-local; this is the whole of the context.
     std::vector<SnapKind> recentSnaps_;
+
+    NumericEntry numeric_;
+    // The parameter a typed value pinned, carried to the commit that follows so
+    // the dimension can be emitted against the entities that commit creates.
+    bool imposePending_ = false;
+    size_t imposeTarget_ = 0;
+    double imposeValue_ = 0.0;
 
     ScriptRecorder *recorder_ = nullptr;
     // Null in the home state. Creation tools are shallow, so there is at most
