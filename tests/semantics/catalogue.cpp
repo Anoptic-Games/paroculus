@@ -570,7 +570,20 @@ TEST_CASE("a candidate that cannot hold is reported with its conflicting set") {
     const CandidateCheck check = checkCandidate(doc, topology, candidate);
     CHECK(check.verdict == CandidateVerdict::Inconsistent);
     CHECK_FALSE(check.committable());
-    CHECK_FALSE(check.conflicting.empty());
+
+    // Whatever is in the set names a real constraint. The candidate rides in as
+    // an extra and the solver blames it like any other, but it has no ID yet, so
+    // leaving it in would highlight a constraint that does not exist.
+    //
+    // And the set may be empty, as it is here: the solver blamed only the
+    // constraint it could not satisfy and said nothing about which pin it
+    // disagrees with. That is the verdict doing its job and the attribution
+    // being unavailable, which is what stage 5's conflict walking is for. This
+    // assertion used to read "not empty" and passed on the ghost alone.
+    for(ConstraintId id : check.conflicting) {
+        CHECK(id.valid());
+        CHECK(id != candidate.id);
+    }
 }
 
 TEST_CASE("a malformed candidate gets one verdict, not two failure modes") {

@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "core/document.h"
+#include "core/persist.h"
 #include "support/build.h"
 
 using namespace paroculus;
@@ -581,4 +582,68 @@ TEST_CASE("a group shrink inverts exactly, like every other command") {
 
     CHECK(*doc.groups().find(id) == before);
     CHECK(doc.entities().contains(a));
+}
+
+TEST_CASE("unused seed slots are canonical, like unused point slots") {
+    // An unused seed slot is not scratch space. Junk left in one survives the
+    // commit and serializes, so two records meaning the same thing compare
+    // unequal and a round-trip quietly loses the difference.
+    Document doc;
+    const EntityId a = addPoint(doc, 0.0, 0.0);
+    const EntityId b = addPoint(doc, 10.0, 0.0);
+
+    // A segment owns no parameters at all.
+    EntityRecord segment;
+    segment.kind = EntityKind::Segment;
+    segment.points = {a, b, EntityId()};
+    segment.seeds = {3.0, 0.0};
+    CHECK(doc.apply(AddRecord<EntityRecord>{segment}).error == CommandError::WrongSignature);
+
+    // A circle owns exactly one, so the second slot must be zero.
+    EntityRecord circle;
+    circle.kind = EntityKind::Circle;
+    circle.points = {a, EntityId(), EntityId()};
+    circle.seeds = {20.0, 7.0};
+    CHECK(doc.apply(AddRecord<EntityRecord>{circle}).error == CommandError::WrongSignature);
+
+    circle.seeds = {20.0, 0.0};
+    CHECK(doc.apply(AddRecord<EntityRecord>{circle}).ok());
+}
+
+TEST_CASE("a watermark on load raises and never lowers") {
+    // Records reserve above themselves as they load, and nothing orders the
+    // watermark line before them. A file whose watermark sits below what its
+    // records hold would otherwise reissue an ID one of them already has, and
+    // every reference to that record would silently rebind to the new one.
+    Document doc;
+    const EntityId first = addPoint(doc, 0.0, 0.0);
+    const EntityId second = addPoint(doc, 10.0, 0.0);
+    REQUIRE(second.value() > first.value());
+
+    std::string text = serialize(doc);
+    const size_t at = text.find("watermark ");
+    REQUIRE(at != std::string::npos);
+    const size_t lineEnd = text.find('\n', at);
+    REQUIRE(lineEnd != std::string::npos);
+    std::string watermark = text.substr(at, lineEnd - at + 1);
+    text.erase(at, lineEnd - at + 1);
+
+    // As a hand edit might leave it: a value below what the records hold, and
+    // ordered after them, so the records have already reserved above themselves
+    // by the time the line is read. A watermark ahead of the records is
+    // harmless whatever it says, since the reservations follow it.
+    const size_t valueAt = watermark.find("entity=") + std::string("entity=").size();
+    watermark.replace(valueAt, watermark.find(' ', valueAt) - valueAt, "1");
+    text += watermark;
+
+    Document loaded;
+    REQUIRE(deserialize(text, loaded).ok);
+    CHECK(loaded.entities().contains(first));
+    CHECK(loaded.entities().contains(second));
+
+    // The next ID issued clears everything the file held, rather than colliding.
+    const EntityId fresh = addPoint(loaded, 1.0, 1.0);
+    REQUIRE(fresh.valid());
+    CHECK(fresh.value() > second.value());
+    CHECK(loaded.entities().size() == 3);
 }

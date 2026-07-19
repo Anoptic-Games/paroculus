@@ -45,7 +45,13 @@ public:
         if(count == 0) return nullptr;
         void *p = allocate(count * sizeof(T), alignof(T));
         if(p == nullptr) throw std::bad_alloc();
-        return new(p) T[count]{};
+        // Element by element rather than placement array-new, which the
+        // standard permits to prepend a size cookie the arena did not budget
+        // for. It does not on this ABI for a trivially-destructible T, but the
+        // loop needs no such assumption and costs nothing.
+        T *base = static_cast<T *>(p);
+        for(size_t i = 0; i < count; i++) new(base + i) T{};
+        return base;
     }
 
     // Total bytes handed out. The bench harness reads this to keep translation

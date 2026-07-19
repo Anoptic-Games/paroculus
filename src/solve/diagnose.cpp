@@ -111,7 +111,15 @@ CandidateCheck checkCandidate(const Document &doc, const Topology &topology,
             break;
         case SolveStatus::Inconsistent:
             check.verdict = CandidateVerdict::Inconsistent;
-            check.conflicting = outcome.failed;
+            // What it conflicts with, never itself. The candidate rides in as
+            // an extra and is reported among the failures like any other, and
+            // its id is usually null because nothing has allocated one yet — so
+            // stage 5 would highlight a constraint that does not exist.
+            check.conflicting.clear();
+            for(ConstraintId id : outcome.failed) {
+                if(id == candidate.id) continue;
+                check.conflicting.push_back(id);
+            }
             break;
         default:
             check.verdict = CandidateVerdict::DidNotConverge;

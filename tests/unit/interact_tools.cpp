@@ -283,3 +283,22 @@ TEST_CASE("an unknown tool in a script is refused") {
     CHECK_FALSE(result.ok);
     CHECK(out.steps.empty());
 }
+
+TEST_CASE("Esc takes the offers with the placement they were about") {
+    // Left standing they ghost a relation about a placement that no longer
+    // exists. The tool keeps running after the first Esc, so there is no
+    // guarantee a move ever arrives to recompute them.
+    Fixture f;
+    Session session(f.doc, f.journal);
+    session.setViewport(toolViewport());
+    session.setTool(ToolKind::Line);
+
+    clickAt(session, Point{-40.0, 0.0});
+    // Along the axis from the anchor, which is what horizontal is generated on.
+    moveTo(session, Point{40.0, 0.0});
+    REQUIRE_FALSE(session.presentation().snapCandidates.empty());
+
+    session.handle(Key::Escape);
+    CHECK(session.tool() == ToolKind::Line);
+    CHECK(session.presentation().snapCandidates.empty());
+}

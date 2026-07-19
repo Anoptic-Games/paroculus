@@ -49,6 +49,13 @@ CommandError Document::validate(const EntityRecord &r) const {
     for(size_t i = info.pointCount; i < MAX_ENTITY_POINTS; i++) {
         if(r.points[i].valid()) return CommandError::UnknownOperand;
     }
+    // And the same for seeds, for the same reason and one more: an unused seed
+    // slot is not scratch space. Junk left in a circle's second slot survives
+    // the commit, serializes, and makes a record compare unequal to its own
+    // round-trip — while nothing on screen ever shows it.
+    for(size_t i = info.ownParamCount; i < MAX_ENTITY_PARAMS; i++) {
+        if(r.seeds[i] != 0.0) return CommandError::WrongSignature;
+    }
     if(r.layer.valid() && !layers_.contains(r.layer)) return CommandError::UnknownOperand;
     return CommandError::None;
 }
@@ -90,8 +97,10 @@ CommandError Document::validate(const ConstraintRecord &r) const {
     // meaning the same thing compare equal and serialize identically.
     if(r.alternative > info.alternatives) return CommandError::WrongSignature;
 
-    // A valued kind carries a slot; a valueless one carries none. Storing a
-    // value on a coincidence would serialize a field nothing reads.
+    // A valueless kind carries no slot: storing a value on a coincidence would
+    // serialize a field nothing reads. Only this direction is checkable. A
+    // valued kind with no slot is indistinguishable from one holding zero, and
+    // zero is a legitimate distance.
     const bool hasValue = !(r.value.isConstant() && r.value.constant() == 0.0);
     if(info.valueArity == 0 && hasValue) return CommandError::MissingValue;
 

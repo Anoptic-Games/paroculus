@@ -433,7 +433,10 @@ bool Session::commitPlacement(Point placement, const std::vector<SnapCandidate> 
     pendingSnaps_.clear();
     // A confirmation is about one placement, not about the tool.
     confirmedOffers_.clear();
-    runTool(std::move(out), std::move(inferred));
+    // Recency is a record of what the user actually declared. A refused step
+    // declared nothing, and letting it rank would promote a snap kind on the
+    // strength of a placement the document never accepted.
+    if(!runTool(std::move(out), std::move(inferred))) return false;
     rememberSnaps(committed);
     return true;
 }
@@ -447,7 +450,7 @@ void Session::rememberSnaps(const std::vector<SnapCandidate> &committed) {
     if(recentSnaps_.size() > snapPolicy_.recentDepth) recentSnaps_.resize(snapPolicy_.recentDepth);
 }
 
-void Session::runTool(ToolOutput output, std::vector<ConstraintId> inferred) {
+bool Session::runTool(ToolOutput output, std::vector<ConstraintId> inferred) {
     // Kept before the commands are moved out, so closure can be asked about the
     // edge the placement created.
     const EntityId closureSeed = output.placed.segment.valid() ? output.placed.segment
@@ -457,7 +460,7 @@ void Session::runTool(ToolOutput output, std::vector<ConstraintId> inferred) {
 
     if(output.commands.empty()) {
         refreshToolPresentation();
-        return;
+        return false;
     }
     // Geometry and its inferences go in as one step. Undo removes the placement
     // and what it declared together, because they are one gesture; declining a
@@ -468,7 +471,8 @@ void Session::runTool(ToolOutput output, std::vector<ConstraintId> inferred) {
     // chaining off geometry the document does not have.
     const CommandError error =
         journal_->applyStep(*doc_, std::move(output.label), std::move(output.commands));
-    if(error == CommandError::None) {
+    const bool landed = error == CommandError::None;
+    if(landed) {
         tool_->committed();
         // No silent changes: what was declared is named at the moment it is
         // declared, rather than discovered later by hovering.
@@ -486,6 +490,7 @@ void Session::runTool(ToolOutput output, std::vector<ConstraintId> inferred) {
         }
     }
     refreshToolPresentation();
+    return landed;
 }
 
 void Session::handle(const PointerEvent &event) {
@@ -644,6 +649,11 @@ void Session::handle(Key key, Modifier modifiers) {
                 // belong to the placement.
                 confirmedOffers_.clear();
                 pendingSnaps_.clear();
+                // The offers went with it. Left standing they ghost a relation
+                // about a placement that no longer exists, until the next move
+                // happens to recompute them — and a tool that keeps running
+                // after Esc may not get one.
+                presentation_.snapCandidates.clear();
                 if(!tool_->escape()) setTool(ToolKind::Select);
                 refreshToolPresentation();
                 return;

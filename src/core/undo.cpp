@@ -1,5 +1,7 @@
 #include "core/undo.h"
 
+#include <cassert>
+
 #include <utility>
 
 namespace paroculus {
@@ -51,10 +53,19 @@ CommandError UndoJournal::applyStep(Document &doc, std::string label, Command co
     return applyStep(doc, std::move(label), std::move(one));
 }
 
+// Every command in a journalled step applied once and inverts exactly, so
+// replaying one cannot fail against the document it was recorded from. A
+// refusal here means the document was mutated behind the journal's back, and
+// the assert names that at the moment it happens rather than leaving it to be
+// discovered as a wrong file at the next serialize.
 bool UndoJournal::undo(Document &doc) {
     if(!canUndo()) return false;
     const UndoRecord &record = records_[depth_ - 1];
-    for(const Command &c : record.inverse) doc.apply(c);
+    for(const Command &c : record.inverse) {
+        const CommandResult result = doc.apply(c);
+        assert(result.ok() && "journal desync: the document moved without the journal");
+        (void)result;
+    }
     depth_--;
     return true;
 }
@@ -62,7 +73,11 @@ bool UndoJournal::undo(Document &doc) {
 bool UndoJournal::redo(Document &doc) {
     if(!canRedo()) return false;
     const UndoRecord &record = records_[depth_];
-    for(const Command &c : record.forward) doc.apply(c);
+    for(const Command &c : record.forward) {
+        const CommandResult result = doc.apply(c);
+        assert(result.ok() && "journal desync: the document moved without the journal");
+        (void)result;
+    }
     depth_++;
     return true;
 }

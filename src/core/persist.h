@@ -42,9 +42,10 @@ struct LoadResult {
     explicit operator bool() const { return ok; }
 };
 
-// Replaces `out` wholesale. On failure `out` is left empty rather than
-// half-populated, because a partially loaded document is a corrupt one wearing
-// a valid document's interface.
+// Replaces `out` wholesale on success and leaves it untouched on failure. The
+// load builds into a local document and assigns only at the end, so a caller
+// that opens a corrupt file still holds the document it had — never a partially
+// loaded one, which is a corrupt document wearing a valid one's interface.
 LoadResult deserialize(std::string_view text, Document &out);
 
 }  // namespace paroculus

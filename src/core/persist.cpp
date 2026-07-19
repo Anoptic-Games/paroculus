@@ -477,12 +477,15 @@ LoadResult deserialize(std::string_view text, Document &out) {
         };
 
         if(f.kind == "watermark") {
+            // Raises, never lowers. Records reserve above themselves as they
+            // load, and nothing orders the watermark line before them — a
+            // hand-edited file may put it last, and a plain set would then hand
+            // out an ID some record already holds.
             auto set = [&](const char *key, auto &table) {
                 const auto v = field(f, key);
-                if(v) {
-                    const auto n = toUint(*v);
-                    if(n) table.allocator().setNext(*n);
-                }
+                if(!v) return;
+                const auto n = toUint(*v);
+                if(n && *n > table.allocator().next()) table.allocator().setNext(*n);
             };
             set("entity", DocumentLoader::entities(doc));
             set("constraint", DocumentLoader::constraints(doc));

@@ -84,6 +84,13 @@ private:
 // define it, the entities defined by it, and anything joined to those by a
 // coincidence. This is what a single click selects at depth zero, and what
 // ascending returns to.
+//
+// The walk up — from a point to the entities built on it — scans the entity
+// table per entity reached, so a click costs O(n^2) in the size of the run's
+// neighbourhood. Deliberately left: an adjacency index is the fix, and it is
+// the same trade the component partition records — a real speedup on one path
+// against a structure every mutation site has to keep true. Worth building with
+// a profile in hand and a document large enough to need it, not before.
 std::vector<EntityId> connectedRun(const Document &doc, const Topology &topology, EntityId seed);
 
 }  // namespace paroculus

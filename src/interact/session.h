@@ -218,7 +218,10 @@ public:
 
 private:
     // Applies whatever a tool asked for, and tells the tool only if it landed.
-    void runTool(ToolOutput output, std::vector<ConstraintId> inferred = {});
+    // Applies a tool's output through the journal. Returns whether the step
+    // landed: applyStep is all-or-nothing, and a caller that records anything
+    // about the placement has to know it happened.
+    bool runTool(ToolOutput output, std::vector<ConstraintId> inferred = {});
     void refreshToolPresentation();
 
     // The value a resolved placement pins as a driving dimension.

@@ -35,8 +35,16 @@ enum class CandidateVerdict : uint8_t {
 struct CandidateCheck {
     CandidateVerdict verdict = CandidateVerdict::Malformed;
 
-    // The constraints the solver blamed, for Inconsistent. This becomes a
-    // selection-like highlight the user can walk, not a modal dialog.
+    // The constraints the solver blamed, for Inconsistent — never the candidate
+    // itself, which rides in as an extra and has no ID to highlight. This
+    // becomes a selection-like highlight the user can walk, not a modal dialog.
+    //
+    // May be empty on an Inconsistent verdict, and often is: SolveSpace tends to
+    // blame the constraint it could not satisfy, which is the candidate, and
+    // says nothing about which of the existing ones it disagrees with. Empty
+    // means the failure could not be attributed more finely than "this
+    // candidate", not that there is no conflict — the verdict is what the
+    // downgrade reads. Attributing it properly is stage 5's conflict walking.
     std::vector<ConstraintId> conflicting;
 
     // Degrees of freedom the candidate would consume. Zero with a Consistent
