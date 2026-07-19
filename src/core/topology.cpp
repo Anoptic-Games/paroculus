@@ -98,49 +98,6 @@ void Topology::renumber() const {
     }
 }
 
-// Additions can always be absorbed in place: a union never needs to split.
-void Topology::noteAdded(EntityId id) {
-    if(dirty_) return;
-    const EntityRecord *e = doc_->entities().find(id);
-    if(e == nullptr) return;
-
-    const auto fresh = static_cast<uint32_t>(order_.size());
-    index_.emplace(id, fresh);
-    order_.push_back(id);
-    componentParent_.push_back(fresh);
-    coincidenceParent_.push_back(fresh);
-
-    for(size_t i = 0; i < entityInfo(e->kind).pointCount; i++) {
-        const uint32_t p = indexOf(e->points[i]);
-        if(p != NO_COMPONENT) unite(componentParent_, fresh, p);
-    }
-    // The union-find is now exact; only the derived numbering is stale, and
-    // that is a linear pass rather than a rehash of the whole document.
-    renumber();
-}
-
-void Topology::noteAdded(ConstraintId id) {
-    if(dirty_) return;
-    const ConstraintRecord *c = doc_->constraints().find(id);
-    if(c == nullptr) return;
-
-    const size_t n = boundOperandCount(*c);
-    const uint32_t first = indexOf(c->operands[0]);
-    if(first == NO_COMPONENT) {
-        dirty_ = true;
-        return;
-    }
-    for(size_t i = 1; i < n; i++) {
-        const uint32_t other = indexOf(c->operands[i]);
-        if(other != NO_COMPONENT) unite(componentParent_, first, other);
-    }
-    if(c->kind == ConstraintKind::Coincident) {
-        const uint32_t second = indexOf(c->operands[1]);
-        if(second != NO_COMPONENT) unite(coincidenceParent_, first, second);
-    }
-    renumber();
-}
-
 ComponentId Topology::componentOf(EntityId id) const {
     ensureFresh();
     const uint32_t i = indexOf(id);

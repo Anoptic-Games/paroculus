@@ -67,10 +67,6 @@ bool UndoJournal::redo(Document &doc) {
     return true;
 }
 
-void UndoJournal::recordSeedsAfter(std::vector<SeedSpan> seeds) {
-    if(depth_ == 0) return;
-    records_[depth_ - 1].seedsAfter = std::move(seeds);
-}
 
 void UndoJournal::clear() {
     records_.clear();

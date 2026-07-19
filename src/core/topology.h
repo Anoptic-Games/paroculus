@@ -1,9 +1,19 @@
 // One graph, four consumers.
 //
 // The coincidence graph underlies regions, heal-and-fill, selection expansion
-// and the component partition. Keeping it as one incrementally maintained
-// structure rather than four recomputations is what makes drag locality cheap
-// enough to be a per-frame property.
+// and the component partition. Keeping it as one structure rather than four
+// recomputations is what makes drag locality cheap enough to be a per-frame
+// property.
+//
+// Rebuilt rather than maintained in place. PRINCIPLES has the partition
+// maintained incrementally as the graph edits, and that is still where this
+// goes; it is not there yet because incremental maintenance means every site
+// that mutates the document has to declare what it did to the graph, and the
+// failure mode of forgetting is a silently wrong partition — wrong solve
+// scoping, wrong selection runs, no assertion tripped. Rebuild-always is
+// correct by construction, the profile does not yet object, and the union-find
+// underneath is unchanged, so reinstating the incremental path is a small
+// change made with measurements in hand rather than a guess.
 //
 // Two partitions live here and they are not the same:
 //
@@ -42,12 +52,8 @@ public:
     // this is a derived index over it and never mutates it.
     explicit Topology(const Document &doc) : doc_(&doc) {}
 
-    // Incremental maintenance. Additions union in place; removals mark for
-    // rebuild, because a union-find cannot split. That asymmetry is deliberate:
-    // additions are the per-gesture common case and must stay cheap, while
-    // removals are rare enough to pay for a rebuild at the next query.
-    void noteAdded(EntityId id);
-    void noteAdded(ConstraintId id);
+    // Marks the partition stale. The next query rebuilds it, so a caller only
+    // has to say that something changed and never what.
     void noteRemoved() { dirty_ = true; }
     void markDirty() { dirty_ = true; }
 

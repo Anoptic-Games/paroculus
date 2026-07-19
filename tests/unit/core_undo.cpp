@@ -184,28 +184,6 @@ TEST_CASE("a new step truncates the redo tail") {
     CHECK(journal.records().size() == 2);
 }
 
-TEST_CASE("undo records carry seed spans from the first entry") {
-    // Stage 1 has no solver, so the spans stay empty. The shape is here because
-    // retrofitting branch fidelity into an existing undo stream is the
-    // expensive path.
-    Document doc;
-    UndoJournal journal;
-    EntityRecord p;
-    p.kind = EntityKind::Point;
-    REQUIRE(journal.applyStep(doc, "add", AddRecord<EntityRecord>{p}) == CommandError::None);
-
-    REQUIRE(journal.records().size() == 1);
-    CHECK(journal.records().front().seedsBefore.empty());
-    CHECK(journal.records().front().seedsAfter.empty());
-
-    SeedSpan span;
-    span.entity = doc.entities().records().front().id;
-    span.seeds = {3.0, 4.0};
-    journal.recordSeedsAfter({span});
-    REQUIRE(journal.records().front().seedsAfter.size() == 1);
-    CHECK(journal.records().front().seedsAfter.front() == span);
-}
-
 TEST_CASE("property: apply then undo restores every record, at every prefix") {
     // The property the plan names, run over random legal scripts and checked at
     // every prefix rather than only at the end, because a bug that cancels

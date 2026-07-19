@@ -27,9 +27,16 @@ struct UndoRecord {
     std::string label;
     std::vector<Command> forward;
     std::vector<Command> inverse;  // in the order they must be applied
-    std::vector<SeedSpan> seedsBefore;
-    std::vector<SeedSpan> seedsAfter;
 };
+
+// PLANS asked every undo record to carry the seeds of the components it
+// touched, so that replaying declarations could not land on a different
+// solution branch than the user was shown. That property holds, by a different
+// mechanism than the one built for it: committing solved values is an ordinary
+// SetRecord over the entity's seeds, so the branch rides the command stream and
+// every inverse restores it exactly. The spans this record used to carry were
+// never written, never read, and half-present state is what stage 8's async
+// work would have trusted.
 
 // Invariant: the document a journal is attached to is only ever mutated through
 // that journal. A direct Document::apply behind the journal's back leaves the
@@ -59,10 +66,6 @@ public:
     // linear history requires.
     size_t depth() const { return depth_; }
     const std::vector<UndoRecord> &records() const { return records_; }
-
-    // Attaches seeds to the record at the top of the stack. Stage 2 calls this
-    // after the solve a step provoked; stage 1 leaves the spans empty.
-    void recordSeedsAfter(std::vector<SeedSpan> seeds);
 
     void clear();
 

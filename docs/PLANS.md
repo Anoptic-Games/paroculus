@@ -370,6 +370,13 @@ corpus entry and watch it, which is the check the corpus itself cannot make
 — a state can satisfy every asserted invariant and still be visibly wrong,
 as the stage 3 branch flip was.
 
+Amended after the stage 0-4 review (findings 18 and 19): the component partition
+is rebuilt rather than maintained in place, and undo records carry no seed spans.
+Both mechanisms were built, tested and unreachable. Incremental maintenance
+returns when a profile asks for it; branch fidelity is already carried by seed
+commits being ordinary commands with exact inverses, which is the property the
+spans were for.
+
 Amended after the stage 0-4 review (finding 15): the numeric twin here is the
 one a creation tool has — place, type, enter — for all four tools including the
 arc. Typing during a drag of geometry that already exists is deferred to stage

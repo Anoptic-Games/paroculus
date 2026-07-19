@@ -82,7 +82,7 @@ TEST_CASE("a constraint merges the components of its operands") {
 
     const ConstraintId par = addConstraint(doc, ConstraintKind::Parallel, {segA, segB});
     REQUIRE(par.valid());
-    t.noteAdded(par);
+    t.markDirty();
     CHECK(t.componentCount() == 1);
     CHECK(t.sameComponent(a, d));
 }
@@ -215,10 +215,15 @@ TEST_CASE("points and missing entities cannot bound an area") {
     CHECK_FALSE(findBoundaryCycle(doc, t, withGhost).has_value());
 }
 
-TEST_CASE("property: the incremental partition equals a rebuild after every step") {
-    // The plan's property, and the one that makes incremental maintenance
-    // trustworthy at all: a union-find cannot split, so every removal has to
-    // fall back to a rebuild, and this is what proves it does.
+TEST_CASE("property: a marked partition equals a rebuild after every step") {
+    // A Topology is a derived index and the document is the authority, so a
+    // topology told that something changed has to answer exactly as one built
+    // from scratch would — after additions, after removals, and at every point
+    // in between rather than only at the end.
+    //
+    // Driven through markDirty because that is what the product calls. The
+    // incremental union-in-place path this once exercised was unreachable, and
+    // a property proved on code nothing runs is not coverage.
     for(uint64_t seed = 1; seed <= 30; seed++) {
         Rng rng(seed * 6151u);
         Document doc;
@@ -233,7 +238,7 @@ TEST_CASE("property: the incremental partition equals a rebuild after every step
                 const EntityId p = addPoint(doc, rng.real(-50, 50), rng.real(-50, 50));
                 if(p.valid()) {
                     points.push_back(p);
-                    incremental.noteAdded(p);
+                    incremental.markDirty();
                 }
             } else if(choice < 6) {
                 const EntityId a = points[rng.below(points.size())];
@@ -242,7 +247,7 @@ TEST_CASE("property: the incremental partition equals a rebuild after every step
                     const EntityId s = addSegment(doc, a, b);
                     if(s.valid()) {
                         segments.push_back(s);
-                        incremental.noteAdded(s);
+                        incremental.markDirty();
                     }
                 }
             } else if(choice < 8) {
@@ -251,14 +256,14 @@ TEST_CASE("property: the incremental partition equals a rebuild after every step
                 if(a != b) {
                     const ConstraintId c =
                         addConstraint(doc, ConstraintKind::Coincident, {a, b});
-                    if(c.valid()) incremental.noteAdded(c);
+                    if(c.valid()) incremental.markDirty();
                 }
             } else if(choice < 9 && segments.size() >= 2) {
                 const EntityId a = segments[rng.below(segments.size())];
                 const EntityId b = segments[rng.below(segments.size())];
                 if(a != b) {
                     const ConstraintId c = addConstraint(doc, ConstraintKind::Parallel, {a, b});
-                    if(c.valid()) incremental.noteAdded(c);
+                    if(c.valid()) incremental.markDirty();
                 }
             } else if(!doc.constraints().empty()) {
                 // A removal, which the union-find cannot absorb.
@@ -269,7 +274,7 @@ TEST_CASE("property: the incremental partition equals a rebuild after every step
             }
 
             // A freshly built Topology is the from-scratch answer by
-            // construction; the incrementally maintained one must agree.
+            // construction; the maintained one must agree.
             const Topology scratch(doc);
             REQUIRE_MESSAGE(incremental.componentCount() == scratch.componentCount(),
                             "seed ", seed, " step ", step);
