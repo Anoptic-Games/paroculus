@@ -203,12 +203,22 @@ std::vector<GlyphMark> Session::glyphs() const {
     // the one the user needs to see, and there are only ever a handful.
     if(tool_) {
         const ToolPreview preview = tool_->preview();
-        // Nothing is about to be placed when there is no placement in flight,
-        // so an inactive preview promises nothing.
+        // With nothing in flight the next click is the one that opens a shape,
+        // and every creation tool opens with a single point — a line's first
+        // end, a circle's centre, an arc's start, a rectangle's first corner.
+        // So that is what the ghost promises, and it is exactly what
+        // commitPlacement binds an opening click's held snaps against.
+        //
+        // Reporting no roles here instead read as "this click places nothing",
+        // which is true of the command list and false of the gesture: the
+        // relation waits in pendingSnaps_ and binds when the shape justifies
+        // the point. The user aiming at a vertex saw no promise and got a
+        // coincidence anyway, which is the recall half of WYSIWYG failing.
+        const PlacementRoles opening{true, false, false};
         const std::vector<GlyphMark> ghosts =
             ghostGlyphs(presentation_.snapCandidates,
                         preview.active ? preview.placement : lastCursor_,
-                        preview.active ? preview.willPlace : PlacementRoles(), preview.from);
+                        preview.active ? preview.willPlace : opening, preview.from);
         out.insert(out.end(), ghosts.begin(), ghosts.end());
     }
     return out;

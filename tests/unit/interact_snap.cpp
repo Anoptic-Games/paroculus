@@ -476,8 +476,19 @@ TEST_CASE("WYSIWYG: both of an arc's opening clicks keep their relations") {
         const EntityId to = paroculus::test::addPoint(doc, 100.0, 0.0);
         Gesture g(doc, ToolKind::Arc);
 
+        // Each opening click promises the coincidence it is about to hold, and
+        // the bulge lands in empty space promising nothing. Preview and commit
+        // read one inference call, and this is the preview side of it.
+        g.moveTo(Point{-98.0, 1.0});
+        CHECK(g.ghosted() == std::vector<ConstraintKind>{ConstraintKind::Coincident});
         g.pressAt(Point{-98.0, 1.0});  // start, on `from`
+
+        g.moveTo(Point{98.0, -1.0});
+        CHECK(g.ghosted() == std::vector<ConstraintKind>{ConstraintKind::Coincident});
         g.pressAt(Point{98.0, -1.0});  // end, on `to`
+
+        g.moveTo(Point{0.0, bulge});
+        CHECK(g.ghosted().empty());
         g.pressAt(Point{0.0, bulge});  // the bulge, in empty space
 
         // Two coincidences from the opening clicks, plus the arc macro's own
@@ -915,4 +926,58 @@ TEST_CASE("candidates map onto taxonomy constraints in the declared operand orde
     // A candidate whose subject the placement did not create declares nothing.
     CHECK_FALSE(constraintFor(horizontal, PlacementSubjects{EntityId(7), EntityId(), EntityId()})
                     .has_value());
+}
+
+TEST_CASE("WYSIWYG: confirming an offer declares exactly what it offered") {
+    // The offered tier withholds the confidence to auto-commit, and confirming
+    // is the user supplying it. Generating the offer was tested; what accepting
+    // one produces was not, which left the half of WYSIWYG that only the
+    // offered tier reaches — the ghost promises nothing here, because an
+    // unconfirmed offer is a suggestion rather than a relation about to exist.
+    // The reference runs at 30 degrees, well clear of both axes: a run drawn
+    // alongside it is near parallel and near nothing that auto-commits, so the
+    // offer is the only thing generated and confirming it is the only way it
+    // can be declared.
+    Document doc;
+    const EntityId a = paroculus::test::addPoint(doc, -100.0, -100.0);
+    const EntityId b = paroculus::test::addPoint(doc, 100.0, -42.0);
+    paroculus::test::addSegment(doc, a, b);
+    Gesture g(doc, ToolKind::Line);
+
+    g.pressAt(Point{-100.0, 40.0});
+    g.moveTo(Point{100.0, 100.0});
+
+    const std::vector<SnapCandidate> offers = g.session.presentation().offers();
+    REQUIRE_FALSE(offers.empty());
+    const auto parallel = std::find_if(offers.begin(), offers.end(), [](const SnapCandidate &c) {
+        return c.kind == SnapKind::Parallel;
+    });
+    REQUIRE(parallel != offers.end());
+    CHECK_FALSE(parallel->autoCommits());
+    // Unconfirmed, so nothing is promised on screen.
+    CHECK(g.ghosted().empty());
+
+    g.session.confirmOffer(static_cast<size_t>(parallel - offers.begin()));
+    // Confirmed, and now it is promised.
+    CHECK(g.ghosted() == std::vector<ConstraintKind>{ConstraintKind::Parallel});
+
+    g.pressAt(Point{100.0, 100.0});
+    CHECK(g.declared() == std::vector<ConstraintKind>{ConstraintKind::Parallel});
+}
+
+TEST_CASE("an offer left unconfirmed declares nothing") {
+    // The other half: the same gesture without the confirmation commits the
+    // geometry and none of the relation. Helpful rigidity is a failure mode.
+    Document doc;
+    const EntityId a = paroculus::test::addPoint(doc, -100.0, -100.0);
+    const EntityId b = paroculus::test::addPoint(doc, 100.0, -42.0);
+    paroculus::test::addSegment(doc, a, b);
+    Gesture g(doc, ToolKind::Line);
+
+    g.pressAt(Point{-100.0, 40.0});
+    g.moveTo(Point{100.0, 100.0});
+    REQUIRE_FALSE(g.session.presentation().offers().empty());
+    g.pressAt(Point{100.0, 100.0});
+
+    CHECK(g.declared().empty());
 }

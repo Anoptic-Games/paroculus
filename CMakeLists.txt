@@ -248,6 +248,7 @@ if(PAROCULUS_TESTS)
         tests/unit/interact_loops.cpp
         tests/unit/interact_registry.cpp
         tests/gestures/corpus.cpp
+        tests/gestures/inference.cpp
         tests/unit/solve_context.cpp
         tests/unit/solve_demosketch.cpp
         tests/semantics/catalogue.cpp

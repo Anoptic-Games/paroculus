@@ -5,6 +5,7 @@
 #include "core/persist.h"
 #include "interact/script.h"
 #include "interact/session.h"
+#include "solve/solve.h"
 #include "support/build.h"
 
 using namespace paroculus;
@@ -330,4 +331,64 @@ TEST_CASE("every shape tool survives a script round-trip") {
     Session session2(replayed, journal2);
     replay(session2, parsed);
     CHECK(serialize(replayed) == serialize(doc));
+}
+
+TEST_CASE("an arc dissolves gracefully when a member is deleted") {
+    // Shape tools are macros, not types: there is nothing to convert because
+    // there is nothing that was converted. The test of that is what deleting
+    // one member leaves behind — ordinary constrained geometry, not a broken
+    // special object and not a cascade that takes the whole shape.
+    Sketch s(ToolKind::Arc);
+    s.click(Point{-50.0, 0.0});
+    s.click(Point{50.0, 0.0});
+    s.click(Point{0.0, 50.0});
+
+    const EntityRecord *arc = s.first(EntityKind::Arc);
+    REQUIRE(arc != nullptr);
+    const EntityId arcId = arc->id;
+    const EntityId centre = arc->points[0];
+    REQUIRE(s.count(ConstraintKind::PointOnCircle) == 1);
+    const ConstraintId onCircle = s.doc.constraints().records().front().id;
+
+    SUBCASE("deleting the macro's own relation opens it and keeps the geometry") {
+        REQUIRE(s.doc.apply(RemoveRecord<ConstraintRecord>{onCircle}).ok());
+
+        // Everything the macro placed is still there and still an arc.
+        CHECK(s.count(EntityKind::Arc) == 1);
+        CHECK(s.count(EntityKind::Point) == 4);
+        CHECK(s.doc.constraints().empty());
+
+        // And it still solves: what is left is under-constrained, which is the
+        // state every document starts in rather than a broken one.
+        Topology topology(s.doc);
+        SolveContext context = SolveContext::forComponent(s.doc, topology, arcId);
+        const SolveOutcome outcome = solve(s.doc, context);
+        CHECK(outcome.ok());
+        CHECK(outcome.dof > 0);
+    }
+
+    SUBCASE("deleting the through point takes its relation and nothing else") {
+        // The through point is held on the arc but defines none of it, so the
+        // arc outlives it. Which point it is, is the one the relation names.
+        const EntityId through = s.doc.constraints().records().front().operands[0];
+        for(const Command &c : deletionStep(s.doc, through)) REQUIRE(s.doc.apply(c).ok());
+
+        CHECK(s.count(EntityKind::Arc) == 1);
+        CHECK(s.count(EntityKind::Point) == 3);  // centre and the two ends
+        CHECK(s.doc.constraints().empty());
+        CHECK(s.doc.entities().contains(arcId));
+    }
+
+    SUBCASE("deleting a defining point takes the arc, because it was one") {
+        // The other direction, and the one that must cascade: an arc without
+        // its centre is not a degraded arc, it is nonsense. The through point
+        // survives, since it defined nothing.
+        const EntityId through = s.doc.constraints().records().front().operands[0];
+        for(const Command &c : deletionStep(s.doc, centre)) REQUIRE(s.doc.apply(c).ok());
+
+        CHECK(s.count(EntityKind::Arc) == 0);
+        CHECK_FALSE(s.doc.entities().contains(arcId));
+        CHECK(s.doc.entities().contains(through));
+        CHECK(s.doc.constraints().empty());
+    }
 }

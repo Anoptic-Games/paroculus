@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "core/persist.h"
+#include "interact/registry.h"
 #include "interact/script.h"
 #include "interact/session.h"
 #include "solve/demosketch.h"
@@ -299,4 +300,176 @@ TEST_CASE("a hand-written script drives a session") {
     Session session(replayed, journal2);
     replay(session, parsed);
     CHECK(session.presentation().hovered == a1);
+}
+
+namespace {
+
+// A recorded authoring session: a tool, an offer confirmed, and a placement
+// finished by typing rather than by clicking. The drag recording above exercises
+// pointer and key steps; these are the step kinds a stage 4 session produces and
+// that one never reaches.
+Recording recordAuthoring() {
+    Document doc;
+    // A reference at 30 degrees, clear of both axes, so what a run alongside it
+    // generates is an offer and not something that commits on its own.
+    const EntityId a = paroculus::test::addPoint(doc, -100.0, -100.0);
+    const EntityId b = paroculus::test::addPoint(doc, 100.0, -42.0);
+    paroculus::test::addSegment(doc, a, b);
+
+    UndoJournal journal;
+    Session session(doc, journal);
+
+    Recording out;
+    out.start = doc;
+
+    ScriptRecorder recorder;
+    session.setRecorder(&recorder);
+    session.setViewport(testViewport());
+    session.snapPolicy().gridEnabled = false;
+
+    const Viewport &v = session.viewport();
+    auto moveTo = [&](Point p) {
+        session.handle(PointerEvent::at(PointerAction::Move, v.view.toScreen(p), v.view));
+    };
+    auto pressAt = [&](Point p) {
+        moveTo(p);
+        session.handle(
+            PointerEvent::at(PointerAction::Press, v.view.toScreen(p), v.view, Button::Left));
+    };
+
+    invokeAction(session, "tool.line");
+    pressAt(Point{-100.0, 40.0});
+    moveTo(Point{100.0, 100.0});
+
+    // Confirm the offer, then finish the segment by typing a length rather than
+    // clicking it — every gesture has a numeric twin, and Enter finishes it.
+    ScriptStep confirm;
+    confirm.kind = ScriptStep::Kind::Confirm;
+    confirm.index = 0;
+    applyStep(session, confirm);
+
+    session.type('1');
+    session.type('5');
+    session.type('0');
+    session.numericAdvance();
+    session.numericBackspace();
+    session.numericResolve(false);
+
+    session.handle(Key::Escape);
+    session.handle(Key::Escape);
+
+    out.script.document = out.start;
+    out.script.steps = recorder.steps();
+    out.ended = doc;
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("an authoring recording captures the step kinds a drag never reaches") {
+    const Recording r = recordAuthoring();
+    bool tool = false, confirm = false, type = false, resolve = false;
+    bool backspace = false, advance = false;
+    for(const ScriptStep &s : r.script.steps) {
+        tool = tool || s.kind == ScriptStep::Kind::Tool;
+        confirm = confirm || s.kind == ScriptStep::Kind::Confirm;
+        type = type || s.kind == ScriptStep::Kind::Type;
+        resolve = resolve || s.kind == ScriptStep::Kind::NumericResolve;
+        backspace = backspace || s.kind == ScriptStep::Kind::NumericBackspace;
+        advance = advance || s.kind == ScriptStep::Kind::NumericAdvance;
+    }
+    // The tool arrived through invokeAction and was recorded as the state
+    // change it made, not as the action that made it. See the Action-step test
+    // below for what that costs a hand-written script.
+    CHECK(tool);
+    CHECK(confirm);
+    CHECK(type);
+    CHECK(resolve);
+    CHECK(backspace);
+    CHECK(advance);
+}
+
+TEST_CASE("replaying an authoring script reproduces the document it recorded") {
+    const Recording r = recordAuthoring();
+
+    GestureScript parsed;
+    REQUIRE(parseScript(serializeScript(r.script), parsed).ok);
+
+    Document doc = parsed.document;
+    UndoJournal journal;
+    Session session(doc, journal);
+    replay(session, parsed);
+
+    CHECK(serialize(doc) == serialize(r.ended));
+}
+
+TEST_CASE("re-recording an authoring replay reproduces the script") {
+    // Record → replay → record over the numeric and confirm steps too. These
+    // dispatch through paths a drag never touches — a recording surface that
+    // wrote a step and then called a public method that wrote it again would
+    // double every one of them, and only a re-record notices.
+    const Recording r = recordAuthoring();
+    const std::string text = serializeScript(r.script);
+
+    GestureScript parsed;
+    REQUIRE(parseScript(text, parsed).ok);
+
+    Document doc = parsed.document;
+    UndoJournal journal;
+    Session session(doc, journal);
+    ScriptRecorder again;
+    session.setRecorder(&again);
+    replay(session, parsed);
+
+    GestureScript second;
+    second.document = parsed.document;
+    second.steps = again.steps();
+    CHECK(serializeScript(second) == text);
+}
+
+TEST_CASE("a hand-written action step survives replay as what it did") {
+    // Action steps are parseable and replayable but nothing records one: the
+    // recording surfaces sit at the keystroke, and invokeAction is a core they
+    // dispatch to rather than a surface of its own. So a hand-written action
+    // replays correctly and re-records as the state change it caused.
+    //
+    // Record → replay → record is still the identity over anything a session
+    // produced. It is not byte-identity over a hand-written action, and this is
+    // where that shows: the file is still the whole input, it just comes back
+    // spelled as the effect rather than the cause.
+    Document doc;
+    UndoJournal journal;
+    Session session(doc, journal);
+    session.setViewport(testViewport());
+
+    GestureScript script;
+    script.document = doc;
+    ScriptStep action;
+    action.kind = ScriptStep::Kind::Action;
+    action.actionName = "tool.circle";
+    script.steps.push_back(action);
+
+    ScriptRecorder recorder;
+    session.setRecorder(&recorder);
+    replay(session, script);
+
+    // The action did what it says.
+    CHECK(session.tool() == ToolKind::Circle);
+
+    REQUIRE(recorder.steps().size() == 1);
+    CHECK(recorder.steps()[0].kind == ScriptStep::Kind::Tool);
+    CHECK(recorder.steps()[0].tool == ToolKind::Circle);
+
+    // And the re-recorded script replays to the same place, which is the
+    // property that actually matters: a script is a recording of a session, and
+    // both spellings are recordings of this one.
+    Document second = script.document;
+    UndoJournal secondJournal;
+    Session secondSession(second, secondJournal);
+    secondSession.setViewport(testViewport());
+    GestureScript rerecorded;
+    rerecorded.document = script.document;
+    rerecorded.steps = recorder.steps();
+    replay(secondSession, rerecorded);
+    CHECK(secondSession.tool() == ToolKind::Circle);
 }
