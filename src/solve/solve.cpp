@@ -75,6 +75,15 @@ struct Translation {
     std::vector<ConstraintId> constraintOrder;  // solver handle - 1 indexes this
 };
 
+// An entity's own-parameter span within the context, or null if it holds none.
+// By identity, never by array position — the same rule the readback obeys.
+const SeedSpan *spanFor(const SolveContext &context, EntityId id) {
+    for(const SeedSpan &s : context.params()) {
+        if(s.entity == id) return &s;
+    }
+    return nullptr;
+}
+
 // Whether every operand of `c` is inside the context. A component solve carries
 // exactly the relations that bind it and no others, which is what makes a drag
 // unable to disturb geometry it is not connected to.
@@ -160,9 +169,17 @@ void translate(const Document &doc, const SolveContext &context, const SolveOpti
                 // A circle's radius is a parameter of its own, carried through a
                 // distance entity, which is why the taxonomy gives circles an
                 // ownParamCount of one.
+                //
+                // Seeded from the context, like every point above and unlike
+                // the document record: the context is the parameter store, so
+                // reading e->seeds here would re-seed the radius from the
+                // committed value on every frame of a drag and would silently
+                // discard any speculative context that perturbed it.
+                const SeedSpan *span = spanFor(context, id);
+                if(span == nullptr) break;
                 out.firstParam[id] = nextParam;
                 out.params[out.paramCount++] =
-                    Slvs_MakeParam(nextParam, GROUP_SKETCH, e->seeds[0]);
+                    Slvs_MakeParam(nextParam, GROUP_SKETCH, span->seeds[0]);
                 const Slvs_hEntity distance = nextEntity++;
                 out.entities[out.entityCount++] =
                     Slvs_MakeDistance(distance, GROUP_SKETCH, E_WORKPLANE, nextParam);

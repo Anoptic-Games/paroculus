@@ -43,6 +43,9 @@ EntityId addPoint(Document &doc, double x, double y);
 // Adds a segment between two existing points.
 EntityId addSegment(Document &doc, EntityId a, EntityId b);
 
+// Adds a circle around an existing centre point, seeded at `radius`.
+EntityId addCircle(Document &doc, EntityId centre, double radius);
+
 // Adds a constraint with the given operands and value.
 ConstraintId addConstraint(Document &doc, ConstraintKind kind,
                            std::vector<EntityId> operands, Slot value = Slot());

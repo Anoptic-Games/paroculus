@@ -18,6 +18,15 @@ EntityId addSegment(Document &doc, EntityId a, EntityId b) {
     return result.ok() ? EntityId(result.allocated) : EntityId();
 }
 
+EntityId addCircle(Document &doc, EntityId centre, double radius) {
+    EntityRecord r;
+    r.kind = EntityKind::Circle;
+    r.points = {centre, EntityId(), EntityId()};
+    r.seeds = {radius, 0.0};
+    const CommandResult result = doc.apply(AddRecord<EntityRecord>{r});
+    return result.ok() ? EntityId(result.allocated) : EntityId();
+}
+
 ConstraintId addConstraint(Document &doc, ConstraintKind kind, std::vector<EntityId> operands,
                            Slot value) {
     ConstraintRecord r;

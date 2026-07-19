@@ -10,6 +10,7 @@
 // pre-drag bytes, deletion counts, and off-screen ripple.
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 
 #include "core/persist.h"
@@ -18,6 +19,7 @@
 #include "support/build.h"
 
 using namespace paroculus;
+using paroculus::test::addCircle;
 using paroculus::test::addConstraint;
 using paroculus::test::addPoint;
 using paroculus::test::addSegment;
@@ -237,6 +239,84 @@ TEST_CASE("gesture: an unsaturated drag reports no resistance") {
     dragGesture(session, from, from + Eigen::Vector2d(50.0, 0.0));
     CHECK_FALSE(session.presentation().saturated);
     CHECK(session.presentation().resisting.empty());
+}
+
+TEST_CASE("gesture: dragging a circle's rim resizes it around a fixed centre") {
+    // A circle owns exactly one parameter, its radius, and its centre is a
+    // point dragged by grabbing the point. So grabbing the circle itself can
+    // only mean the rim, and the rim means the radius.
+    // Deliberately off-origin and dragged on a diagonal, so no coordinate of
+    // the cursor coincides with the radius it should produce. A rim drag that
+    // assigned the cursor's x to the radius would pass a due-east drag from a
+    // circle centred on the origin, which is the shape of the bug this pins.
+    Document doc;
+    UndoJournal journal;
+    const EntityId centre = addPoint(doc, 100.0, 50.0);
+    const EntityId circle = addCircle(doc, centre, 40.0);
+    REQUIRE(circle.valid());
+
+    Session session(doc, journal);
+    session.setViewport(testViewport());
+    REQUIRE(session.pose().radius(circle) == doctest::Approx(40.0));
+
+    const double diagonal = std::sqrt(0.5);
+    auto onRay = [&](double distance) {
+        return Point{100.0 + distance * diagonal, 50.0 + distance * diagonal};
+    };
+    const Viewport &v = session.viewport();
+    dragGesture(session, v.view.toScreen(onRay(40.0)), v.view.toScreen(onRay(75.0)));
+
+    CHECK(session.pose().radius(circle) == doctest::Approx(75.0));
+    // The centre is a parameter of its own and nothing asked it to move.
+    CHECK(session.pose().point(centre)->x == doctest::Approx(100.0));
+    CHECK(session.pose().point(centre)->y == doctest::Approx(50.0));
+    // Release commits what is on screen, radius included.
+    CHECK(doc.entities().find(circle)->seeds[0] == doctest::Approx(75.0));
+    // A circle owns one parameter. The second slot is not scratch space for a
+    // drag to leave a cursor coordinate in: junk there survives the commit,
+    // serializes, and compares unequal to a document that means the same thing.
+    CHECK(doc.entities().find(circle)->seeds[1] == 0.0);
+}
+
+TEST_CASE("gesture: a dimensioned radius resists the rim and says so") {
+    // The same saturation contract points already have, on the one other
+    // parameter an entity can own: the cursor outruns the rim, the geometry
+    // stays legal, and the dimension holding it is named.
+    Document doc;
+    UndoJournal journal;
+    const EntityId centre = addPoint(doc, 100.0, 50.0);
+    const EntityId circle = addCircle(doc, centre, 40.0);
+    addConstraint(doc, ConstraintKind::Pin, {centre});
+    const ConstraintId dimension =
+        addConstraint(doc, ConstraintKind::Radius, {circle}, Slot(40.0));
+    REQUIRE(dimension.valid());
+
+    Session session(doc, journal);
+    session.setViewport(testViewport());
+
+    const Viewport &v = session.viewport();
+    const double diagonal = std::sqrt(0.5);
+    const Eigen::Vector2d from =
+        v.view.toScreen(Point{100.0 + 40.0 * diagonal, 50.0 + 40.0 * diagonal});
+    session.handle(PointerEvent::at(PointerAction::Press, from, v.view, Button::Left));
+    for(int i = 1; i <= 12; i++) {
+        session.handle(PointerEvent::at(
+            PointerAction::Move, from + Eigen::Vector2d(10.0 * i * diagonal, -10.0 * i * diagonal),
+            v.view, Button::Left));
+    }
+
+    CHECK(session.presentation().saturated);
+    CHECK(session.pose().radius(circle) == doctest::Approx(40.0));
+    const auto &resisting = session.presentation().resisting;
+    CHECK(std::find(resisting.begin(), resisting.end(), dimension) != resisting.end());
+
+    // And a drag the geometry refused must leave nothing behind: the radius is
+    // where the dimension holds it and the unused slot is untouched.
+    session.handle(PointerEvent::at(PointerAction::Release,
+                                    from + Eigen::Vector2d(120.0 * diagonal, -120.0 * diagonal),
+                                    v.view, Button::Left));
+    CHECK(doc.entities().find(circle)->seeds[0] == doctest::Approx(40.0));
+    CHECK(doc.entities().find(circle)->seeds[1] == 0.0);
 }
 
 TEST_CASE("gesture: movement outside the viewport raises a ripple") {

@@ -7,6 +7,7 @@
 #include "support/build.h"
 
 using namespace paroculus;
+using paroculus::test::addCircle;
 using paroculus::test::addConstraint;
 using paroculus::test::addPoint;
 using paroculus::test::addSegment;
@@ -53,6 +54,55 @@ TEST_CASE("a context holds only the param-owning members") {
 
     CHECK(context.point(a)->x == 1.0);
     CHECK(context.point(b)->y == 4.0);
+}
+
+TEST_CASE("a circle's radius is seeded from the context, not from the document") {
+    // The context is the parameter store — seeds going in, solved values coming
+    // out — and a circle's radius is a parameter like any other. Reading the
+    // document record instead would re-seed the radius from the committed value
+    // on every frame of a drag, and would discard any speculative context that
+    // perturbed it.
+    Document doc;
+    const EntityId centre = addPoint(doc, 0.0, 0.0);
+    const EntityId circle = addCircle(doc, centre, 10.0);
+    REQUIRE(circle.valid());
+
+    SolveContext context = SolveContext::forWholeDocument(doc);
+    REQUIRE(context.radius(circle) == doctest::Approx(10.0));
+
+    // Perturb the context alone. Nothing constrains the radius, so the solver
+    // leaves it where it was handed it — which is the point of the check.
+    for(SeedSpan &span : context.params()) {
+        if(span.entity == circle) span.seeds[0] = 25.0;
+    }
+
+    const SolveOutcome outcome = solve(doc, context, SolveOptions());
+    REQUIRE(outcome.ok());
+    CHECK(context.radius(circle) == doctest::Approx(25.0));
+    // And the document is untouched: a solve never writes back.
+    CHECK(doc.entities().find(circle)->seeds[0] == 10.0);
+}
+
+TEST_CASE("a speculative radius constraint reaches the circle it names") {
+    // The same seam from the other side: options.extra rides in without a
+    // document copy, so a preview of "make this radius 30" has to move it.
+    Document doc;
+    const EntityId centre = addPoint(doc, 0.0, 0.0);
+    const EntityId circle = addCircle(doc, centre, 10.0);
+
+    SolveContext context = SolveContext::forWholeDocument(doc);
+    ConstraintRecord candidate;
+    candidate.kind = ConstraintKind::Radius;
+    candidate.operands[0] = circle;
+    candidate.value = Slot(30.0);
+
+    SolveOptions options;
+    options.extra = {candidate};
+    const SolveOutcome outcome = solve(doc, context, options);
+
+    REQUIRE(outcome.ok());
+    CHECK(context.radius(circle) == doctest::Approx(30.0));
+    CHECK(doc.entities().find(circle)->seeds[0] == 10.0);
 }
 
 TEST_CASE("members are id-ordered whatever order the partition enumerated") {

@@ -38,14 +38,73 @@ double componentExtent(const SolveContext &context, const Document &doc) {
     return any ? std::hypot(maxX - minX, maxY - minY) : 0.0;
 }
 
+// Writes what the cursor is asking of the grabbed entity's own parameters.
+//
+// A point is asked to be at the cursor. A circle is asked for the radius that
+// puts its rim under it: a circle's centre is a point of its own and is dragged
+// by grabbing that point, so grabbing the circle itself can only mean the rim.
+// Both go in as seeds and never as constraints, which is what makes an
+// unreachable request saturate instead of fail.
+//
+// Returns false when the cursor names no request — a circle grabbed exactly at
+// its centre has no rim direction, and collapsing it to nothing is not what the
+// hand meant — leaving the span as it was.
+bool seedTarget(SolveContext &context, const Document &doc, EntityId grabbed, Point cursor) {
+    const EntityRecord *e = doc.entities().find(grabbed);
+    if(e == nullptr) return false;
+
+    if(e->kind == EntityKind::Circle) {
+        const std::optional<Point> centre = context.point(e->points[0]);
+        if(!centre) return false;
+        const double radius = std::hypot(cursor.x - centre->x, cursor.y - centre->y);
+        if(radius <= 0.0) return false;
+        for(SeedSpan &span : context.params()) {
+            if(span.entity == grabbed) span.seeds[0] = radius;
+        }
+        return true;
+    }
+
+    for(SeedSpan &span : context.params()) {
+        if(span.entity != grabbed) continue;
+        span.seeds[0] = cursor.x;
+        span.seeds[1] = cursor.y;
+    }
+    return true;
+}
+
+// Where the grabbed handle actually sits in the pose the solver settled on.
+// This is what the gap is measured from, so it has to be the thing under the
+// finger: for a point that is the point, and for a circle it is the rim along
+// the cursor's own direction, because the radius is what moved.
+//
+// Returns nullopt when the entity holds no pose here, or when the cursor sits
+// on a circle's centre and names no rim.
+std::optional<Point> handlePose(const SolveContext &context, const Document &doc,
+                                EntityId grabbed, Point cursor) {
+    const EntityRecord *e = doc.entities().find(grabbed);
+    if(e == nullptr) return std::nullopt;
+    if(e->kind != EntityKind::Circle) return context.point(grabbed);
+
+    const std::optional<Point> centre = context.point(e->points[0]);
+    const std::optional<double> radius = context.radius(grabbed);
+    if(!centre || !radius) return std::nullopt;
+    const double dx = cursor.x - centre->x, dy = cursor.y - centre->y;
+    const double reach = std::hypot(dx, dy);
+    if(reach <= 0.0) return std::nullopt;
+    return Point{centre->x + dx / reach * *radius, centre->y + dy / reach * *radius};
+}
+
 }  // namespace
 
 std::optional<DragSession> DragSession::begin(const Document &doc, const Topology &topology,
                                               EntityId grabbed, const HitPolicy &policy) {
     const EntityRecord *e = doc.entities().find(grabbed);
     if(e == nullptr) return std::nullopt;
-    // Only entities owning parameters can be dragged directly. A segment is
-    // dragged by its endpoints, which is also what the user is pointing at.
+    // Only entities owning parameters can be dragged directly, which is points
+    // and circles. A segment is dragged by its endpoints, and an arc by its
+    // three, which is also what the user is pointing at; a circle owns its
+    // radius, so grabbing one is a resize. What each grab asks for is
+    // seedTarget's business.
     if(entityInfo(e->kind).ownParamCount == 0) return std::nullopt;
 
     DragSession session;
@@ -70,11 +129,7 @@ DragUpdate DragSession::update(const Document &doc, const Viewport &viewport, Po
     // The target goes in as a seed, not as a constraint. The solver is asked to
     // favour it and free to disregard it, which is exactly what makes an
     // unreachable target saturate instead of failing.
-    for(SeedSpan &span : context_.params()) {
-        if(span.entity != grabbed_) continue;
-        span.seeds[0] = cursor.x;
-        span.seeds[1] = cursor.y;
-    }
+    seedTarget(context_, doc, grabbed_, cursor);
 
     SolveOptions options;
     options.dragged = {grabbed_};
@@ -93,7 +148,7 @@ DragUpdate DragSession::update(const Document &doc, const Viewport &viewport, Po
     const bool diverged = !outcome.ok();
     if(diverged) context_ = lastGood;
 
-    const std::optional<Point> landed = context_.point(grabbed_);
+    const std::optional<Point> landed = handlePose(context_, doc, grabbed_, cursor);
     if(landed) {
         // Measured in pixels, because saturation is a thing the user sees at a
         // zoom level, not a thing the document knows about.
@@ -139,16 +194,12 @@ DragUpdate DragSession::update(const Document &doc, const Viewport &viewport, Po
             if(++tested > MAX_RESISTANCE_PROBES) break;
 
             SolveContext without = context_;
-            for(SeedSpan &span : without.params()) {
-                if(span.entity != grabbed_) continue;
-                span.seeds[0] = cursor.x;
-                span.seeds[1] = cursor.y;
-            }
+            seedTarget(without, doc, grabbed_, cursor);
             probe.suppressed = {c.id};
 
             const SolveOutcome outcome2 = solve(doc, without, probe);
             if(!outcome2.ok()) continue;
-            const std::optional<Point> freed = without.point(grabbed_);
+            const std::optional<Point> freed = handlePose(without, doc, grabbed_, cursor);
             if(!freed) continue;
 
             // Document units on both sides, because the floor is a fraction of
