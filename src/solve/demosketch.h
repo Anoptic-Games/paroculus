@@ -7,9 +7,19 @@
 // error rather than a convention — see tests/boundary.
 #pragma once
 
+#include "core/document.h"
 #include "core/solution.h"
 
 namespace paroculus {
+
+// The demo sketch as a declaration: four points, two segments, and the six
+// constraints that make segment A horizontal at a fixed length with B parallel
+// and their lengths in a driven ratio.
+//
+// ratio: len(A)/len(B). Must be > 0; non-positive falls back to 1.
+// Returns a document whose seeds are deliberately off-constraint, so a solve
+// that no-opped would be visible rather than plausible.
+Document demoDocument(double ratio);
 
 // ratio: len(A)/len(B). Must be > 0; non-positive falls back to 1.
 // Returns solved geometry. On failure the points hold the last iterate and

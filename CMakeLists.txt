@@ -80,9 +80,29 @@ target_compile_options(paroculus-solver PRIVATE -w)
 # The PUBLIC src include directory is what gives every layer its "core/geom.h"
 # style include, so it is declared once here and inherited by linkage.
 add_library(paroculus-core STATIC
+    src/core/document.cpp
+    src/core/document.h
     src/core/geom.h
+    src/core/ids.h
+    src/core/parameters.cpp
+    src/core/parameters.h
+    src/core/persist.cpp
+    src/core/persist.h
+    src/core/records.cpp
+    src/core/records.h
+    src/core/slots.cpp
+    src/core/slots.h
     src/core/solution.cpp
     src/core/solution.h
+    src/core/table.h
+    src/core/taxonomy.cpp
+    src/core/taxonomy.h
+    src/core/topology.cpp
+    src/core/topology.h
+    src/core/undo.cpp
+    src/core/undo.h
+    src/core/units.cpp
+    src/core/units.h
 )
 target_include_directories(paroculus-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(paroculus-core PUBLIC Eigen3::Eigen)
@@ -158,8 +178,20 @@ if(PAROCULUS_TESTS)
 
     add_executable(paroculus-tests
         tests/main.cpp
+        tests/support/build.cpp
+        tests/support/build.h
+        tests/unit/core_document.cpp
         tests/unit/core_geom.cpp
+        tests/unit/core_ids.cpp
+        tests/unit/core_parameters.cpp
+        tests/unit/core_persist.cpp
+        tests/unit/core_slots.cpp
         tests/unit/core_solution.cpp
+        tests/unit/core_table.cpp
+        tests/unit/core_taxonomy.cpp
+        tests/unit/core_topology.cpp
+        tests/unit/core_undo.cpp
+        tests/unit/core_units.cpp
         tests/unit/interact_events.cpp
         tests/unit/render_view.cpp
         tests/unit/solve_demosketch.cpp
@@ -171,6 +203,9 @@ if(PAROCULUS_TESTS)
         paroculus-render
         paroculus-solve
     )
+    # Test-only: fixtures include "support/build.h" the same way sources include
+    # their layer-qualified headers.
+    target_include_directories(paroculus-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     add_test(NAME unit COMMAND paroculus-tests)
 
     # Offscreen QPA: the selftest constructs a QGuiApplication, so it needs a

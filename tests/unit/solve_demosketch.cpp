@@ -4,9 +4,7 @@
 
 #include "solve/demosketch.h"
 
-using paroculus::SolveStatus;
-using paroculus::Solution;
-using paroculus::solveDemoSketch;
+using namespace paroculus;
 
 TEST_CASE("the demo sketch solves its declared constraints") {
     // The same residual checks --selftest runs, reachable without a Qt
@@ -46,6 +44,42 @@ TEST_CASE("a non-positive ratio falls back to 1") {
     const double lenA = std::hypot(s.a1.x - s.a0.x, s.a1.y - s.a0.y);
     const double lenB = std::hypot(s.b1.x - s.b0.x, s.b1.y - s.b0.y);
     CHECK(lenA / lenB == doctest::Approx(1.0));
+}
+
+TEST_CASE("the demo is built from the declaration layer") {
+    // Stage 1's visible outcome: the demo's geometry comes from a document, not
+    // from literals, so the solve is downstream of declarations like every
+    // future edit will be.
+    const Document doc = paroculus::demoDocument(1.618);
+
+    CHECK(doc.entities().size() == 6);   // four points, two segments
+    CHECK(doc.constraints().size() == 6);
+
+    int points = 0, segments = 0;
+    for(const EntityRecord &e : doc.entities().records()) {
+        if(e.kind == EntityKind::Point) points++;
+        if(e.kind == EntityKind::Segment) segments++;
+    }
+    CHECK(points == 4);
+    CHECK(segments == 2);
+
+    // Seeds are off-constraint on purpose: a solver that echoed its input back
+    // would report success and still fail every residual check.
+    const EntityRecord &a1 = doc.entities().records()[1];
+    CHECK(a1.seeds[1] != 0.0);
+}
+
+TEST_CASE("the ratio reaches the solver through a slot") {
+    // The value is a slot on a constraint record, which is what makes the demo
+    // slider the same mechanism a scrub or an expression will use.
+    const Document doc = paroculus::demoDocument(2.5);
+    bool found = false;
+    for(const ConstraintRecord &c : doc.constraints().records()) {
+        if(c.kind != ConstraintKind::LengthRatio) continue;
+        found = true;
+        CHECK(*doc.evaluate(c.value) == doctest::Approx(2.5));
+    }
+    CHECK(found);
 }
 
 TEST_CASE("solver status is mapped, never raw") {
