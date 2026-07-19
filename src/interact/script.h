@@ -24,9 +24,16 @@
 //                  hit it was recorded to demonstrate.
 //   self-contained the starting document is embedded, not referenced, so a
 //                  script keeps working when the fixture that made it moves.
-//   deterministic  replay is a pure function of the file. Recording a replay
-//                  reproduces the file it came from, which is the round-trip
-//                  property the corpus pins.
+//   deterministic  replay is a pure function of the file and the feel policy in
+//                  force. Recording a replay reproduces the file it came from,
+//                  which is the round-trip property the corpus pins.
+//
+// The policy is deliberately *not* recorded. A script replays under whatever
+// hit and snap policy the build currently has, so changing a feel number shows
+// up as a corpus diff to be reviewed — which is the stated discipline, that
+// changing a policy means updating the corpus deliberately rather than
+// silently. A script that froze its own policy would be a script that could
+// never tell you a policy change had broken it.
 #pragma once
 
 #include <optional>
@@ -48,8 +55,13 @@ enum class Key : uint8_t;
 // line-per-step and a parser reading one line fills one of these; the kind
 // says which fields carry meaning.
 struct ScriptStep {
-    enum class Kind : uint8_t { Viewport, Pointer, Key, Tool };
+    enum class Kind : uint8_t { Viewport, Pointer, Key, Tool, Confirm, Decline };
     Kind kind = Kind::Pointer;
+
+    // Kind::Confirm and Kind::Decline. An index into the offered candidates or
+    // into the constraints the last placement declared — both are rank-ordered
+    // lists the user was looking at, so the index is what they actually chose.
+    size_t index = 0;
 
     // Kind::Tool. Without this a drawing session could not be recorded at all:
     // the same click means "select this" or "place a point here" depending on
@@ -121,6 +133,8 @@ public:
     void pointer(const PointerEvent &event);
     void key(Key key, Modifier modifiers);
     void tool(ToolKind kind);
+    void confirm(size_t index);
+    void decline(size_t index);
 
     const std::vector<ScriptStep> &steps() const { return steps_; }
     void clear() { steps_.clear(); }

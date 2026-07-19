@@ -50,8 +50,13 @@ struct SnapCandidate {
     double correction = 0.0;  // pixels the placement moved
     double score = 0.0;
 
+    // The user confirmed this offer for the placement in flight. An offered
+    // kind that has been confirmed commits exactly like an auto-committing one
+    // — confirmation is the user supplying the confidence the tier withheld.
+    bool confirmed = false;
+
     SnapTier tier() const { return snapInfo(kind).tier; }
-    bool autoCommits() const { return tier() == SnapTier::AutoCommit; }
+    bool autoCommits() const { return confirmed || tier() == SnapTier::AutoCommit; }
 };
 
 // The pointer state a snap is computed against.
@@ -69,6 +74,13 @@ struct SnapRequest {
     // Kinds committed recently in this document, most recent first. The whole
     // of "ranking is contextual and document-local".
     std::vector<SnapKind> recent;
+
+    // Offers the user has confirmed for the placement in flight, as
+    // (kind, target). A confirmation holds only while the relation is still
+    // available: swinging far enough that the candidate is no longer generated
+    // lapses it, because a parallel to a segment you have rotated away from is
+    // not a relation anyone can declare.
+    std::vector<std::pair<SnapKind, EntityId>> confirmed;
 };
 
 struct SnapResult {

@@ -82,6 +82,11 @@ SnapResult snap(const Document &doc, const Pose &pose, const SpatialIndex &index
         c.correction = pixels(placement, request.cursor);
         c.score = snapScore(policy, snapInfo(kind).tier, c.correction,
                             recentRankOf(request.recent, kind, policy.recentDepth));
+        c.confirmed = std::find(request.confirmed.begin(), request.confirmed.end(),
+                                std::pair{kind, target}) != request.confirmed.end();
+        // A confirmed offer outranks everything: the user has said which
+        // relation they meant, and the ranking's job is over.
+        if(c.confirmed) c.score += 10.0 * policy.tierWeight;
         result.candidates.push_back(c);
     };
 

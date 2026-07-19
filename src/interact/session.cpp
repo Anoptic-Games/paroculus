@@ -68,6 +68,11 @@ void Session::setTool(ToolKind kind) {
     // Switching abandons what the previous tool had in flight. Nothing was
     // committed while it was in flight, so there is nothing to roll back.
     tool_.reset();
+    confirmedOffers_.clear();
+    pendingStartSnaps_.clear();
+    presentation_.snapCandidates.clear();
+    presentation_.inferred.clear();
+    haveLastCursor_ = false;
     if(kind == ToolKind::Line) tool_ = std::make_unique<LineTool>();
     presentation_.tool = kind;
     // A creation tool is verb-noun and owns the pointer, so a selection left
@@ -98,7 +103,51 @@ SnapResult Session::inferAt(Point cursor) const {
         request.anchorEntity = p.fromEntity;
     }
     request.recent = recentSnaps_;
+    request.confirmed = confirmedOffers_;
     return snap(*doc_, pose(), index_, viewport_.view, request, snapPolicy_);
+}
+
+void Session::confirmOffer(size_t index) {
+    if(recorder_ != nullptr) recorder_->confirm(index);
+    if(!tool_) return;
+    const std::vector<SnapCandidate> offers = presentation_.offers();
+    if(index >= offers.size()) return;
+
+    const std::pair<SnapKind, EntityId> key{offers[index].kind, offers[index].target};
+    if(std::find(confirmedOffers_.begin(), confirmedOffers_.end(), key) !=
+       confirmedOffers_.end()) {
+        return;
+    }
+    confirmedOffers_.push_back(key);
+
+    // Re-run inference so the ghost moves to where the confirmed relation puts
+    // it immediately, rather than at the next mouse move. Preview shows truth,
+    // and the truth changed the moment the user pressed the key.
+    if(haveLastCursor_) {
+        const SnapResult inference = inferAt(lastCursor_);
+        presentation_.snapCandidates = inference.candidates;
+        tool_->move(*doc_, inference.placement);
+        refreshToolPresentation();
+    }
+}
+
+void Session::declineInference(size_t index) {
+    if(recorder_ != nullptr) recorder_->decline(index);
+    if(index >= presentation_.inferred.size()) return;
+    const ConstraintId id = presentation_.inferred[index];
+    // The constraint may already be gone — undone, or declined twice by a
+    // script written against a different document. Silently doing nothing is
+    // right; refusing loudly would make replay brittle for no gain.
+    if(!doc_->constraints().contains(id)) return;
+
+    // Its own step, so the decline is itself undoable and the placement it came
+    // from stays intact.
+    if(journal_->applyStep(*doc_, "decline", RemoveRecord<ConstraintRecord>{id}) ==
+       CommandError::None) {
+        presentation_.inferred.erase(presentation_.inferred.begin() +
+                                     static_cast<std::ptrdiff_t>(index));
+        refresh();
+    }
 }
 
 void Session::rememberSnaps(const std::vector<SnapCandidate> &committed) {
@@ -189,11 +238,15 @@ void Session::handle(const PointerEvent &event) {
                     declare(c, out.placedPoint, out.placedSegment);
                 }
                 pendingStartSnaps_.clear();
+                // A confirmation is about one placement, not about the tool.
+                confirmedOffers_.clear();
                 runTool(std::move(out), std::move(inferred));
                 rememberSnaps(committed);
                 return;
             }
             case PointerAction::Move: {
+                lastCursor_ = event.document;
+                haveLastCursor_ = true;
                 const SnapResult inference = inferAt(event.document);
                 presentation_.snapCandidates = inference.candidates;
                 tool_->move(*doc_, inference.placement);
@@ -292,6 +345,10 @@ void Session::handle(Key key, Modifier modifiers) {
             // leaves the tool. Two presses get home from anywhere, and
             // selection is where home is.
             if(tool_) {
+                // Ending the chain abandons the placement, and confirmations
+                // belong to the placement.
+                confirmedOffers_.clear();
+                pendingStartSnaps_.clear();
                 if(!tool_->escape()) setTool(ToolKind::Select);
                 refreshToolPresentation();
                 return;

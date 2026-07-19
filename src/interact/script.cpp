@@ -232,6 +232,12 @@ std::string serializeScript(const GestureScript &script) {
                 out += "tool name=";
                 out += toolName(s.tool);
                 break;
+            case ScriptStep::Kind::Confirm:
+                out += "confirm index=" + std::to_string(s.index);
+                break;
+            case ScriptStep::Kind::Decline:
+                out += "decline index=" + std::to_string(s.index);
+                break;
         }
         const std::string mods = modifierNames(s.modifiers);
         if(!mods.empty()) out += " mods=" + mods;
@@ -363,6 +369,21 @@ ScriptLoadResult parseScript(std::string_view text, GestureScript &out) {
                 haveName = true;
             }
             if(!haveName) return fail("tool step without a name", lineNumber);
+        } else if(kind == "confirm" || kind == "decline") {
+            step.kind =
+                kind == "confirm" ? ScriptStep::Kind::Confirm : ScriptStep::Kind::Decline;
+            bool haveIndex = false;
+            for(size_t i = 1; i < tokens.size(); i++) {
+                const auto f = field(tokens[i]);
+                if(!f) return fail("malformed field", lineNumber);
+                const auto [key, value] = *f;
+                if(key != "index") continue;
+                const std::optional<int> n = toInt(value);
+                if(!n || *n < 0) return fail("malformed index", lineNumber);
+                step.index = static_cast<size_t>(*n);
+                haveIndex = true;
+            }
+            if(!haveIndex) return fail("step without an index", lineNumber);
         } else if(kind == "key") {
             step.kind = ScriptStep::Kind::Key;
             bool haveName = false;
@@ -417,6 +438,12 @@ void applyStep(Session &session, const ScriptStep &step) {
         case ScriptStep::Kind::Tool:
             session.setTool(step.tool);
             return;
+        case ScriptStep::Kind::Confirm:
+            session.confirmOffer(step.index);
+            return;
+        case ScriptStep::Kind::Decline:
+            session.declineInference(step.index);
+            return;
     }
 }
 
@@ -445,6 +472,20 @@ void ScriptRecorder::tool(ToolKind kind) {
     ScriptStep step;
     step.kind = ScriptStep::Kind::Tool;
     step.tool = kind;
+    steps_.push_back(step);
+}
+
+void ScriptRecorder::confirm(size_t index) {
+    ScriptStep step;
+    step.kind = ScriptStep::Kind::Confirm;
+    step.index = index;
+    steps_.push_back(step);
+}
+
+void ScriptRecorder::decline(size_t index) {
+    ScriptStep step;
+    step.kind = ScriptStep::Kind::Decline;
+    step.index = index;
     steps_.push_back(step);
 }
 

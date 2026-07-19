@@ -62,6 +62,16 @@ struct Presentation {
     // confirmations. Both are here because the user is entitled to see what is
     // about to be declared before it is declared.
     std::vector<SnapCandidate> snapCandidates;
+
+    // The offered subset, in rank order — what the transient strip near the
+    // cursor lists, and what confirmOffer() indexes into.
+    std::vector<SnapCandidate> offers() const {
+        std::vector<SnapCandidate> out;
+        for(const SnapCandidate &c : snapCandidates) {
+            if(c.tier() == SnapTier::Offered) out.push_back(c);
+        }
+        return out;
+    }
     // What the last placement actually declared. No silent changes: an inferred
     // constraint is shown at commit, not discovered later.
     std::vector<ConstraintId> inferred;
@@ -113,6 +123,26 @@ public:
     void setTool(ToolKind kind);
     ToolKind tool() const { return presentation_.tool; }
 
+    // Confirms the offered candidate at `index` in presentation().offers(), so
+    // the placement in flight will declare it. Out-of-range indices are
+    // ignored: a script written against a different document should replay as a
+    // no-op rather than confirming whatever happens to be at that rank now.
+    //
+    // The confirmation holds only while the relation is still available.
+    // Swinging far enough that the candidate stops being generated lapses it,
+    // because a parallel to a segment you have rotated away from is not a
+    // relation anyone can declare.
+    void confirmOffer(size_t index);
+
+    // Removes one constraint from the placement just committed, as its own
+    // undoable step.
+    //
+    // Deliberately finer-grained than undo. Undo takes back the placement and
+    // everything it declared, because that was one gesture; decline takes back
+    // one relation and leaves the geometry, because disagreeing with an
+    // inference is not the same as regretting the stroke.
+    void declineInference(size_t index);
+
     // Attaches a recorder, or detaches with nullptr. Every event the session is
     // asked to handle from here on is captured, which is what makes a recording
     // a recording of the session rather than of the shell's interpretation of
@@ -156,6 +186,13 @@ private:
     // justifies it exists — so they wait one click and are applied to the start
     // point when it is created.
     std::vector<SnapCandidate> pendingStartSnaps_;
+    // Offers confirmed for the placement in flight, cleared when it commits or
+    // is abandoned. A confirmation is about one placement, not about the tool.
+    std::vector<std::pair<SnapKind, EntityId>> confirmedOffers_;
+    // The last placement position inference ran against, so confirming an offer
+    // can re-run it and update the ghost without waiting for a mouse move.
+    Point lastCursor_;
+    bool haveLastCursor_ = false;
     // Kinds committed recently in this document, most recent first. Ranking is
     // contextual and document-local; this is the whole of the context.
     std::vector<SnapKind> recentSnaps_;

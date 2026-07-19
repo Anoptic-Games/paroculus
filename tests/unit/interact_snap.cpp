@@ -1,7 +1,10 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <memory>
 
+#include "core/persist.h"
+#include "interact/script.h"
 #include "interact/session.h"
 #include "support/build.h"
 
@@ -352,6 +355,289 @@ TEST_CASE("an inferred constraint is reported at commit") {
     for(ConstraintId id : session.presentation().inferred) {
         CHECK(doc.constraints().contains(id));
     }
+}
+
+namespace {
+
+// A document with one slanted segment, and a session drawing alongside it so a
+// parallel is offered but not declared.
+struct Offering {
+    Document doc;
+    UndoJournal journal;
+    std::unique_ptr<Session> session;
+    EntityId slanted;
+
+    Offering() {
+        const EntityId a = paroculus::test::addPoint(doc, 0.0, 0.0);
+        const EntityId b = paroculus::test::addPoint(doc, 100.0, 60.0);
+        slanted = paroculus::test::addSegment(doc, a, b);
+        session = std::make_unique<Session>(doc, journal);
+        session->setViewport(snapViewport());
+        session->snapPolicy().gridEnabled = false;
+        session->setTool(ToolKind::Line);
+    }
+
+    void moveTo(Point p) {
+        session->handle(PointerEvent::at(PointerAction::Move,
+                                         session->viewport().view.toScreen(p),
+                                         session->viewport().view));
+    }
+    void pressAt(Point p) {
+        session->handle(PointerEvent::at(PointerAction::Press,
+                                         session->viewport().view.toScreen(p),
+                                         session->viewport().view, Button::Left));
+    }
+    bool declared(ConstraintKind kind) const {
+        for(const ConstraintRecord &c : doc.constraints().records()) {
+            if(c.kind == kind) return true;
+        }
+        return false;
+    }
+};
+
+}  // namespace
+
+TEST_CASE("confirming an offer makes the placement declare it") {
+    // Confirmation is the user supplying the confidence the tier withheld.
+    Offering o;
+    o.moveTo(Point{200.0, 119.0});
+    o.pressAt(Point{200.0, 119.0});
+    o.moveTo(Point{300.0, 179.0});
+
+    const std::vector<SnapCandidate> offers = o.session->presentation().offers();
+    REQUIRE_FALSE(offers.empty());
+    size_t parallelIndex = offers.size();
+    for(size_t i = 0; i < offers.size(); i++) {
+        if(offers[i].kind == SnapKind::Parallel) parallelIndex = i;
+    }
+    REQUIRE(parallelIndex < offers.size());
+
+    o.session->confirmOffer(parallelIndex);
+    // The strip shows it as confirmed before anything is committed.
+    bool shown = false;
+    for(const SnapCandidate &c : o.session->presentation().offers()) {
+        if(c.kind == SnapKind::Parallel && c.confirmed) shown = true;
+    }
+    CHECK(shown);
+
+    o.pressAt(Point{300.0, 179.0});
+    CHECK(o.declared(ConstraintKind::Parallel));
+}
+
+TEST_CASE("an unconfirmed offer is still not declared") {
+    Offering o;
+    o.moveTo(Point{200.0, 119.0});
+    o.pressAt(Point{200.0, 119.0});
+    o.moveTo(Point{300.0, 179.0});
+    o.pressAt(Point{300.0, 179.0});
+    CHECK_FALSE(o.declared(ConstraintKind::Parallel));
+}
+
+TEST_CASE("a confirmation belongs to one placement") {
+    // Confirming parallel for this segment must not silently make every
+    // subsequent segment parallel too — that is rigidity by helpfulness with
+    // extra steps.
+    Offering o;
+    o.moveTo(Point{200.0, 119.0});
+    o.pressAt(Point{200.0, 119.0});
+    o.moveTo(Point{300.0, 179.0});
+
+    const std::vector<SnapCandidate> offers = o.session->presentation().offers();
+    for(size_t i = 0; i < offers.size(); i++) {
+        if(offers[i].kind == SnapKind::Parallel) o.session->confirmOffer(i);
+    }
+    o.pressAt(Point{300.0, 179.0});
+    const size_t afterFirst = o.doc.constraints().size();
+
+    // A second segment, also alongside the reference, but unconfirmed.
+    o.moveTo(Point{400.0, 239.0});
+    o.pressAt(Point{400.0, 239.0});
+
+    size_t parallels = 0;
+    for(const ConstraintRecord &c : o.doc.constraints().records()) {
+        if(c.kind == ConstraintKind::Parallel) parallels++;
+    }
+    CHECK(parallels == 1);
+    CHECK(o.doc.constraints().size() >= afterFirst);
+}
+
+TEST_CASE("a confirmation lapses when the relation stops being available") {
+    // A parallel to a segment you have swung away from is not a relation anyone
+    // can declare, so the confirmation cannot outlive the candidate.
+    Offering o;
+    o.moveTo(Point{200.0, 119.0});
+    o.pressAt(Point{200.0, 119.0});
+    o.moveTo(Point{300.0, 179.0});
+
+    const std::vector<SnapCandidate> offers = o.session->presentation().offers();
+    for(size_t i = 0; i < offers.size(); i++) {
+        if(offers[i].kind == SnapKind::Parallel) o.session->confirmOffer(i);
+    }
+
+    // Swing well away from the reference direction.
+    o.moveTo(Point{205.0, 260.0});
+    o.pressAt(Point{205.0, 260.0});
+    CHECK_FALSE(o.declared(ConstraintKind::Parallel));
+}
+
+TEST_CASE("confirming out of range does nothing") {
+    // A script written against a different document should replay as a no-op
+    // rather than confirming whatever happens to sit at that rank now.
+    Offering o;
+    o.moveTo(Point{200.0, 119.0});
+    o.pressAt(Point{200.0, 119.0});
+    o.moveTo(Point{300.0, 179.0});
+    o.session->confirmOffer(99);
+    o.pressAt(Point{300.0, 179.0});
+    CHECK_FALSE(o.declared(ConstraintKind::Parallel));
+}
+
+TEST_CASE("decline removes one inference and keeps the geometry") {
+    // Finer-grained than undo on purpose: disagreeing with an inference is not
+    // the same as regretting the stroke.
+    Document doc;
+    paroculus::test::addPoint(doc, 40.0, 40.0);
+    UndoJournal journal;
+    Session session(doc, journal);
+    session.setViewport(snapViewport());
+    session.setTool(ToolKind::Line);
+
+    auto click = [&](Point p) {
+        const Eigen::Vector2d s = session.viewport().view.toScreen(p);
+        session.handle(PointerEvent::at(PointerAction::Move, s, session.viewport().view));
+        session.handle(
+            PointerEvent::at(PointerAction::Press, s, session.viewport().view, Button::Left));
+    };
+    click(Point{38.0, 41.0});
+    click(Point{160.0, 41.0});
+
+    const size_t entitiesAfterDraw = doc.entities().size();
+    const size_t declared = session.presentation().inferred.size();
+    REQUIRE(declared >= 1);
+
+    session.declineInference(0);
+    CHECK(doc.constraints().size() == declared - 1);
+    CHECK(doc.entities().size() == entitiesAfterDraw);  // geometry survives
+    CHECK(session.presentation().inferred.size() == declared - 1);
+
+    // And the decline is itself one undoable step, so it can be taken back.
+    session.handle(Key::Undo);
+    CHECK(doc.constraints().size() == declared);
+    CHECK(doc.entities().size() == entitiesAfterDraw);
+}
+
+TEST_CASE("undo bundles the placement with its inferences") {
+    // The other half of the granularity contract: undo takes back the stroke
+    // and everything it declared, in one press, because that was one gesture.
+    Document doc;
+    paroculus::test::addPoint(doc, 40.0, 40.0);
+    UndoJournal journal;
+    Session session(doc, journal);
+    session.setViewport(snapViewport());
+    session.setTool(ToolKind::Line);
+
+    auto click = [&](Point p) {
+        const Eigen::Vector2d s = session.viewport().view.toScreen(p);
+        session.handle(PointerEvent::at(PointerAction::Move, s, session.viewport().view));
+        session.handle(
+            PointerEvent::at(PointerAction::Press, s, session.viewport().view, Button::Left));
+    };
+    click(Point{38.0, 41.0});
+    click(Point{160.0, 41.0});
+    REQUIRE(doc.constraints().size() >= 1);
+    REQUIRE(journal.records().size() == 1);
+
+    session.handle(Key::Undo);
+    CHECK(doc.constraints().size() == 0);
+    CHECK(doc.entities().size() == 1);
+}
+
+TEST_CASE("declining out of range or twice is inert") {
+    Document doc;
+    paroculus::test::addPoint(doc, 40.0, 40.0);
+    UndoJournal journal;
+    Session session(doc, journal);
+    session.setViewport(snapViewport());
+    session.setTool(ToolKind::Line);
+
+    auto click = [&](Point p) {
+        const Eigen::Vector2d s = session.viewport().view.toScreen(p);
+        session.handle(PointerEvent::at(PointerAction::Move, s, session.viewport().view));
+        session.handle(
+            PointerEvent::at(PointerAction::Press, s, session.viewport().view, Button::Left));
+    };
+    click(Point{38.0, 41.0});
+    click(Point{160.0, 41.0});
+
+    const size_t declared = doc.constraints().size();
+    session.declineInference(99);
+    CHECK(doc.constraints().size() == declared);
+
+    session.declineInference(0);
+    const size_t afterOne = doc.constraints().size();
+    // The list shrank, so index 0 now names a different relation — declining
+    // again removes that one rather than failing.
+    session.declineInference(0);
+    CHECK(doc.constraints().size() <= afterOne);
+}
+
+TEST_CASE("confirmation and decline survive a script round-trip") {
+    // Default policy on both sides, and coordinates the grid leaves alone,
+    // because a script deliberately does not record the feel policy — see the
+    // note in script.h. Replay is under whatever policy is in force, which is
+    // what makes changing a policy show up in the corpus rather than be
+    // silently frozen out of it.
+    Document doc;
+    const EntityId a = paroculus::test::addPoint(doc, 0.0, 0.0);
+    const EntityId b = paroculus::test::addPoint(doc, 100.0, 60.0);
+    paroculus::test::addSegment(doc, a, b);
+
+    UndoJournal journal;
+    Session session(doc, journal);
+    GestureScript script;
+    script.document = doc;
+    ScriptRecorder recorder;
+    session.setRecorder(&recorder);
+    session.setViewport(snapViewport());
+    session.setTool(ToolKind::Line);
+
+    auto click = [&](Point p) {
+        const Eigen::Vector2d s = session.viewport().view.toScreen(p);
+        session.handle(PointerEvent::at(PointerAction::Move, s, session.viewport().view));
+        session.handle(
+            PointerEvent::at(PointerAction::Press, s, session.viewport().view, Button::Left));
+    };
+    click(Point{200.0, 120.0});
+    session.handle(PointerEvent::at(PointerAction::Move,
+                                    session.viewport().view.toScreen(Point{300.0, 180.0}),
+                                    session.viewport().view));
+    const std::vector<SnapCandidate> offers = session.presentation().offers();
+    bool confirmedOne = false;
+    for(size_t i = 0; i < offers.size(); i++) {
+        if(offers[i].kind == SnapKind::Parallel) {
+            session.confirmOffer(i);
+            confirmedOne = true;
+        }
+    }
+    REQUIRE(confirmedOne);
+    click(Point{300.0, 180.0});
+    REQUIRE_FALSE(session.presentation().inferred.empty());
+    session.declineInference(0);
+    script.steps = recorder.steps();
+
+    const std::string text = serializeScript(script);
+    CHECK(text.find("confirm index=") != std::string::npos);
+    CHECK(text.find("decline index=") != std::string::npos);
+
+    GestureScript parsed;
+    REQUIRE(parseScript(text, parsed).ok);
+    CHECK(serializeScript(parsed) == text);
+
+    Document replayed = parsed.document;
+    UndoJournal journal2;
+    Session session2(replayed, journal2);
+    replay(session2, parsed);
+    CHECK(serialize(replayed) == serialize(doc));
 }
 
 TEST_CASE("candidates map onto taxonomy constraints in the declared operand order") {

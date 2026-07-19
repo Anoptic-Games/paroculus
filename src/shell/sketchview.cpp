@@ -220,7 +220,22 @@ void SketchView::keyPressEvent(QKeyEvent *event) {
         // surface, which is the next item in this stage.
         case Qt::Key_L: session_->setTool(paroculus::ToolKind::Line); break;
         case Qt::Key_V: session_->setTool(paroculus::ToolKind::Select); break;
-        default: QQuickPaintedItem::keyPressEvent(event); return;
+        default:
+            // One key per offer, by rank, matching the order the strip lists
+            // them in. Shift declines instead: confirming what is proposed and
+            // taking back what was declared are opposite actions and share the
+            // digit that names the relation.
+            if(event->key() >= Qt::Key_1 && event->key() <= Qt::Key_9) {
+                const size_t index = static_cast<size_t>(event->key() - Qt::Key_1);
+                if(event->modifiers() & Qt::ShiftModifier) {
+                    session_->declineInference(index);
+                } else {
+                    session_->confirmOffer(index);
+                }
+                break;
+            }
+            QQuickPaintedItem::keyPressEvent(event);
+            return;
     }
     syncViewport();
     update();
@@ -290,7 +305,27 @@ QString SketchView::status() const {
                         .arg(QString::fromLatin1(parameter.name))
                         .arg(parameter.value, 0, 'f', 2);
         }
+        // The transient strip: what a placement now would declare, and what it
+        // is offering. Numbered because the number is the key that confirms it.
+        const std::vector<paroculus::SnapCandidate> offers = p.offers();
+        for(size_t i = 0; i < offers.size() && i < 9; i++) {
+            const std::string_view name = paroculus::snapInfo(offers[i].kind).name;
+            text += QStringLiteral("  [%1]%2%3")
+                        .arg(i + 1)
+                        .arg(QString::fromLatin1(name.data(), int(name.size())))
+                        .arg(offers[i].confirmed ? QStringLiteral("*") : QString());
+        }
+        for(const paroculus::SnapCandidate &c : p.snapCandidates) {
+            if(!c.autoCommits() || c.confirmed) continue;
+            const std::string_view name = paroculus::snapInfo(c.kind).name;
+            text += QStringLiteral("  %1").arg(
+                QString::fromLatin1(name.data(), int(name.size())));
+        }
         text += QStringLiteral("  ·  ");
+    }
+    if(!p.inferred.empty()) {
+        // Shown at commit, not discovered later. Shift-number takes one back.
+        text += QStringLiteral("declared %1  ·  ").arg(p.inferred.size());
     }
     text += QStringLiteral("%1  ·  dof: %2  ·  solve: %3 ms  ·  zoom: %4x")
                        .arg(QString::fromLatin1(paroculus::statusName(p.status)))
