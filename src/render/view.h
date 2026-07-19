@@ -37,9 +37,18 @@ struct Adornment {
     // The rubber band a creation tool is showing, in document space, because it
     // is geometry-to-be rather than an adorner. Preview shows truth: this is
     // where commit would put it, so it is drawn as the thing it will become.
+    // What shape the tool's preview is. A circle gesture previewed as a chord
+    // would be a preview of something the commit will not produce.
+    enum class GhostShape : uint8_t { Line, Circle, Rectangle, Arc };
     bool ghostActive = false;
+    GhostShape ghostShape = GhostShape::Line;
     Point ghostFrom;
     Point ghostTo;
+    // Arc ghosts only.
+    Point ghostCentre;
+    double ghostRadius = 0.0;
+    double ghostStart = 0.0;
+    double ghostSweep = 0.0;
 
     // The constraint marks to draw, already reduced to the visible set. Render
     // draws what it is given: deciding which relations matter this frame needs

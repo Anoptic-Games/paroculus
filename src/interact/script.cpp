@@ -359,13 +359,14 @@ ScriptLoadResult parseScript(std::string_view text, GestureScript &out) {
                 if(!f) return fail("malformed field", lineNumber);
                 const auto [key, value] = *f;
                 if(key != "name") continue;
-                // Refused rather than silently falling back to select: a script
-                // that quietly replayed a different tool would place different
-                // geometry and look like a bug in the tool, not in the file.
-                if(value != "select" && value != "line") {
-                    return fail("unknown tool", lineNumber);
-                }
+                // Round-tripped through the name table rather than checked
+                // against a list here, so a tool added there cannot leave this
+                // behind. Refused rather than silently falling back to select:
+                // a script that quietly replayed a different tool would place
+                // different geometry and look like a bug in the tool rather
+                // than in the file.
                 step.tool = toolFromName(value);
+                if(value != toolName(step.tool)) return fail("unknown tool", lineNumber);
                 haveName = true;
             }
             if(!haveName) return fail("tool step without a name", lineNumber);

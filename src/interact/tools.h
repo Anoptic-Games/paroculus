@@ -25,7 +25,7 @@
 
 namespace paroculus {
 
-enum class ToolKind : uint8_t { Select, Line };
+enum class ToolKind : uint8_t { Select, Line, Circle, Arc, Rectangle };
 
 // Returns a stable lowercase label. Scripts and the registry both name tools by
 // it, so it is format, not presentation.
@@ -53,6 +53,15 @@ struct ToolPreview {
     // The entity the band starts from, once the chain hangs off a real point.
     // Inference reads it to keep a placement from snapping to its own anchor.
     EntityId fromEntity;
+
+    // A curve gesture describes an arc rather than a chord, and the preview has
+    // to show the shape that will land rather than the one the two clicks
+    // happen to span.
+    bool arcActive = false;
+    Point arcCentre;
+    double arcRadius = 0.0;
+    double arcStart = 0.0;
+    double arcSweep = 0.0;
 };
 
 // What a tool asks the session to do. Empty when the event changed nothing.
@@ -135,6 +144,106 @@ private:
 
     std::array<ToolParameter, 2> parameters_{ToolParameter{"length", 0.0},
                                              ToolParameter{"angle", 0.0}};
+};
+
+// Centre then rim. One segment of the gesture sets the centre, the next sets
+// the radius, and the circle owns that radius as its own parameter — which is
+// why a circle needs no second point in the document to remember how big it is.
+class CircleTool : public Tool {
+public:
+    ToolKind kind() const override { return ToolKind::Circle; }
+
+    ToolOutput press(const Document &doc, Point cursor) override;
+    void move(const Document &doc, Point cursor) override;
+    bool escape() override;
+    void committed() override;
+
+    ToolPreview preview() const override;
+    std::span<const ToolParameter> parameters() const override { return parameters_; }
+
+private:
+    bool haveCentre_ = false;
+    Point centre_;
+    Point cursor_;
+    bool haveCursor_ = false;
+    std::array<ToolParameter, 1> parameters_{ToolParameter{"radius", 0.0}};
+};
+
+// Start, then end, then bulge — and what lands is a macro, not an arc type.
+//
+// The document stores a centre-form arc, because that is what the solver
+// solves. The centre is a construction point: it is real geometry the user can
+// select and constrain, but it is not part of the drawn shape and it is
+// excluded from snapping by role, so an arc does not litter the sketch with a
+// magnet nobody aimed at.
+//
+// There is no convert-to-path cliff here because there is nothing to convert:
+// an arc is a solver arc and three ordinary points from the moment it exists.
+class ArcTool : public Tool {
+public:
+    ToolKind kind() const override { return ToolKind::Arc; }
+
+    ToolOutput press(const Document &doc, Point cursor) override;
+    void move(const Document &doc, Point cursor) override;
+    bool escape() override;
+    void committed() override;
+
+    ToolPreview preview() const override;
+    std::span<const ToolParameter> parameters() const override { return parameters_; }
+
+    // The arc currently being previewed, for the ghost. Absent until there is
+    // enough of a gesture to define one.
+    struct Ghost {
+        Point centre;
+        double radius = 0.0;
+        double startAngle = 0.0;
+        double sweep = 0.0;
+    };
+    std::optional<Ghost> ghost() const;
+
+private:
+    void refreshParameters();
+
+    int clicks_ = 0;
+    Point start_;
+    Point end_;
+    Point cursor_;
+    bool haveCursor_ = false;
+    std::array<ToolParameter, 2> parameters_{ToolParameter{"radius", 0.0},
+                                             ToolParameter{"sweep", 0.0}};
+};
+
+// A rectangle is not a type. It is four segments, four coincidences and four
+// axis constraints, and the tag that would give it corner handles is a stage 7
+// concern that owns nothing and can arrive later without a model change.
+//
+// The corners are separate points joined by coincidences rather than shared
+// points, deliberately: that is what lets a corner be opened by deleting one
+// relation, which is the graceful dissolution the macro design promises. Shared
+// points cannot be un-shared without rebuilding the geometry.
+class RectangleTool : public Tool {
+public:
+    ToolKind kind() const override { return ToolKind::Rectangle; }
+
+    ToolOutput press(const Document &doc, Point cursor) override;
+    void move(const Document &doc, Point cursor) override;
+    bool escape() override;
+    void committed() override;
+
+    ToolPreview preview() const override;
+    std::span<const ToolParameter> parameters() const override { return parameters_; }
+
+    bool spanning() const { return haveCorner_ && haveCursor_; }
+    Point corner() const { return corner_; }
+    Point opposite() const { return cursor_; }
+
+private:
+    bool haveCorner_ = false;
+    Point corner_;
+    Point cursor_;
+    bool haveCursor_ = false;
+    std::array<ToolParameter, 2> parameters_{ToolParameter{"width", 0.0},
+                                             ToolParameter{"height", 0.0}};
 };
 
 }  // namespace paroculus

@@ -236,6 +236,7 @@ if(PAROCULUS_TESTS)
         tests/unit/interact_tools.cpp
         tests/unit/interact_snap.cpp
         tests/unit/interact_glyphs.cpp
+        tests/unit/interact_shapes.cpp
         tests/gestures/corpus.cpp
         tests/unit/solve_context.cpp
         tests/unit/solve_demosketch.cpp

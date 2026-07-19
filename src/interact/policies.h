@@ -73,6 +73,12 @@ struct SnapPolicy {
     double gridStep = 20.0;
     bool gridEnabled = true;
 
+    // Construction geometry participates in constraints identically and is only
+    // presented differently — but it must not *attract* by default. An arc
+    // leaves its centre behind as a construction point, and a sketch full of
+    // arcs would otherwise be a sketch full of magnets nobody aimed at.
+    bool snapToConstruction = false;
+
     // Ranking weights. Tier dominates, so a coincidence never loses to a
     // parallel that happens to be nearer; closeness settles the rest.
     double tierWeight = 1000.0;

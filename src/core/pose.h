@@ -42,6 +42,28 @@ public:
     // Both endpoints of a segment, or nullopt if either is missing.
     std::optional<std::pair<Point, Point>> segment(EntityId id) const;
 
+    // An arc, resolved from its three defining points.
+    //
+    // An arc owns no parameters of its own: its radius and span are consequences
+    // of where its centre and endpoints are, which is what lets the solver move
+    // it without anything here having to be kept in step. Sweep is measured
+    // counter-clockwise from start to end, matching the solver's convention, and
+    // is in (0, 2*pi].
+    struct ArcGeometry {
+        Point centre;
+        double radius = 0.0;
+        double startAngle = 0.0;
+        double sweep = 0.0;
+    };
+    std::optional<ArcGeometry> arc(EntityId id) const;
+
+    // The radius of whatever curve `id` is — a circle's own parameter or an
+    // arc's derived one. What snapping and hit testing want, since neither
+    // cares which kind of curve it is holding.
+    std::optional<double> curveRadius(EntityId id) const;
+    // And its centre, likewise.
+    std::optional<Point> curveCentre(EntityId id) const;
+
     const Document &document() const { return *doc_; }
 
 private:

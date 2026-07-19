@@ -1,6 +1,8 @@
 #include "interact/tools.h"
 
+#include <algorithm>
 #include <cmath>
+#include <optional>
 
 namespace paroculus {
 namespace {
@@ -25,14 +27,20 @@ EntityRecord segmentRecord(EntityId id, EntityId a, EntityId b) {
 
 const char *toolName(ToolKind kind) {
     switch(kind) {
-        case ToolKind::Select: return "select";
-        case ToolKind::Line:   return "line";
+        case ToolKind::Select:    return "select";
+        case ToolKind::Line:      return "line";
+        case ToolKind::Circle:    return "circle";
+        case ToolKind::Arc:       return "arc";
+        case ToolKind::Rectangle: return "rectangle";
     }
     return "select";
 }
 
 ToolKind toolFromName(std::string_view name) {
     if(name == "line") return ToolKind::Line;
+    if(name == "circle") return ToolKind::Circle;
+    if(name == "arc") return ToolKind::Arc;
+    if(name == "rectangle") return ToolKind::Rectangle;
     return ToolKind::Select;
 }
 
@@ -129,6 +137,354 @@ void LineTool::refreshParameters() {
     // Degrees, measured the way the document is drawn rather than the way the
     // screen is: Y is up in document space.
     parameters_[1].value = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
+}
+
+// ---------------------------------------------------------------------------
+// Circle
+// ---------------------------------------------------------------------------
+
+ToolOutput CircleTool::press(const Document &doc, Point cursor) {
+    cursor_ = cursor;
+    haveCursor_ = true;
+    if(!haveCentre_) {
+        haveCentre_ = true;
+        centre_ = cursor;
+        parameters_[0].value = 0.0;
+        return {};
+    }
+
+    const double radius = std::hypot(cursor.x - centre_.x, cursor.y - centre_.y);
+    // A zero-radius circle is not a circle, and the solver would be asked to
+    // hold a degenerate one forever. Treat it as a slip and keep the centre.
+    if(radius <= 0.0) return {};
+
+    uint32_t next = doc.entities().allocator().next();
+    auto claim = [&next]() { return EntityId(next++); };
+
+    ToolOutput out;
+    out.label = "circle";
+    const EntityId centre = claim();
+    out.commands.push_back(AddRecord<EntityRecord>{pointRecord(centre, centre_)});
+
+    EntityRecord circle;
+    circle.id = claim();
+    circle.kind = EntityKind::Circle;
+    circle.points = {centre, EntityId(), EntityId()};
+    // The radius is the circle's own parameter, seeded here and owned by the
+    // solver afterwards.
+    circle.seeds = {radius, 0.0};
+    out.commands.push_back(AddRecord<EntityRecord>{circle});
+
+    // Inference binds to the centre: it is the point the user placed, and the
+    // rim is a radius rather than a position anything can be coincident with.
+    out.placedStart = centre;
+    out.placedPoint = centre;
+    return out;
+}
+
+void CircleTool::move(const Document &doc, Point cursor) {
+    (void)doc;
+    cursor_ = cursor;
+    haveCursor_ = true;
+    parameters_[0].value =
+        haveCentre_ ? std::hypot(cursor.x - centre_.x, cursor.y - centre_.y) : 0.0;
+}
+
+bool CircleTool::escape() {
+    if(!haveCentre_) return false;
+    haveCentre_ = false;
+    parameters_[0].value = 0.0;
+    return true;
+}
+
+void CircleTool::committed() {
+    // Each circle is its own gesture: no chaining, so the tool rearms empty.
+    haveCentre_ = false;
+    parameters_[0].value = 0.0;
+}
+
+ToolPreview CircleTool::preview() const {
+    ToolPreview p;
+    p.active = haveCentre_ && haveCursor_;
+    p.from = centre_;
+    p.to = cursor_;
+    return p;
+}
+
+// ---------------------------------------------------------------------------
+// Arc
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The circle through three points, or nullopt when they are collinear — which
+// is not a failure, it is the user drawing something an arc cannot be.
+std::optional<Point> circumcentre(Point a, Point b, Point c) {
+    const double d =
+        2.0 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
+    if(std::abs(d) < 1e-12) return std::nullopt;
+    const double a2 = a.x * a.x + a.y * a.y;
+    const double b2 = b.x * b.x + b.y * b.y;
+    const double c2 = c.x * c.x + c.y * c.y;
+    return Point{(a2 * (b.y - c.y) + b2 * (c.y - a.y) + c2 * (a.y - b.y)) / d,
+                 (a2 * (c.x - b.x) + b2 * (a.x - c.x) + c2 * (b.x - a.x)) / d};
+}
+
+constexpr double TAU = 6.283185307179586476925;
+
+double normalised(double angle) {
+    while(angle < 0.0) angle += TAU;
+    while(angle >= TAU) angle -= TAU;
+    return angle;
+}
+
+}  // namespace
+
+std::optional<ArcTool::Ghost> ArcTool::ghost() const {
+    if(clicks_ < 2 || !haveCursor_) return std::nullopt;
+    const std::optional<Point> centre = circumcentre(start_, cursor_, end_);
+    if(!centre) return std::nullopt;
+
+    Ghost g;
+    g.centre = *centre;
+    g.radius = std::hypot(start_.x - centre->x, start_.y - centre->y);
+    const double startAngle = std::atan2(start_.y - centre->y, start_.x - centre->x);
+    const double endAngle = std::atan2(end_.y - centre->y, end_.x - centre->x);
+    const double throughAngle = std::atan2(cursor_.y - centre->y, cursor_.x - centre->x);
+
+    // Which way round depends on which side the bulge went, so the arc follows
+    // the hand rather than a convention the user has to learn.
+    const double forward = normalised(endAngle - startAngle);
+    const double toThrough = normalised(throughAngle - startAngle);
+    if(toThrough <= forward) {
+        g.startAngle = startAngle;
+        g.sweep = forward;
+    } else {
+        g.startAngle = endAngle;
+        g.sweep = TAU - forward;
+    }
+    return g;
+}
+
+ToolOutput ArcTool::press(const Document &doc, Point cursor) {
+    cursor_ = cursor;
+    haveCursor_ = true;
+
+    if(clicks_ == 0) {
+        start_ = cursor;
+        clicks_ = 1;
+        refreshParameters();
+        return {};
+    }
+    if(clicks_ == 1) {
+        end_ = cursor;
+        clicks_ = 2;
+        refreshParameters();
+        return {};
+    }
+
+    const std::optional<Ghost> g = ghost();
+    // Three collinear clicks describe no arc. Keep what was placed rather than
+    // committing something degenerate, so the user can move and click again.
+    if(!g || g->radius <= 0.0) return {};
+
+    uint32_t next = doc.entities().allocator().next();
+    auto claim = [&next]() { return EntityId(next++); };
+
+    ToolOutput out;
+    out.label = "arc";
+
+    // The centre is construction: real geometry, selectable and constrainable,
+    // but not part of the drawn shape — and excluded from snapping by role, so
+    // an arc does not leave a magnet behind that nobody aimed at.
+    EntityRecord centre = pointRecord(claim(), g->centre);
+    centre.role = Role::Construction;
+    out.commands.push_back(AddRecord<EntityRecord>{centre});
+
+    // Endpoints in the solver's order: counter-clockwise from start to end.
+    const Point from{g->centre.x + g->radius * std::cos(g->startAngle),
+                     g->centre.y + g->radius * std::sin(g->startAngle)};
+    const Point to{g->centre.x + g->radius * std::cos(g->startAngle + g->sweep),
+                   g->centre.y + g->radius * std::sin(g->startAngle + g->sweep)};
+    const EntityId startPoint = claim();
+    const EntityId endPoint = claim();
+    out.commands.push_back(AddRecord<EntityRecord>{pointRecord(startPoint, from)});
+    out.commands.push_back(AddRecord<EntityRecord>{pointRecord(endPoint, to)});
+
+    EntityRecord arc;
+    arc.id = claim();
+    arc.kind = EntityKind::Arc;
+    arc.points = {centre.id, startPoint, endPoint};
+    out.commands.push_back(AddRecord<EntityRecord>{arc});
+
+    // The through point the user actually aimed at, held on the arc. Without it
+    // the bulge would be a one-off choice rather than a declared relation, and
+    // dragging the endpoints would lose the shape the user drew.
+    const EntityId through = claim();
+    const Point onArc{g->centre.x + g->radius * std::cos(std::atan2(cursor_.y - g->centre.y,
+                                                                    cursor_.x - g->centre.x)),
+                      g->centre.y + g->radius * std::sin(std::atan2(cursor_.y - g->centre.y,
+                                                                    cursor_.x - g->centre.x))};
+    out.commands.push_back(AddRecord<EntityRecord>{pointRecord(through, onArc)});
+
+    ConstraintRecord onCircle;
+    onCircle.kind = ConstraintKind::PointOnCircle;
+    onCircle.operands[0] = through;
+    onCircle.operands[1] = arc.id;
+    out.commands.push_back(AddRecord<ConstraintRecord>{onCircle});
+
+    out.placedPoint = through;
+    return out;
+}
+
+void ArcTool::move(const Document &doc, Point cursor) {
+    (void)doc;
+    cursor_ = cursor;
+    haveCursor_ = true;
+    refreshParameters();
+}
+
+bool ArcTool::escape() {
+    if(clicks_ == 0) return false;
+    clicks_ = 0;
+    refreshParameters();
+    return true;
+}
+
+void ArcTool::committed() {
+    clicks_ = 0;
+    refreshParameters();
+}
+
+ToolPreview ArcTool::preview() const {
+    ToolPreview p;
+    // Between the first and second click the gesture is a chord, and a straight
+    // rubber band is the honest preview of it.
+    p.active = clicks_ >= 1 && haveCursor_;
+    p.from = start_;
+    p.to = clicks_ >= 2 ? end_ : cursor_;
+    if(const std::optional<Ghost> g = ghost()) {
+        p.arcActive = true;
+        p.arcCentre = g->centre;
+        p.arcRadius = g->radius;
+        p.arcStart = g->startAngle;
+        p.arcSweep = g->sweep;
+    }
+    return p;
+}
+
+void ArcTool::refreshParameters() {
+    const std::optional<Ghost> g = ghost();
+    parameters_[0].value = g ? g->radius : 0.0;
+    parameters_[1].value = g ? g->sweep * 180.0 / 3.14159265358979323846 : 0.0;
+}
+
+// ---------------------------------------------------------------------------
+// Rectangle
+// ---------------------------------------------------------------------------
+
+ToolOutput RectangleTool::press(const Document &doc, Point cursor) {
+    cursor_ = cursor;
+    haveCursor_ = true;
+    if(!haveCorner_) {
+        haveCorner_ = true;
+        corner_ = cursor;
+        parameters_[0].value = 0.0;
+        parameters_[1].value = 0.0;
+        return {};
+    }
+
+    const double width = cursor.x - corner_.x;
+    const double height = cursor.y - corner_.y;
+    // A rectangle with no extent in either axis is a degenerate one the solver
+    // would be asked to hold. Keep the corner and let the user try again.
+    if(width == 0.0 || height == 0.0) return {};
+
+    uint32_t nextEntity = doc.entities().allocator().next();
+    uint32_t nextConstraint = doc.constraints().allocator().next();
+    auto claimEntity = [&nextEntity]() { return EntityId(nextEntity++); };
+    auto claimConstraint = [&nextConstraint]() { return ConstraintId(nextConstraint++); };
+
+    ToolOutput out;
+    out.label = "rectangle";
+
+    const Point corners[4] = {corner_,
+                              Point{cursor.x, corner_.y},
+                              cursor,
+                              Point{corner_.x, cursor.y}};
+
+    // Each edge gets its own endpoints, joined to its neighbours by
+    // coincidence. Shared points would be simpler and would be wrong: a corner
+    // has to be openable by deleting one relation, which is what "dissolves
+    // gracefully, leaving perfectly ordinary constrained geometry" means.
+    EntityId ends[4][2];
+    EntityId edges[4];
+    for(int i = 0; i < 4; i++) {
+        const Point a = corners[i];
+        const Point b = corners[(i + 1) % 4];
+        ends[i][0] = claimEntity();
+        out.commands.push_back(AddRecord<EntityRecord>{pointRecord(ends[i][0], a)});
+        ends[i][1] = claimEntity();
+        out.commands.push_back(AddRecord<EntityRecord>{pointRecord(ends[i][1], b)});
+        edges[i] = claimEntity();
+        out.commands.push_back(
+            AddRecord<EntityRecord>{segmentRecord(edges[i], ends[i][0], ends[i][1])});
+    }
+
+    for(int i = 0; i < 4; i++) {
+        ConstraintRecord join;
+        join.id = claimConstraint();
+        join.kind = ConstraintKind::Coincident;
+        join.operands[0] = ends[i][1];
+        join.operands[1] = ends[(i + 1) % 4][0];
+        out.commands.push_back(AddRecord<ConstraintRecord>{join});
+    }
+
+    // Horizontal on the pair that runs across, vertical on the pair that runs
+    // up. Four constraints over eight free parameters leaves four degrees of
+    // freedom — position, width and height — which is what a rectangle is.
+    for(int i = 0; i < 4; i++) {
+        ConstraintRecord axis;
+        axis.id = claimConstraint();
+        axis.kind = (i % 2 == 0) ? ConstraintKind::Horizontal : ConstraintKind::Vertical;
+        axis.operands[0] = edges[i];
+        out.commands.push_back(AddRecord<ConstraintRecord>{axis});
+    }
+
+    // Inference binds to the corner the user placed first, so starting a
+    // rectangle on an existing vertex means what it looks like it means.
+    out.placedStart = ends[0][0];
+    return out;
+}
+
+void RectangleTool::move(const Document &doc, Point cursor) {
+    (void)doc;
+    cursor_ = cursor;
+    haveCursor_ = true;
+    parameters_[0].value = haveCorner_ ? std::abs(cursor.x - corner_.x) : 0.0;
+    parameters_[1].value = haveCorner_ ? std::abs(cursor.y - corner_.y) : 0.0;
+}
+
+bool RectangleTool::escape() {
+    if(!haveCorner_) return false;
+    haveCorner_ = false;
+    parameters_[0].value = 0.0;
+    parameters_[1].value = 0.0;
+    return true;
+}
+
+void RectangleTool::committed() {
+    haveCorner_ = false;
+    parameters_[0].value = 0.0;
+    parameters_[1].value = 0.0;
+}
+
+ToolPreview RectangleTool::preview() const {
+    ToolPreview p;
+    p.active = haveCorner_ && haveCursor_;
+    p.from = corner_;
+    p.to = cursor_;
+    return p;
 }
 
 }  // namespace paroculus

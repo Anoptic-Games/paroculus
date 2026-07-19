@@ -225,6 +225,42 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
         canvas.drawLine(toPixel(ends->first), toPixel(ends->second), stroke);
     }
 
+    // Arcs, tessellated in document space rather than handed to Skia as an
+    // angular sweep. Everything else here goes through toPixel, and an arc
+    // drawn by angle would have to undo the view's Y flip by hand — a second
+    // way of converting is a second way of being wrong about zoom.
+    for(const EntityRecord &e : pose.document().entities().records()) {
+        const std::optional<Pose::ArcGeometry> g = pose.arc(e.id);
+        if(!g) continue;
+
+        const bool isSelected = contains(adornment.selected, e.id);
+        const bool isResisting = contains(resistingEntities, e.id);
+        SkColor colour = e.role == Role::Construction ? CONSTRUCTION : GEOMETRY;
+        if(isSelected) colour = SELECTED;
+        if(adornment.hovered == e.id) colour = HOVERED;
+        if(isResisting) colour = RESISTING;
+        stroke.setColor(colour);
+        stroke.setStrokeWidth(isSelected ? SELECTED_STROKE_WIDTH : STROKE_WIDTH);
+        if(e.role == Role::Construction) stroke.setStrokeWidth(1.0f);
+
+        // Enough segments that the flat spots are under a pixel at this zoom,
+        // bounded so a huge arc does not cost a thousand line calls.
+        const double onScreen =
+            (view.toScreen(Point{g->centre.x + g->radius, g->centre.y}) -
+             view.toScreen(g->centre))
+                .norm();
+        const int steps = std::clamp(static_cast<int>(onScreen * g->sweep * 0.5), 8, 240);
+        SkPoint previous = toPixel(Point{g->centre.x + g->radius * std::cos(g->startAngle),
+                                         g->centre.y + g->radius * std::sin(g->startAngle)});
+        for(int i = 1; i <= steps; i++) {
+            const double angle = g->startAngle + g->sweep * i / steps;
+            const SkPoint next = toPixel(Point{g->centre.x + g->radius * std::cos(angle),
+                                               g->centre.y + g->radius * std::sin(angle)});
+            canvas.drawLine(previous, next, stroke);
+            previous = next;
+        }
+    }
+
     // Circles.
     for(const EntityRecord &e : pose.document().entities().records()) {
         const std::optional<double> radius = pose.radius(e.id);
@@ -268,10 +304,55 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
     if(adornment.ghostActive) {
         stroke.setColor(GHOST);
         stroke.setStrokeWidth(STROKE_WIDTH);
-        canvas.drawLine(toPixel(adornment.ghostFrom), toPixel(adornment.ghostTo), stroke);
         dot.setColor(GHOST);
-        canvas.drawCircle(toPixel(adornment.ghostFrom), POINT_RADIUS, dot);
-        canvas.drawCircle(toPixel(adornment.ghostTo), POINT_RADIUS, dot);
+
+        auto ghostArc = [&](Point centre, double radius, double from, double sweep) {
+            const double onScreen =
+                (view.toScreen(Point{centre.x + radius, centre.y}) - view.toScreen(centre))
+                    .norm();
+            const int steps = std::clamp(static_cast<int>(onScreen * std::abs(sweep) * 0.5),
+                                         8, 240);
+            SkPoint previous = toPixel(Point{centre.x + radius * std::cos(from),
+                                             centre.y + radius * std::sin(from)});
+            for(int i = 1; i <= steps; i++) {
+                const double angle = from + sweep * i / steps;
+                const SkPoint next = toPixel(Point{centre.x + radius * std::cos(angle),
+                                                   centre.y + radius * std::sin(angle)});
+                canvas.drawLine(previous, next, stroke);
+                previous = next;
+            }
+        };
+
+        switch(adornment.ghostShape) {
+            case Adornment::GhostShape::Circle: {
+                const double radius = std::hypot(adornment.ghostTo.x - adornment.ghostFrom.x,
+                                                 adornment.ghostTo.y - adornment.ghostFrom.y);
+                ghostArc(adornment.ghostFrom, radius, 0.0, 6.283185307179586);
+                canvas.drawCircle(toPixel(adornment.ghostFrom), POINT_RADIUS, dot);
+                break;
+            }
+            case Adornment::GhostShape::Rectangle: {
+                const Point a = adornment.ghostFrom;
+                const Point b = adornment.ghostTo;
+                const Point corners[4] = {a, Point{b.x, a.y}, b, Point{a.x, b.y}};
+                for(int i = 0; i < 4; i++) {
+                    canvas.drawLine(toPixel(corners[i]), toPixel(corners[(i + 1) % 4]), stroke);
+                }
+                for(const Point &c : corners) canvas.drawCircle(toPixel(c), POINT_RADIUS, dot);
+                break;
+            }
+            case Adornment::GhostShape::Arc:
+                ghostArc(adornment.ghostCentre, adornment.ghostRadius, adornment.ghostStart,
+                         adornment.ghostSweep);
+                canvas.drawCircle(toPixel(adornment.ghostFrom), POINT_RADIUS, dot);
+                canvas.drawCircle(toPixel(adornment.ghostTo), POINT_RADIUS, dot);
+                break;
+            case Adornment::GhostShape::Line:
+                canvas.drawLine(toPixel(adornment.ghostFrom), toPixel(adornment.ghostTo), stroke);
+                canvas.drawCircle(toPixel(adornment.ghostFrom), POINT_RADIUS, dot);
+                canvas.drawCircle(toPixel(adornment.ghostTo), POINT_RADIUS, dot);
+                break;
+        }
     }
 
     // Constraint marks, above the geometry they annotate. The set arrived

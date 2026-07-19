@@ -100,6 +100,9 @@ SnapResult snap(const Document &doc, const Pose &pose, const SpatialIndex &index
 
         const EntityRecord *e = doc.entities().find(id);
         if(e == nullptr) continue;
+        // Construction geometry is selectable and constrainable but does not
+        // attract, so an arc's centre does not become a magnet by existing.
+        if(!policy.snapToConstruction && e->role == Role::Construction) continue;
 
         if(const std::optional<Point> p = pose.point(id)) {
             if(distance(*p, request.cursor) <= pointRadius) {
@@ -120,8 +123,8 @@ SnapResult snap(const Document &doc, const Pose &pose, const SpatialIndex &index
             }
         }
 
-        if(const std::optional<double> radius = pose.radius(id)) {
-            const std::optional<Point> centre = pose.point(e->points[0]);
+        if(const std::optional<double> radius = pose.curveRadius(id)) {
+            const std::optional<Point> centre = pose.curveCentre(id);
             if(centre) {
                 const double d = distance(*centre, request.cursor);
                 if(d > 0.0 && std::abs(d - *radius) <= lineRadius) {

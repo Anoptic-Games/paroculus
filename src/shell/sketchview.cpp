@@ -220,6 +220,9 @@ void SketchView::keyPressEvent(QKeyEvent *event) {
         // surface, which is the next item in this stage.
         case Qt::Key_L: session_->setTool(paroculus::ToolKind::Line); break;
         case Qt::Key_V: session_->setTool(paroculus::ToolKind::Select); break;
+        case Qt::Key_C: session_->setTool(paroculus::ToolKind::Circle); break;
+        case Qt::Key_A: session_->setTool(paroculus::ToolKind::Arc); break;
+        case Qt::Key_R: session_->setTool(paroculus::ToolKind::Rectangle); break;
         default:
             // One key per offer, by rank, matching the order the strip lists
             // them in. Shift declines instead: confirming what is proposed and
@@ -388,6 +391,27 @@ void SketchView::paint(QPainter *painter) {
     adornment.ghostActive = p.toolPreview.active;
     adornment.ghostFrom = p.toolPreview.from;
     adornment.ghostTo = p.toolPreview.to;
+    switch(p.tool) {
+        case paroculus::ToolKind::Circle:
+            adornment.ghostShape = paroculus::Adornment::GhostShape::Circle;
+            break;
+        case paroculus::ToolKind::Rectangle:
+            adornment.ghostShape = paroculus::Adornment::GhostShape::Rectangle;
+            break;
+        case paroculus::ToolKind::Arc:
+            // Only once the gesture defines one; before that it is still a chord.
+            adornment.ghostShape = p.toolPreview.arcActive
+                                       ? paroculus::Adornment::GhostShape::Arc
+                                       : paroculus::Adornment::GhostShape::Line;
+            adornment.ghostCentre = p.toolPreview.arcCentre;
+            adornment.ghostRadius = p.toolPreview.arcRadius;
+            adornment.ghostStart = p.toolPreview.arcStart;
+            adornment.ghostSweep = p.toolPreview.arcSweep;
+            break;
+        default:
+            adornment.ghostShape = paroculus::Adornment::GhostShape::Line;
+            break;
+    }
 
     paroculus::renderDocument(session_->pose(), session_->viewport().view, adornment,
                               surface_.bits(), device.width(), device.height(),

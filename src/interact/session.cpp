@@ -73,7 +73,13 @@ void Session::setTool(ToolKind kind) {
     presentation_.snapCandidates.clear();
     presentation_.inferred.clear();
     haveLastCursor_ = false;
-    if(kind == ToolKind::Line) tool_ = std::make_unique<LineTool>();
+    switch(kind) {
+        case ToolKind::Line:      tool_ = std::make_unique<LineTool>(); break;
+        case ToolKind::Circle:    tool_ = std::make_unique<CircleTool>(); break;
+        case ToolKind::Arc:       tool_ = std::make_unique<ArcTool>(); break;
+        case ToolKind::Rectangle: tool_ = std::make_unique<RectangleTool>(); break;
+        case ToolKind::Select:    break;
+    }
     presentation_.tool = kind;
     // A creation tool is verb-noun and owns the pointer, so a selection left
     // over from before would only be a set the user cannot act on without

@@ -57,6 +57,22 @@ void SpatialIndex::rebuild(const Pose &pose) {
             for(int64_t x = x0; x <= x1; x++) {
                 for(int64_t y = y0; y <= y1; y++) insert(x, y, e.id);
             }
+            continue;
+        }
+
+        // Curves take their whole bounding square, arcs included. An arc's true
+        // bound is tighter than its circle's, and computing it would buy a
+        // shorter shortlist for a test that is already exact.
+        const std::optional<Point> centre = pose.curveCentre(e.id);
+        const std::optional<double> radius = pose.curveRadius(e.id);
+        if(centre && radius) {
+            const int64_t x0 = cellOf(centre->x - *radius);
+            const int64_t x1 = cellOf(centre->x + *radius);
+            const int64_t y0 = cellOf(centre->y - *radius);
+            const int64_t y1 = cellOf(centre->y + *radius);
+            for(int64_t x = x0; x <= x1; x++) {
+                for(int64_t y = y0; y <= y1; y++) insert(x, y, e.id);
+            }
         }
     }
 }
@@ -115,6 +131,30 @@ std::vector<Hit> hitTestAll(const Pose &pose, const SpatialIndex &index,
             const double distance =
                 distanceToSegment(cursorVec, toVec(s->first), toVec(s->second));
             if(distance > edgeReach) continue;
+            candidates.push_back(HitCandidate{
+                id, HitKind::Edge, e->role, selectedContains(id),
+                distance / std::max(edgeReach, 1e-12) * policy.edgeRadius});
+            continue;
+        }
+
+        // A curve is picked by its rim, not by its interior: a circle is an
+        // edge, and the space it encloses belongs to whatever fill is there —
+        // which is a region, and a different thing to pick.
+        const std::optional<Point> centre = pose.curveCentre(id);
+        const std::optional<double> radius = pose.curveRadius(id);
+        if(centre && radius) {
+            const Eigen::Vector2d fromCentre = cursorVec - toVec(*centre);
+            const double distance = std::abs(fromCentre.norm() - *radius);
+            if(distance > edgeReach) continue;
+            // An arc is only where it sweeps. Picking the absent part of a
+            // circle is picking something that is not on screen.
+            if(const auto g = pose.arc(id)) {
+                double offset = std::atan2(fromCentre.y(), fromCentre.x()) - g->startAngle;
+                constexpr double TAU = 6.283185307179586476925;
+                while(offset < 0.0) offset += TAU;
+                while(offset > TAU) offset -= TAU;
+                if(offset > g->sweep) continue;
+            }
             candidates.push_back(HitCandidate{
                 id, HitKind::Edge, e->role, selectedContains(id),
                 distance / std::max(edgeReach, 1e-12) * policy.edgeRadius});
