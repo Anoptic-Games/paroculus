@@ -151,9 +151,13 @@ bool buildRegionPath(const Pose &pose, const ViewTransform &view, const RegionRe
     return started;
 }
 
-// Every edge a region reaches, its operands' included. A composite has no
-// boundary of its own, so "is this region selected" has to ask what it is made
-// of — the same recursion the algebra itself walks.
+// Every edge a region reaches, its operands' included. What the broken
+// diagnostic is drawn from: a composite has no boundary of its own, so showing
+// what a broken one still refers to means walking to the outlines underneath it.
+//
+// Not how "is this region selected" is answered — that is core's regionSelected,
+// because render and the region actions must agree on it. This is a drawing
+// question and has one caller.
 void boundaryEdgesOf(const Document &doc, const RegionRecord &region,
                      std::vector<EntityId> &out) {
     for(EntityId id : region.boundary) out.push_back(id);
@@ -180,15 +184,12 @@ SkColor fillColourOf(const Document &doc, const RegionRecord &region,
     // A region is selected when the geometry bounding it is: the fill has no
     // identity of its own to select, which is the same reason it has no
     // geometry of its own to go stale.
-    std::vector<EntityId> edges;
-    boundaryEdgesOf(doc, region, edges);
-    for(EntityId id : edges) {
-        for(EntityId selected : adornment.selected) {
-            if(selected == id) {
-                return SkColorSetA(FILL_SELECTED,
-                                   alphaOf(doc, style, SkColorGetA(FILL_SELECTED)));
-            }
-        }
+    //
+    // Core's question, not a second one asked here. Highlighting on any one edge
+    // while every region action wanted all of them meant a user could watch a
+    // fill light up and then watch punch, raise, lower and subtract refuse it.
+    if(regionSelected(doc, region, adornment.selected)) {
+        return SkColorSetA(FILL_SELECTED, alphaOf(doc, style, SkColorGetA(FILL_SELECTED)));
     }
     // A style is honoured when the document names one and asks to be filled.
     // Regions without one take the default rather than vanishing, because a
@@ -635,6 +636,94 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
                           dot);
     }
 
+    // One arc tessellation for both ghosts, the previewed relation's and the
+    // tool's. Two would drift, and the flat spots would drift with them.
+    auto ghostArc = [&](Point centre, double radius, double from, double sweep) {
+        const double onScreen =
+            (view.toScreen(Point{centre.x + radius, centre.y}) - view.toScreen(centre)).norm();
+        const int steps = std::clamp(static_cast<int>(onScreen * std::abs(sweep) * 0.5), 8, 240);
+        SkPoint previous = toPixel(Point{centre.x + radius * std::cos(from),
+                                         centre.y + radius * std::sin(from)});
+        for(int i = 1; i <= steps; i++) {
+            const double angle = from + sweep * i / steps;
+            const SkPoint next = toPixel(Point{centre.x + radius * std::cos(angle),
+                                               centre.y + radius * std::sin(angle)});
+            canvas.drawLine(previous, next, stroke);
+            previous = next;
+        }
+    };
+
+    // Where a hovered relation would put the drawing.
+    //
+    // The payoff the speculative solve was always for, and the difference
+    // between a catalogue that is read and one that is learned by looking. Drawn
+    // over the geometry it would replace, in the same dimmed ink a tool's rubber
+    // band uses, because it is the same kind of promise: this is what commit
+    // produces.
+    //
+    // Only what moves. An imposition is movement-free by design, so most
+    // previews would otherwise redraw the whole document on top of itself; what
+    // the user needs to see is the part that is not staying put.
+    if(!adornment.ghostPose.empty()) {
+        Pose ghost = pose;
+        ghost.overlay(adornment.ghostPose);
+
+        stroke.setColor(GHOST);
+        stroke.setStrokeWidth(STROKE_WIDTH);
+        dot.setColor(GHOST);
+
+        // Far enough to be worth showing, in document units. Below this the
+        // solver's last bits are all that differ and the ghost would shimmer
+        // over geometry that did not move.
+        constexpr double MOVED = 1e-9;
+        auto moved = [](Point a, Point b) {
+            return std::abs(a.x - b.x) > MOVED || std::abs(a.y - b.y) > MOVED;
+        };
+
+        for(const EntityRecord &e : pose.document().entities().records()) {
+            if(!layerVisible(pose.document(), e.layer)) continue;
+
+            if(const auto ends = pose.segment(e.id)) {
+                const auto after = ghost.segment(e.id);
+                if(!after) continue;
+                if(!moved(ends->first, after->first) && !moved(ends->second, after->second)) {
+                    continue;
+                }
+                canvas.drawLine(toPixel(after->first), toPixel(after->second), stroke);
+                continue;
+            }
+            if(const std::optional<Pose::ArcGeometry> was = pose.arc(e.id)) {
+                const std::optional<Pose::ArcGeometry> now = ghost.arc(e.id);
+                if(!now) continue;
+                if(!moved(was->centre, now->centre) &&
+                   std::abs(was->radius - now->radius) <= MOVED &&
+                   std::abs(was->startAngle - now->startAngle) <= MOVED &&
+                   std::abs(was->sweep - now->sweep) <= MOVED) {
+                    continue;
+                }
+                ghostArc(now->centre, now->radius, now->startAngle, now->sweep);
+                continue;
+            }
+            if(const std::optional<double> radius = pose.radius(e.id)) {
+                const std::optional<Point> centre = pose.point(e.points[0]);
+                const std::optional<double> after = ghost.radius(e.id);
+                const std::optional<Point> to = ghost.point(e.points[0]);
+                if(!centre || !after || !to) continue;
+                if(!moved(*centre, *to) && std::abs(*radius - *after) <= MOVED) continue;
+                const Eigen::Vector2d edge = view.toScreen(Point{to->x + *after, to->y});
+                const Eigen::Vector2d middle = view.toScreen(*to);
+                canvas.drawCircle(toPixel(*to), static_cast<SkScalar>((edge - middle).norm()),
+                                  stroke);
+                continue;
+            }
+            if(const std::optional<Point> p = pose.point(e.id)) {
+                const std::optional<Point> to = ghost.point(e.id);
+                if(!to || !moved(*p, *to)) continue;
+                canvas.drawCircle(toPixel(*to), POINT_RADIUS, dot);
+            }
+        }
+    }
+
     // The tool's rubber band, over the geometry and under the marquee. Drawn
     // last among document-space things so it is never hidden by what it will
     // sit alongside.
@@ -642,23 +731,6 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
         stroke.setColor(GHOST);
         stroke.setStrokeWidth(STROKE_WIDTH);
         dot.setColor(GHOST);
-
-        auto ghostArc = [&](Point centre, double radius, double from, double sweep) {
-            const double onScreen =
-                (view.toScreen(Point{centre.x + radius, centre.y}) - view.toScreen(centre))
-                    .norm();
-            const int steps = std::clamp(static_cast<int>(onScreen * std::abs(sweep) * 0.5),
-                                         8, 240);
-            SkPoint previous = toPixel(Point{centre.x + radius * std::cos(from),
-                                             centre.y + radius * std::sin(from)});
-            for(int i = 1; i <= steps; i++) {
-                const double angle = from + sweep * i / steps;
-                const SkPoint next = toPixel(Point{centre.x + radius * std::cos(angle),
-                                                   centre.y + radius * std::sin(angle)});
-                canvas.drawLine(previous, next, stroke);
-                previous = next;
-            }
-        };
 
         switch(adornment.ghostShape) {
             case Adornment::GhostShape::Circle: {

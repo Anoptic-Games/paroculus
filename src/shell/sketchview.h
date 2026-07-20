@@ -77,7 +77,17 @@ public:
 
     // What imposing the named relation would do, for hover preview. Leaves the
     // document byte-identical, so a hover storm costs nothing but time.
-    Q_INVOKABLE QString previewOf(const QString &name, int assignment) const;
+    //
+    // Also arms the ghost: the previewed pose is kept and the canvas repaints
+    // showing where committing would put the geometry. Not const for that
+    // reason — the verdict string is only half of what a preview is, and the
+    // half that PRINCIPLES calls the point of it is the drawing moving.
+    Q_INVOKABLE QString previewOf(const QString &name, int assignment);
+
+    // Drops the ghost. Called when the pointer leaves the entry it was
+    // previewing, and after invoking one: a ghost outliving the hover would be
+    // promising something nobody is asking about any more.
+    Q_INVOKABLE void clearPreview();
 
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
@@ -134,6 +144,11 @@ private:
     // viewport it produces.
     bool panning_ = false;
     Eigen::Vector2d panFrom_ = Eigen::Vector2d::Zero();
+
+    // The pose a hovered relation would produce, held between the hover and the
+    // paint. Empty when nothing is being previewed. Transient view state, like
+    // the pan: the session does not know it exists and the document is untouched.
+    std::vector<paroculus::SeedSpan> ghostPose_;
 
     // Script playback state. While a script is running the view is a spectator:
     // it must not re-frame the viewport, because the script carries the one it

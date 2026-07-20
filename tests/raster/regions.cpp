@@ -11,6 +11,7 @@
 #include <memory>
 #include <vector>
 
+#include "core/composition.h"
 #include "interact/session.h"
 #include "render/view.h"
 #include "support/build.h"
@@ -153,6 +154,76 @@ TEST_CASE("the fill sits under the outline rather than over it") {
     CHECK(edgePixel != BACKGROUND);
     CHECK(insidePixel != BACKGROUND);
     CHECK(edgePixel != insidePixel);
+}
+
+TEST_CASE("a fill tints as selected on the rule the region actions use") {
+    // One question, one answer. Highlighting the fill when any single boundary
+    // edge was selected, while punch, raise, lower and subtract all required
+    // every edge, meant a user could watch a fill light up and then watch every
+    // action on it refuse.
+    FilledSquare f;
+    const ViewTransform view = centredView();
+    const RegionRecord &region = *f.doc.regions().find(f.region);
+
+    const std::vector<uint32_t> plain = paint(Pose(f.doc), view);
+
+    Adornment partial;
+    partial.selected = {region.boundary.front()};
+    const std::vector<uint32_t> one = paint(Pose(f.doc), view, partial);
+
+    Adornment whole;
+    whole.selected = region.boundary;
+    const std::vector<uint32_t> all = paint(Pose(f.doc), view, whole);
+
+    // Sampled well inside, where only the fill is drawn — the selected edges
+    // themselves tint either way, and that is not what is being asked.
+    const Eigen::Vector2d middle = view.toScreen(Point{0.0, 0.0});
+    const size_t at = static_cast<size_t>(static_cast<int>(middle.y())) * W +
+                      static_cast<size_t>(static_cast<int>(middle.x()));
+    CHECK(one[at] == plain[at]);
+    CHECK(all[at] != plain[at]);
+
+    // And it is core's rule that says so, which is what makes the two agree.
+    CHECK_FALSE(regionSelected(f.doc, region, partial.selected));
+    CHECK(regionSelected(f.doc, region, whole.selected));
+}
+
+TEST_CASE("a previewed relation ghosts where it would put the geometry") {
+    // The payoff the speculative solve was always for. The pose was computed,
+    // carried on ImpositionPreview, and thrown away by a surface that reduced
+    // the whole preview to a verdict string — so the catalogue stayed something
+    // to be read rather than something learnable by looking.
+    FilledSquare f;
+    const ViewTransform view = centredView();
+    const std::vector<uint32_t> plain = paint(Pose(f.doc), view);
+
+    // A pose that moves one corner well clear of the square.
+    Adornment ghosted;
+    SeedSpan moved;
+    moved.entity = f.corners[2];
+    moved.seeds = {90.0, 70.0};
+    ghosted.ghostPose = {moved};
+    const std::vector<uint32_t> preview = paint(Pose(f.doc), view, ghosted);
+
+    // The two edges that corner defines are drawn where they would land — the
+    // midpoints of each, both well clear of anything the square drew.
+    for(Point on : {Point{20.0, 55.0}, Point{70.0, 15.0}}) {
+        CHECK_FALSE(painted(plain, view, on));
+        CHECK(painted(preview, view, on));
+    }
+
+    // And the document is untouched: a ghost is a promise, not an edit.
+    CHECK(f.doc.entities().find(f.corners[2])->seeds[0] == 50.0);
+
+    // A preview that moves nothing draws nothing extra. Imposition is
+    // movement-free by design, so a ghost that redrew the whole document on top
+    // of itself would be noise on almost every hover.
+    Adornment unmoved;
+    SeedSpan same;
+    same.entity = f.corners[2];
+    same.seeds = {50.0, 40.0};
+    unmoved.ghostPose = {same};
+    CHECK(paint(Pose(f.doc), view, unmoved) == plain);
 }
 
 TEST_CASE("fewer than three edges fill nothing") {

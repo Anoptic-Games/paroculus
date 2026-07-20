@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "core/composition.h"
+
 namespace paroculus {
 namespace {
 
@@ -48,6 +50,18 @@ void marksFor(const Document &doc, const Pose &pose, const ConstraintRecord &con
     for(size_t i = 0; i < boundOperandCount(constraint); i++) {
         const EntityId operand = constraint.operands[i];
         if(!operand.valid()) continue;
+        // A mark goes where its operand is, so a mark on hidden geometry has
+        // nowhere honest to be. It floated over empty space and stayed
+        // clickable, selecting a relation on geometry the user could neither see
+        // nor pick — and it spent a slot in the glyph budget doing it.
+        //
+        // Per operand rather than per constraint, because the constraint is not
+        // hidden: a relation binding a hidden operand and a visible one still
+        // marks the visible one, which is what keeps "no invisible constraints"
+        // true of everything the user can actually act on. That a hidden operand
+        // is still constraining is said by the influence indication instead,
+        // which is the surface built for exactly this.
+        if(!isVisible(doc, operand)) continue;
         const std::optional<Point> anchor = anchorOn(doc, pose, operand);
         if(!anchor) continue;
 

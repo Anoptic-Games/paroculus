@@ -21,12 +21,11 @@ describes — the downgrade is computed but never offered, the preview verdict
 is shown but the ghost pose is thrown away, and a walked conflict set cannot
 actually be deleted.
 
-Status: the correctness section and the model holes — findings 1 through 11 —
-are closed, along with finding 16, which the fixes reached on their way. Each
-entry below keeps its statement of the problem and records what the fix was;
-the test gaps those findings left are closed with them. Findings 12 through 15,
-the stage 5 surfaces that stop short of the plan, and the remaining smaller
-notes, are open.
+Status: findings 1 through 15 are closed — the correctness section, the model
+holes and the stage 5 surfaces — along with finding 16, which the fixes reached
+on their way. Each entry below keeps its statement of the problem and records
+what the fix was; the test gaps those findings left are closed with them. The
+smaller notes 17 through 24 are open.
 
 ## What holds
 
@@ -288,7 +287,7 @@ Worth recording so the findings below read in proportion.
     groups of one operand kind — a grouping decided by type is not a question
     the surface can ask.
 
-## Stage 5 surfaces, thinner than the plan
+## Stage 5 surfaces, thinner than the plan — fixed
 
 12. The hover preview shows a verdict where the plan promised a ghost. PLANS
     stage 5 scope: "speculative hover preview of any offered constraint (ghost
@@ -299,6 +298,16 @@ Worth recording so the findings below read in proportion.
     previewOf (src/shell/sketchview.cpp:529) reduces the preview to a string
     and the QML shows the string. The mechanism is built and tested; the
     payoff — seeing the drawing move before committing — is not wired.
+
+    Fixed. Adornment carries a ghost pose as overlay spans, render draws the
+    entities it would move in the same dimmed ink a tool's rubber band uses, and
+    previewOf keeps the pose and repaints. Only what moves is drawn: imposition
+    is movement-free by design, so ghosting everything would redraw the document
+    on top of itself and say nothing — what the user needs to see is the part
+    that is not staying put. Armed only for a candidate that could hold, since
+    the pose is empty otherwise and showing where an infeasible commit would go
+    is the one thing preview must never do. The hover takes it back on the way
+    out, both halves together.
 
 13. The downgrade is computed and never actually offered.
     Presentation::downgradeOffered (src/interact/session.h:130) is a bare
@@ -311,9 +320,17 @@ Worth recording so the findings below read in proportion.
     does not. Related staleness on the numeric path: commitPlacement sets
     impositionVerdict and conflicting but neither conflictAttributed nor
     downgradeOffered (src/interact/session.cpp:511–549), so both fields keep
-    whatever the previous imposition left there. Fix: the presentation names
-    the refused kind, stripEntries pushes the reference-strength entry while
-    the offer stands, and commitPlacement resets all four fields together.
+    whatever the previous imposition left there.
+
+    Fixed. `downgradeOffered` became an optional naming the kind and the reading
+    it was refused for, because that is what an offer has to be to be invocable.
+    stripEntries turns it into the reference-strength entry, at the top, so the
+    offer sits where the refusal happened instead of the user's one route being
+    to know the palette spells it "(reference)". It clears when taken, and when
+    the selection changes — the reading it names is a reading of that selection
+    and means nothing about another. commitPlacement now sets all four fields
+    together, and the drag path clears the offer rather than leaving one about a
+    selection the drag has moved past.
 
 14. Constraint marks ignore layer visibility. visibleGlyphs
     (src/interact/glyphs.cpp:63) walks every constraint with no isVisible
@@ -327,6 +344,14 @@ Worth recording so the findings below read in proportion.
     the behaviour is an accident of omission, and the glyph budget spends
     screen slots on relations the user cannot act on.
 
+    Fixed on the first reading: a mark goes where its operand is, so an operand
+    the user cannot see has nowhere honest to put one. Per operand rather than
+    per constraint, because the constraint is not hidden — a relation binding a
+    hidden operand and a visible one still marks the visible one, which keeps
+    "no invisible constraints" true of everything the user can act on. That the
+    hidden half is still constraining is said by the influence indication, which
+    is the surface built for exactly that and the other half of the same bargain.
+
 15. "Is this region selected" has two answers. fillColourOf highlights the
     fill when any one boundary edge is selected (src/render/view.cpp:184–191);
     selectedRegions() requires every edge, recursively through composites
@@ -335,6 +360,12 @@ Worth recording so the findings below read in proportion.
     and punch, raise, lower and subtract all refuse. One rule should own the
     question — the same discipline that moved the ring walk and the glyph
     fan-out into core — and the actions' rule is the documented one.
+
+    Fixed, and the rule that survived is the actions'. `regionSelected` moved to
+    core beside boundaryRing; render and Session both ask it and there is no
+    second implementation left to disagree. render keeps a walk of its own for
+    the broken diagnostic, which is a drawing question with one caller rather
+    than a second answer to this one.
 
 ## Smaller notes
 
@@ -422,6 +453,15 @@ closed with them:
 - Four segments offered to equal-angle, asserted as three pairings in their two
   forms, each capturing a different value, with the offer reporting itself
   ambiguous (finding 11).
+- A ghost pose painted and sampled where the moved edges would land, with the
+  document asserted untouched and an unmoved preview drawing nothing extra
+  (finding 12). The downgrade taken off the strip rather than by knowing the
+  action's name, and asserted to clear with the selection and when taken
+  (finding 13).
+- A hidden layer's marks asserted gone and restored by showing it, and a
+  relation across the boundary asserted to keep the mark on the half that shows
+  (finding 14). A fill sampled under a partial and a whole selection, against
+  core's rule (finding 15).
 
 What is still missing:
 

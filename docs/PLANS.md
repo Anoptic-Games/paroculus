@@ -733,6 +733,14 @@ shrinks the regions bounded by it. That is the model half of stage 7's "tag
 dissolution when defining constraints break", landed early because finding 3 —
 a walked conflict set that could not be deleted — needed the same cascade.
 
+Stage 5's surfaces caught up with what stage 5 said they were. The hover preview
+ghosts the geometry rather than only reporting a verdict, which is what PLANS
+scoped and PRINCIPLES calls the thing that makes the catalogue learnable by
+looking; the downgrade is an offer on the strip rather than a computed boolean
+nothing read; marks follow their operands out of sight when a layer is hidden;
+and "is this region selected" has one answer, in core, where render and the
+region actions both ask it.
+
 The review's model holes are closed with it. Layer and style removal refuse
 while anything names them and have deletion steps that empty them first, which
 they lacked entirely; the state they used to leave was a document that

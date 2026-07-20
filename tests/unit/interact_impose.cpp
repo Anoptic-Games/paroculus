@@ -301,7 +301,12 @@ TEST_CASE("a driving imposition that cannot hold offers the downgrade") {
     CHECK_FALSE(session.impose(ConstraintKind::PointPointDistance, Strength::Impose, 0, 90.0));
     CHECK(doc.constraints().records().size() == relationsBefore);
     CHECK(session.presentation().impositionVerdict == CandidateVerdict::Inconsistent);
-    CHECK(session.presentation().downgradeOffered);
+
+    // The offer names the reading it was refused for, because that is what
+    // makes it an offer rather than a flag: the surface has to be able to
+    // invoke it, and invoking a reading means naming it.
+    REQUIRE(session.presentation().downgrade);
+    CHECK(session.presentation().downgrade->kind == ConstraintKind::PointPointDistance);
 
     // The conflicting set is attributed, not merely reported empty — and it
     // names the pins, which are what the distance disagrees with.
@@ -321,13 +326,37 @@ TEST_CASE("a driving imposition that cannot hold offers the downgrade") {
     CHECK(session.selection().items().empty());
     CHECK(seg.valid());
 
-    // Taking the downgrade records the measurement without driving anything.
+    // The offer belongs to the selection it was refused for, so selecting
+    // something else takes it back rather than leaving it to invoke a
+    // measurement over whatever is selected now.
     session.select({p0, p1});
-    REQUIRE(invokeAction(session, "constrain.distance.reference"));
+    CHECK_FALSE(session.presentation().downgrade);
+
+    // Refuse it again, and this time take the offer the way a user would: off
+    // the strip, where the refusal happened. Knowing that the palette spells the
+    // measurement with "(reference)" and going to find it was the only route
+    // before, which is the choice existing while the offer did not.
+    CHECK_FALSE(session.impose(ConstraintKind::PointPointDistance, Strength::Impose, 0, 90.0));
+    REQUIRE(session.presentation().downgrade);
+
+    const std::vector<SurfaceEntry> strip = stripEntries(session);
+    const SurfaceEntry *offer = nullptr;
+    for(const SurfaceEntry &entry : strip) {
+        if(entry.action != nullptr && entry.action->name == "constrain.distance.reference") {
+            offer = &entry;
+        }
+    }
+    REQUIRE(offer != nullptr);
+    // At the top, because it is the answer to the thing that just happened.
+    CHECK(offer == &strip.front());
+
+    REQUIRE(invokeAction(session, offer->action->name, offer->arguments));
     const ConstraintRecord *measurement =
         doc.constraints().find(session.presentation().imposed);
     REQUIRE(measurement != nullptr);
     CHECK_FALSE(measurement->driving);
+    // And taking it clears the offer: the question has been answered.
+    CHECK_FALSE(session.presentation().downgrade);
 }
 
 TEST_CASE("driving and reference are one object with a toggle") {

@@ -526,13 +526,30 @@ bool SketchView::run(const QString &name, const QVariantMap &arguments) {
     return ran;
 }
 
-QString SketchView::previewOf(const QString &name, int assignment) const {
+void SketchView::clearPreview() {
+    if(ghostPose_.empty()) return;
+    ghostPose_.clear();
+    update();
+}
+
+QString SketchView::previewOf(const QString &name, int assignment) {
+    clearPreview();
     const paroculus::Action *action = paroculus::findAction(name.toStdString());
     if(action == nullptr || !action->generated || assignment < 0) return {};
 
     const std::optional<paroculus::ImpositionPreview> preview =
         session_->previewImposition(action->constraintKind, size_t(assignment));
     if(!preview) return QStringLiteral("not applicable");
+
+    // The ghost, which is the half of a preview PRINCIPLES calls the payoff:
+    // the geometry moves to where commit would put it and the catalogue becomes
+    // learnable by looking. Armed for anything that could hold — a relation that
+    // cannot is answered by the verdict, and showing a pose the commit would
+    // refuse would be promising the one thing preview must never promise.
+    if(preview->check.committable()) {
+        ghostPose_ = preview->pose;
+        update();
+    }
 
     switch(preview->check.verdict) {
         case paroculus::CandidateVerdict::Consistent:
@@ -597,6 +614,7 @@ void SketchView::paint(QPainter *painter) {
     adornment.marqueeFrom = p.marqueeFrom;
     adornment.marqueeTo = p.marqueeTo;
     adornment.glyphs = session_->glyphs();
+    adornment.ghostPose = ghostPose_;
     // The drawn grid is the snap policy's, so the lines are where placement
     // actually lands. Disabled snapping draws none rather than a grid that
     // nothing falls on.

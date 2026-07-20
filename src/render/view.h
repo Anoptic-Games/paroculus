@@ -50,6 +50,20 @@ struct Adornment {
     double ghostStart = 0.0;
     double ghostSweep = 0.0;
 
+    // Where a speculatively previewed relation would put the drawing, as spans
+    // overlaying the pose. Empty when nothing is being previewed.
+    //
+    // This is the ghost the catalogue is learnable by: the user hovers a
+    // relation and sees the geometry move to where committing it would put it,
+    // without the document being touched. The spans come from a solve on a
+    // forked context, so there is nothing here to keep in step and nothing to
+    // undo if the user hovers away.
+    //
+    // Only entities that would actually move are drawn from it. Ghosting an
+    // unmoved drawing would double every line on screen and say nothing, and
+    // most impositions are movement-free by design.
+    std::vector<SeedSpan> ghostPose;
+
     // The constraint marks to draw, already reduced to the visible set. Render
     // draws what it is given: deciding which relations matter this frame needs
     // selection, hover and a density budget, none of which are raster concerns.

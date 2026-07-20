@@ -514,8 +514,15 @@ bool Session::commitPlacement(Point placement, const std::vector<SnapCandidate> 
     // A typed value that was imposed becomes a driving dimension in the same
     // step as the geometry it measures, so undo takes back the placement and its
     // dimension together.
+    // All four together, never two of them. Setting the verdict and the
+    // conflicting set while leaving attribution and the downgrade offer holding
+    // whatever the previous imposition left there reports this placement's
+    // verdict beside the last one's attribution — and a surface reading them as
+    // one answer cannot tell.
     presentation_.impositionVerdict = CandidateVerdict::Consistent;
     presentation_.conflicting.clear();
+    presentation_.conflictAttributed = false;
+    presentation_.downgrade.reset();
     if(impose) {
         if(const std::optional<ConstraintRecord> dimension =
                tool_->dimensionFor(impose->target, impose->value, out)) {
@@ -537,6 +544,7 @@ bool Session::commitPlacement(Point placement, const std::vector<SnapCandidate> 
 
             presentation_.impositionVerdict = check.verdict;
             presentation_.conflicting = check.conflicting;
+            presentation_.conflictAttributed = check.attributed;
             // The downgrade PRINCIPLES names: a dimension that cannot hold is
             // added as a driven reference measurement rather than as a driving
             // constraint. The geometry still lands, the value is still recorded
@@ -907,6 +915,12 @@ void Session::applyDragResolve(bool impose) {
         presentation_.impositionVerdict = check.verdict;
         presentation_.conflicting = check.conflicting;
         presentation_.conflictAttributed = check.attributed;
+        // No offer on this path: the numeric one downgrades automatically,
+        // because there the value is what the user was supplying and losing it
+        // would be worse than driving nothing with it. Cleared rather than left,
+        // or the strip would go on offering a measurement about a selection the
+        // drag has moved past.
+        presentation_.downgrade.reset();
         record.driving = check.committable();
         step.push_back(AddRecord<ConstraintRecord>{record});
     }
@@ -1006,6 +1020,10 @@ std::vector<RelationOffer> Session::relationOffers() const {
 
 void Session::select(std::vector<EntityId> ids) {
     selection_.set(std::move(ids));
+    // The downgrade offer names a reading of the selection it was refused for,
+    // so it means nothing about a different one. An offer that outlived its
+    // selection would invoke a measurement over whatever is selected now.
+    presentation_.downgrade.reset();
     refreshSelectionOffers();
 }
 
@@ -1036,12 +1054,12 @@ std::optional<ImpositionPreview> Session::previewImposition(ConstraintKind kind,
 }
 
 bool Session::commitCandidate(const ConstraintRecord &candidate, Strength strength,
-                              const ImpositionPreview &preview) {
+                              size_t assignment, const ImpositionPreview &preview) {
     presentation_.impositionVerdict = preview.check.verdict;
     presentation_.conflicting = preview.check.conflicting;
     presentation_.conflictAttributed = preview.check.attributed;
     presentation_.impositionMotion = preview.motion;
-    presentation_.downgradeOffered = false;
+    presentation_.downgrade.reset();
     presentation_.imposed = ConstraintId();
 
     if(strength != Strength::Reference && !preview.check.committable()) {
@@ -1049,8 +1067,12 @@ bool Session::commitCandidate(const ConstraintRecord &candidate, Strength streng
         // there was no surface to ask on; here there is one, and committing a
         // reference measurement nobody asked for would be declaring something
         // other than what was requested.
-        presentation_.downgradeOffered =
-            preview.check.verdict == CandidateVerdict::Inconsistent;
+        //
+        // Named rather than flagged: the strip turns this into the entry that
+        // invokes the measurement, so the offer sits where the refusal did.
+        if(preview.check.verdict == CandidateVerdict::Inconsistent) {
+            presentation_.downgrade = Presentation::Downgrade{candidate.kind, assignment};
+        }
         return false;
     }
 
@@ -1122,7 +1144,7 @@ bool Session::impose(ConstraintKind kind, Strength strength, size_t assignment,
     if(value && constraintInfo(kind).valueArity == 1) candidate->value = Slot(*value);
 
     const ImpositionPreview preview = previewCandidate(*doc_, topology_, *candidate);
-    return commitCandidate(*candidate, strength, preview);
+    return commitCandidate(*candidate, strength, assignment, preview);
 }
 
 bool Session::toggleDriving() {
@@ -1352,29 +1374,9 @@ namespace {
 
 // The regions the selection reaches, in ID order.
 //
-// A region has no handle of its own: it is reached through the geometry that
-// bounds it, which is the same thing that makes a fill a view of an outline
-// rather than an object beside one. An outline counts as selected when every
-// edge it names is; a composite counts when every operand does, recursively —
-// so selecting two squares and asking for a subtract works, and selecting one
-// edge of one of them does not silently act on the whole fill.
-bool regionSelected(const Document &doc, const RegionRecord &r,
-                    const std::vector<EntityId> &selection) {
-    if(r.op == CompositeOp::Outline) {
-        if(r.boundary.empty()) return false;
-        for(EntityId e : r.boundary) {
-            if(std::find(selection.begin(), selection.end(), e) == selection.end()) return false;
-        }
-        return true;
-    }
-    if(r.operands.empty()) return false;
-    for(RegionId o : r.operands) {
-        const RegionRecord *child = doc.regions().find(o);
-        if(child == nullptr || !regionSelected(doc, *child, selection)) return false;
-    }
-    return true;
-}
-
+// What counts as reached is core's regionSelected — the same question render
+// asks to decide whether a fill draws as selected, so a highlighted fill and an
+// actionable one are the same fill.
 std::vector<RegionId> regionsIn(const Document &doc, const std::vector<EntityId> &selection) {
     std::vector<RegionId> out;
     for(const RegionRecord &r : doc.regions().records()) {

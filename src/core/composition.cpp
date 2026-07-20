@@ -237,6 +237,23 @@ std::optional<std::vector<EntityId>> boundaryRing(const Document &doc,
     return ring;
 }
 
+bool regionSelected(const Document &doc, const RegionRecord &region,
+                    std::span<const EntityId> selection) {
+    if(region.op == CompositeOp::Outline) {
+        if(region.boundary.empty()) return false;
+        for(EntityId e : region.boundary) {
+            if(std::find(selection.begin(), selection.end(), e) == selection.end()) return false;
+        }
+        return true;
+    }
+    if(region.operands.empty()) return false;
+    for(RegionId o : region.operands) {
+        const RegionRecord *child = doc.regions().find(o);
+        if(child == nullptr || !regionSelected(doc, *child, selection)) return false;
+    }
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Degradation
 // ---------------------------------------------------------------------------

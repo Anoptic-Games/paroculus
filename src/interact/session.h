@@ -124,8 +124,21 @@ struct Presentation {
     // A driving imposition was refused as inconsistent, so the reference
     // measurement is on offer. Stage 4 downgraded silently because there was no
     // surface to ask on; the mechanism is unchanged and the choice is now the
-    // user's. Names the kind and strength the offer would invoke.
-    bool downgradeOffered = false;
+    // user's.
+    //
+    // It names the reading it was refused for, because that is what an offer
+    // has to be to be invocable: a bare "something was refused" left the user's
+    // only route to the measurement being to know that the palette spells it
+    // with "(reference)" and to find it there by hand. The strip reads this and
+    // puts the offer where the refusal happened.
+    //
+    // Cleared with the selection, since the reading it names is a reading of
+    // that selection and means nothing about another.
+    struct Downgrade {
+        ConstraintKind kind = ConstraintKind::Coincident;
+        size_t assignment = 0;
+    };
+    std::optional<Downgrade> downgrade;
 
     // How far the last imposition moved geometry, in document units. Zero is
     // what imposition promises; the near-parallel snap-shut is the exception,
@@ -505,8 +518,12 @@ private:
 
     // Applies a candidate as a relation record, or as a one-shot solve for
     // Strength::Measure. Shared by every entrance to imposition.
+    //
+    // `assignment` is which reading of the selection the candidate came from,
+    // carried only so a refusal can name it in the downgrade offer — the offer
+    // has to be invocable, and invoking a reading means naming it.
     bool commitCandidate(const ConstraintRecord &candidate, Strength strength,
-                         const ImpositionPreview &preview);
+                         size_t assignment, const ImpositionPreview &preview);
 
     // The strip, while a drag rather than a tool is what is in flight. The
     // fields are the measurements the drag is adjusting, so the numeric machine

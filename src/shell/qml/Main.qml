@@ -60,19 +60,26 @@ ApplicationWindow {
                         id: entryMouse
                         anchors.fill: parent
                         hoverEnabled: true
-                        // Hovering previews. Speculative solves make the
-                        // catalogue learnable by looking rather than by
-                        // reading, and the document is untouched throughout.
+                        // Hovering previews, in words and in the drawing: the
+                        // verdict lands beside the strip and the geometry
+                        // ghosts to where committing would put it. Speculative
+                        // solves make the catalogue learnable by looking rather
+                        // than by reading, and the document is untouched
+                        // throughout — so leaving takes both halves back.
                         onEntered: {
                             preview.text = sketch.previewOf(
                                 modelData.name,
                                 modelData.arguments.assignment !== undefined
                                     ? modelData.arguments.assignment : 0)
                         }
-                        onExited: preview.text = ""
+                        onExited: {
+                            preview.text = ""
+                            sketch.clearPreview()
+                        }
                         onClicked: {
                             sketch.run(modelData.name, modelData.arguments)
                             preview.text = ""
+                            sketch.clearPreview()
                         }
                     }
                 }

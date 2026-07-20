@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "core/document.h"
@@ -86,6 +87,22 @@ std::vector<RegionId> regionOrder(const Document &doc, LayerId layer);
 // lens.
 std::optional<std::vector<EntityId>> boundaryRing(const Document &doc,
                                                   const RegionRecord &region);
+
+// Whether a selection names a region.
+//
+// A region has no handle of its own — it is reached through the geometry that
+// bounds it, which is the same thing that makes a fill a view of an outline
+// rather than an object beside one. So an outline is named when every edge it
+// names is selected, and a composite when every operand is, recursively.
+//
+// Here rather than in interact because render asks it too, to decide whether a
+// fill draws as selected, and every region action asks it to decide what to act
+// on. Two implementations disagreed: the fill tinted when any one edge was
+// selected while punch, raise, lower and subtract all wanted every edge, so a
+// user could see a fill highlighted and watch every action on it refuse. Same
+// discipline as the ring walk, and the same reason.
+bool regionSelected(const Document &doc, const RegionRecord &region,
+                    std::span<const EntityId> selection);
 
 // ---------------------------------------------------------------------------
 // Degradation

@@ -321,6 +321,61 @@ TEST_CASE("a group drags together") {
     CHECK(after->y != before->y);
 }
 
+TEST_CASE("a hidden layer's marks go with its geometry") {
+    // Hiding removed the geometry from the canvas, from hit testing and from
+    // the marquee, and left its relations' marks drawn — floating over empty
+    // space, still clickable, selecting relations on geometry the user could
+    // neither see nor pick, and spending slots in the glyph budget to do it.
+    Bench bench;
+    Bar bar(bench.doc);
+    addConstraint(bench.doc, ConstraintKind::Horizontal, {bar.segment});
+    bench.session->refresh();
+    const size_t visible = bench.session->glyphs().size();
+    REQUIRE(visible > 0);
+
+    const LayerId hidden = bench.newLayer("hidden");
+    bench.putOn(hidden, {bar.a, bar.b, bar.segment});
+    bench.setLayer(hidden, false, false);
+    CHECK(bench.session->glyphs().empty());
+
+    // Showing it again brings them back: nothing was dropped from the document,
+    // and the marks are a view of it like everything else on the canvas.
+    bench.setLayer(hidden, true, false);
+    CHECK(bench.session->glyphs().size() == visible);
+}
+
+TEST_CASE("a relation across a hidden layer still marks the half that shows") {
+    // The other side of the bargain. A mark goes where its operand is, so a
+    // hidden operand has nowhere honest for one — but the constraint is not
+    // hidden, and the visible operand it binds still says so. That a hidden
+    // operand is constraining is what the influence indication is for.
+    Bench bench;
+    Bar first(bench.doc, 0.0);
+    Bar second(bench.doc, 60.0);
+    const ConstraintId parallel =
+        addConstraint(bench.doc, ConstraintKind::Parallel, {first.segment, second.segment});
+    bench.session->refresh();
+
+    auto marksOn = [&](ConstraintId id) {
+        std::vector<GlyphMark> out;
+        for(const GlyphMark &m : bench.session->glyphs()) {
+            if(m.constraint == id) out.push_back(m);
+        }
+        return out;
+    };
+    // One mark per operand, which is what makes a parallel visible from both
+    // segments rather than from one.
+    REQUIRE(marksOn(parallel).size() == 2);
+
+    const LayerId hidden = bench.newLayer("hidden");
+    bench.putOn(hidden, {first.a, first.b, first.segment});
+    bench.setLayer(hidden, false, false);
+
+    const std::vector<GlyphMark> marks = marksOn(parallel);
+    REQUIRE(marks.size() == 1);
+    CHECK(marks.front().on == second.segment);
+}
+
 TEST_CASE("a group carries what it can move and leaves a lock where it is") {
     // A carry writes seeds outside the solve, and a locked parameter's seed is
     // its known value — so a carry that did not check would not ask for a move,
