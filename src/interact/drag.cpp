@@ -109,7 +109,8 @@ std::optional<DragSession> DragSession::begin(const Document &doc, const Topolog
                                               EntityId grabbed,
                                               const std::vector<EntityId> &selection,
                                               const HitPolicy &policy,
-                                              const std::vector<EntityId> &carried) {
+                                              const std::vector<EntityId> &carried,
+                                              std::vector<ConstraintId> suppressed) {
     const EntityRecord *e = doc.entities().find(grabbed);
     if(e == nullptr) return std::nullopt;
     // Only entities owning parameters can be dragged directly, which is points
@@ -157,6 +158,7 @@ std::optional<DragSession> DragSession::begin(const Document &doc, const Topolog
     if(session.context_.empty()) return std::nullopt;
     session.grabbed_ = grabbed;
     session.policy_ = policy;
+    session.suppressed_ = std::move(suppressed);
 
     // Whole components, not the named members alone.
     //
@@ -216,6 +218,7 @@ DragUpdate DragSession::update(const Document &doc, const Viewport &viewport, Po
 
     SolveOptions options;
     options.dragged = dragged_;
+    options.suppressed = suppressed_;
     options.diagnoseFailures = false;  // the pose is what a frame needs
     options.generation = ++generation_;
 
@@ -294,11 +297,19 @@ DragUpdate DragSession::update(const Document &doc, const Viewport &viewport, Po
         for(const ConstraintRecord &c : doc.constraints().records()) {
             if(!c.driving) continue;
             if(!context_.contains(c.operands[0])) continue;
+            // A relation this drag already suppresses is not resisting it: it is
+            // not in the system to resist. Naming one would attribute the
+            // saturation to the dimension a tag's handle is driving, which is
+            // the one relation that is provably not in the way.
+            if(std::find(suppressed_.begin(), suppressed_.end(), c.id) != suppressed_.end()) {
+                continue;
+            }
             if(++tested > MAX_RESISTANCE_PROBES) break;
 
             SolveContext without = context_;
             seedTarget(without, doc, grabbed_, cursor);
-            probe.suppressed = {c.id};
+            probe.suppressed = suppressed_;
+            probe.suppressed.push_back(c.id);
 
             const SolveOutcome outcome2 = solve(doc, without, probe);
             if(!outcome2.ok()) continue;
@@ -395,6 +406,7 @@ bool DragSession::resolve(const Document &doc, const ConstraintRecord &dimension
 
     SolveOptions options;
     options.dragged = dragged_;
+    options.suppressed = suppressed_;
     options.diagnoseFailures = false;
     options.generation = ++generation_;
     ConstraintRecord driving = dimension;

@@ -135,11 +135,25 @@ public:
     // by whatever the grab travelled, outside the solve rather than through it,
     // which is also the honest reading: a group is a default, not a constraint,
     // and grouping two things declares nothing about the document's meaning.
+    // suppressed: relations to leave out of every solve this drag runs.
+    //
+    // The mechanism behind a tag's handle. A rectangle whose width is held by a
+    // driving dimension resists its own corner handle — correctly, since that is
+    // what a driving dimension does — but a handle that fights the number it is
+    // showing is a handle that does nothing. So the handle suppresses the
+    // dimensions it is about, drags freely, and its caller rewrites their slots
+    // from where it landed: the value follows the hand rather than the geometry
+    // fighting the value, which is a value edit and one of the two things
+    // PRINCIPLES allows to move a drawing.
+    //
+    // Suppressing is not deleting. The document is untouched, the relation is
+    // back on the next solve, and a drag abandoned mid-gesture leaves nothing.
     static std::optional<DragSession> begin(const Document &doc, const Topology &topology,
                                             EntityId grabbed,
                                             const std::vector<EntityId> &selection,
                                             const HitPolicy &policy,
-                                            const std::vector<EntityId> &carried = {});
+                                            const std::vector<EntityId> &carried = {},
+                                            std::vector<ConstraintId> suppressed = {});
 
     // Moves the target to `cursor` and re-solves, warm-started from the last
     // pose. Cheap by design: this runs once per frame.
@@ -186,6 +200,7 @@ private:
     std::vector<SeedSpan> carriedOrigin_;
     Point grabOrigin_;
     bool haveGrabOrigin_ = false;
+    std::vector<ConstraintId> suppressed_;
     HitPolicy policy_;
     uint64_t generation_ = 0;
 };

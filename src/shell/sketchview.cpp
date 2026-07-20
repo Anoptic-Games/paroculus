@@ -442,6 +442,59 @@ QString SketchView::status() const {
         // was computed for exactly this and read by nothing.
         if(p.degraded > 0) text += QStringLiteral(", degraded %1").arg(p.degraded);
     }
+    // What the last structure operation did beyond moving things.
+    //
+    // A transform that retargeted four axis relations, rewrote three dimensions,
+    // or left two resisting has edited the document in ways the motion on screen
+    // does not show; a copy that could not bring a relation has quietly given
+    // the user something less constrained than what they copied. Counts, in the
+    // same register as the deletion counts above and for the same reason.
+    {
+        const paroculus::Presentation::StructureReport &s = p.structure;
+        if(s.transformError != paroculus::TransformError::None) {
+            text += QStringLiteral("  ·  transform refused: %1")
+                        .arg(QString::fromLatin1(
+                            paroculus::transformErrorName(s.transformError)));
+        }
+        if(s.compoundError != paroculus::CompoundError::None) {
+            text += QStringLiteral("  ·  compound refused: %1")
+                        .arg(QString::fromLatin1(
+                            paroculus::compoundErrorName(s.compoundError)));
+        }
+        if(s.retargeted > 0) {
+            text += QStringLiteral("  ·  retargeted %1 axis relations to a cluster frame")
+                        .arg(s.retargeted);
+        }
+        if(s.rescaled > 0) text += QStringLiteral("  ·  rescaled %1 dimensions").arg(s.rescaled);
+        if(s.straddling > 0) {
+            text += QStringLiteral("  ·  %1 dimensions reach outside and will resist")
+                        .arg(s.straddling);
+        }
+        if(s.copied > 0) text += QStringLiteral("  ·  copied %1 shapes").arg(s.copied);
+        if(s.droppedRelations > 0 || s.droppedRegions > 0 || s.droppedTags > 0) {
+            text += QStringLiteral("  ·  dropped %1 relations, %2 fills, %3 tags at the boundary")
+                        .arg(s.droppedRelations)
+                        .arg(s.droppedRegions)
+                        .arg(s.droppedTags);
+        }
+    }
+    // A broken tag costs the affordances and nothing else, which is exactly why
+    // it has to be said: nothing on screen is missing, so silence would read as
+    // the handles having been turned off rather than the rectangle having
+    // stopped being one.
+    if(!p.brokenTags.empty()) {
+        text += QStringLiteral("  ·  %1 tags broken").arg(p.brokenTags.size());
+    }
+    // The rectangle panel. A whole tag under the selection offers its width and
+    // height, and they are the slots its corner handles drive.
+    for(const paroculus::Session::RectanglePanel &panel : session_->rectanglePanels()) {
+        text += QStringLiteral("  ·  rect %1 x %2%3")
+                    .arg(panel.size.width, 0, 'f', 2)
+                    .arg(panel.size.height, 0, 'f', 2)
+                    .arg(panel.size.widthDimension.valid() || panel.size.heightDimension.valid()
+                             ? QStringLiteral(" (driven)")
+                             : QString());
+    }
     // Which of the two silences this is. An area enclosed by crossing segments
     // encloses something the model cannot name, and refusing it with the same
     // absence as "these edges enclose nothing" tells the user the wrong thing
@@ -511,6 +564,24 @@ int SketchView::hiddenInfluences() const {
 
 int SketchView::brokenRegions() const {
     return static_cast<int>(session_->presentation().brokenRegions.size());
+}
+
+int SketchView::brokenTags() const {
+    return static_cast<int>(session_->presentation().brokenTags.size());
+}
+
+QVariantList SketchView::rectangles() const {
+    QVariantList out;
+    for(const paroculus::Session::RectanglePanel &panel : session_->rectanglePanels()) {
+        QVariantMap map;
+        map[QStringLiteral("tag")] = static_cast<int>(panel.tag.value());
+        map[QStringLiteral("width")] = panel.size.width;
+        map[QStringLiteral("height")] = panel.size.height;
+        map[QStringLiteral("widthDriven")] = panel.size.widthDimension.valid();
+        map[QStringLiteral("heightDriven")] = panel.size.heightDimension.valid();
+        out.append(map);
+    }
+    return out;
 }
 
 QVariantList SketchView::palette(const QString &query) const {
@@ -626,6 +697,11 @@ void SketchView::paint(QPainter *painter) {
     adornment.marqueeFrom = p.marqueeFrom;
     adornment.marqueeTo = p.marqueeTo;
     adornment.glyphs = session_->glyphs();
+    // A tag's handles appear when its geometry is selected, which is the same
+    // rule that decides a fill is selected: a tag has no handle of its own, so
+    // it is named by naming what it is over. Showing them always would put a
+    // ring of squares on every rectangle in the document.
+    adornment.handledTags = session_->selectedTags();
     adornment.ghostPose = ghostPose_;
     // The drawn grid is the snap policy's, so the lines are where placement
     // actually lands. Disabled snapping draws none rather than a grid that

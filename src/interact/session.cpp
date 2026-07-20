@@ -1,6 +1,8 @@
 #include "interact/session.h"
 
 #include <algorithm>
+#include <cmath>
+#include <unordered_set>
 
 #include "interact/loops.h"
 #include "interact/registry.h"
@@ -921,6 +923,11 @@ void Session::applyDragResolve(bool impose) {
     numeric_.cancel();
 
     std::vector<Command> step = drag_->commit(*doc_);
+    // The numeric twin of a handle drag owes the same rewrite the pointer
+    // release does. Without it the typed value is committed as geometry while
+    // the dimension it was suppressing comes back on the next solve and pulls
+    // the drawing straight off the number the user just confirmed.
+    appendHandleRewrites(step);
 
     // Imposing pins the value as a driving dimension, in the same undo step as
     // the motion it measures — which is why no imposition outlives the gesture
@@ -1000,7 +1007,54 @@ void Session::beginDrag(EntityId grabbed, Point cursor) {
         }
     }
 
-    drag_ = DragSession::begin(*doc_, topology_, grabbed, held, policy_, carried);
+    // A rectangle's corner handle drives the dimensions holding its sides.
+    //
+    // Without this the handle is a lie: a rectangle the user has sized by typing
+    // 120 into its width field has a driving distance on that edge, and grabbing
+    // the corner saturates against it immediately — the handle is drawn, it can
+    // be grabbed, and it cannot move. Driving is what a driving dimension does,
+    // so the answer is not to weaken the relation but to let the handle edit its
+    // value, which is a value edit and allowed to move the drawing.
+    //
+    // So the drag suppresses them, tracks freely, and commitDrag rewrites the
+    // slots from where the corner landed. Only for a whole tag, and only for the
+    // dimensions the tag's own sides carry: a distance the user imposed between
+    // this rectangle and something else is not the rectangle's to rewrite, and it
+    // resists exactly as it should.
+    // Only when the handle is actually on offer.
+    //
+    // The affordance is the tag's, and a tag is named by naming what it is over —
+    // the same rule that decides a fill is selected and the same one the overlay
+    // draws handles by. Suppressing on corner membership alone would mean any
+    // ordinary vertex drag of any rectangle in the document silently rewrote a
+    // driving dimension the user had pinned, with no handle drawn and nothing
+    // saying so. A drag is a handle drag exactly when the user can see the
+    // handle.
+    handleDimensions_.clear();
+    for(TagId id : selectedTags()) {
+        const std::optional<RectangleFrame> frame = rectangleFrame(*doc_, id);
+        // Either end of any of its edges. A corner is two coincident points and
+        // the frame names one of them; grabbing the other is grabbing the same
+        // corner, and a handle that worked on one point of a pair and not the
+        // other would be a handle that works half the time.
+        if(!frame || !isRectangleCorner(*doc_, *frame, grabbed)) continue;
+        for(EntityId edge : {frame->widthEdge, frame->heightEdge}) {
+            const ConstraintId dimension = edgeDimension(*doc_, edge);
+            const ConstraintRecord *c = doc_->constraints().find(dimension);
+            if(c == nullptr) continue;
+            // A value authored somewhere else is not the handle's to overwrite.
+            // A width driven by a named document parameter is driven by that
+            // parameter for every rectangle sharing it, so rewriting it here
+            // would either move all of them or — writing a bare constant —
+            // silently sever this one from the rest. The handle resists instead,
+            // which is what a dimension the user authored elsewhere should do.
+            if(!c->value.isConstant()) continue;
+            handleDimensions_.push_back(dimension);
+        }
+    }
+
+    drag_ = DragSession::begin(*doc_, topology_, grabbed, held, policy_, carried,
+                               handleDimensions_);
     if(!drag_) return;
     presentation_.dragging = true;
     updateCount_ = 0;
@@ -1045,11 +1099,55 @@ void Session::cancelDrag() {
     refresh();
 }
 
+// The handle's half of the bargain: the drag ran with these dimensions
+// suppressed so the geometry could move freely, and now the values follow it.
+//
+// Appended to the drag's own commit rather than journalled separately, so one
+// undo takes back the resize and the numbers it wrote together — they are one
+// gesture and splitting them would make undo take back a rectangle's size while
+// leaving the dimension claiming otherwise.
+//
+// Called from both places a drag can end. The pointer release is the obvious
+// one; the numeric twin is the one that is easy to miss, and missing it means a
+// typed width is committed as geometry while the suppressed constraint comes
+// straight back on the next solve and pulls the drawing off the number the user
+// just confirmed.
+//
+// Measured from the pose the drag landed on rather than from the cursor: the
+// cursor is where the hand was, and the corner is where the constraints that
+// were *not* suppressed put it.
+void Session::appendHandleRewrites(std::vector<Command> &commit) {
+    if(!drag_ || handleDimensions_.empty()) {
+        handleDimensions_.clear();
+        return;
+    }
+    Pose landed(*doc_);
+    landed.overlay(drag_->context().params());
+    for(ConstraintId id : handleDimensions_) {
+        const ConstraintRecord *c = doc_->constraints().find(id);
+        if(c == nullptr) continue;
+        const std::optional<Point> a = landed.point(c->operands[0]);
+        const std::optional<Point> b = landed.point(c->operands[1]);
+        if(!a || !b) continue;
+        const double length = std::hypot(b->x - a->x, b->y - a->y);
+        if(!(length > 0.0)) continue;
+        ConstraintRecord next = *c;
+        // A bare constant is safe here and only here: beginDrag refused to
+        // suppress any dimension whose slot was an expression, so nothing with
+        // provenance to sever ever reaches this line.
+        next.value = Slot(length);
+        if(next != *c) commit.push_back(SetRecord<ConstraintRecord>{next});
+    }
+    handleDimensions_.clear();
+}
+
 void Session::endDrag() {
     if(!drag_) return;
     // Release commits what is on screen. Nothing springs back, and the whole
     // gesture is one undo step.
     std::vector<Command> commit = drag_->commit(*doc_);
+
+    appendHandleRewrites(commit);
     drag_.reset();
     dragDimensions_.clear();
     numeric_.cancel();
@@ -1771,6 +1869,422 @@ bool Session::dissolveGroups() {
     }
     if(step.empty()) return false;
     return journal_->applyStep(*doc_, "dissolve group", std::move(step)) == CommandError::None;
+}
+
+// ---------------------------------------------------------------------------
+// Structure operations
+// ---------------------------------------------------------------------------
+
+// Seeds, not the pose.
+//
+// A transform rewrites committed seeds, so its centre has to be a point in seed
+// space or the cluster is translated as well as turned. Seeds are authored
+// intent and are never written back from a solve, so any component the solver has
+// moved — the normal case — has a pose that differs from them; taking the centre
+// from the pose and applying it to the seeds rotates the seed cluster about a
+// foreign point and the shape jumps instead of spinning in place.
+//
+// This is the same rule mirrorStep already states for its reflection axis, and
+// for the same reason: a document edit is written against the committed
+// geometry.
+std::optional<Point> Session::transformCentre() const {
+    const std::vector<EntityId> moved = transformClosure(*doc_, selection_.items());
+    double minX = 0.0, minY = 0.0, maxX = 0.0, maxY = 0.0;
+    bool any = false;
+    for(EntityId id : moved) {
+        const EntityRecord *e = doc_->entities().find(id);
+        if(e == nullptr || e->kind != EntityKind::Point) continue;
+        const std::optional<Point> p = Point{e->seeds[0], e->seeds[1]};
+        if(!any) {
+            minX = maxX = p->x;
+            minY = maxY = p->y;
+            any = true;
+            continue;
+        }
+        minX = std::min(minX, p->x);
+        maxX = std::max(maxX, p->x);
+        minY = std::min(minY, p->y);
+        maxY = std::max(maxY, p->y);
+    }
+    if(!any) return std::nullopt;
+    return Point{0.5 * (minX + maxX), 0.5 * (minY + maxY)};
+}
+
+namespace {
+
+// The worst distance between where a step put a point and where solving leaves
+// it, over the moved set.
+//
+// What makes the axis question answerable by looking rather than by reading. A
+// retargeted rotation lands on the rotated pose and stays there, so this is
+// zero; a kept-axes rotation of an axis-constrained cluster is pulled back
+// towards the document frame, and this is how far. The preview shows both
+// numbers and the user picks.
+double poseDrift(const Document &doc, const std::vector<EntityId> &moved) {
+    Topology topology(doc);
+    SolveOptions options;
+    options.diagnoseFailures = false;
+    double worst = 0.0;
+    std::unordered_set<ComponentId> done;
+    for(EntityId id : moved) {
+        const ComponentId component = topology.componentOf(id);
+        if(component == NO_COMPONENT || !done.insert(component).second) continue;
+        SolveContext context = SolveContext::forComponent(doc, topology, id);
+        if(context.empty()) continue;
+        const std::vector<SeedSpan> before = context.params();
+        if(!solve(doc, context, options).ok()) continue;
+        for(const SeedSpan &after : context.params()) {
+            const EntityRecord *e = doc.entities().find(after.entity);
+            if(e == nullptr || e->kind != EntityKind::Point) continue;
+            for(const SeedSpan &was : before) {
+                if(was.entity != after.entity) continue;
+                worst = std::max(worst, std::hypot(after.seeds[0] - was.seeds[0],
+                                                   after.seeds[1] - was.seeds[1]));
+            }
+        }
+    }
+    return worst;
+}
+
+}  // namespace
+
+// The preview both answers share.
+//
+// A document copy, which is the exception the no-copy rule already carries: the
+// rule is about the interaction path, and a transform is a typed operation. It
+// has to be a copy rather than a forked context because a transform emits
+// records — a cluster frame is three of them — and a speculative context forks
+// parameters, not a document.
+Session::TransformPreview Session::previewRotate(double degrees, AxisAnswer axes) const {
+    RotateOptions options;
+    options.angle = degrees * 3.14159265358979323846 / 180.0;
+    options.axes = axes;
+    const std::optional<Point> centre = transformCentre();
+    if(!centre) {
+        TransformPreview p;
+        p.error = TransformError::NothingToMove;
+        return p;
+    }
+    options.centre = *centre;
+
+    TransformPreview preview;
+    const TransformStep step = rotateStep(*doc_, selection_.items(), options);
+    preview.error = step.error;
+    preview.moved = step.moved;
+    const std::vector<EntityId> moved = transformClosure(*doc_, selection_.items());
+    preview.axisConstraints = axisReferencedIn(*doc_, moved).size();
+    if(!step.ok()) return preview;
+
+    Document probe = *doc_;
+    for(const Command &c : step.commands) probe.apply(c);
+    preview.residual = poseDrift(probe, moved);
+
+    Topology topology(probe);
+    SolveOptions solveOptions;
+    solveOptions.diagnoseFailures = false;
+    SolveContext whole = SolveContext::forWholeDocument(probe);
+    const SolveOutcome outcome = solve(probe, whole, solveOptions);
+    preview.status = outcome.status;
+    preview.dof = outcome.dof;
+    return preview;
+}
+
+Session::TransformPreview Session::previewScale(double factor, ValueAnswer values) const {
+    ScaleOptions options;
+    options.factor = factor;
+    options.values = values;
+    const std::optional<Point> centre = transformCentre();
+    if(!centre) {
+        TransformPreview p;
+        p.error = TransformError::NothingToMove;
+        return p;
+    }
+    options.centre = *centre;
+
+    TransformPreview preview;
+    const TransformStep step = scaleStep(*doc_, selection_.items(), options);
+    preview.error = step.error;
+    preview.moved = step.moved;
+    preview.straddling = step.straddling;
+    const std::vector<EntityId> moved = transformClosure(*doc_, selection_.items());
+    preview.absoluteDimensions = absoluteValuedIn(*doc_, moved).size();
+    if(!step.ok()) return preview;
+
+    Document probe = *doc_;
+    for(const Command &c : step.commands) probe.apply(c);
+    preview.residual = poseDrift(probe, moved);
+
+    SolveOptions solveOptions;
+    solveOptions.diagnoseFailures = false;
+    SolveContext whole = SolveContext::forWholeDocument(probe);
+    const SolveOutcome outcome = solve(probe, whole, solveOptions);
+    preview.status = outcome.status;
+    preview.dof = outcome.dof;
+    return preview;
+}
+
+// Applies a transform step and reports what it did beyond moving things.
+//
+// One place, because rotate, scale and translate differ only in the step they
+// hand over and every one of them owes the user the same report.
+bool Session::applyTransform(const TransformStep &step, const char *label) {
+    presentation_.structure.clear();
+    presentation_.structure.transformError = step.error;
+    if(!step.ok()) return false;
+    if(step.commands.empty()) return false;
+
+    std::vector<Command> commands = step.commands;
+    if(journal_->applyStep(*doc_, label, std::move(commands)) != CommandError::None) {
+        return false;
+    }
+    presentation_.structure.moved = step.moved;
+    presentation_.structure.retargeted = step.retargeted;
+    presentation_.structure.rescaled = step.rescaled;
+    presentation_.structure.straddling = step.straddling;
+    presentation_.structure.frame = step.frame;
+
+    // A cluster frame joins the selection it was made for.
+    //
+    // Leaving it out is the quiet kind of wrong. The frame is now what the
+    // cluster's horizontal means, so a duplicate that did not carry it would
+    // find the axis relations straddling its boundary, drop all four, and hand
+    // back a copy that is no longer square — correctly, by the copy rules, and
+    // baffling to anyone watching. Selecting it says what happened and makes the
+    // next operation act on the whole of what the user now has.
+    if(step.frame.valid()) {
+        std::vector<EntityId> selected = selection_.items();
+        auto add = [&](EntityId id) {
+            if(id.valid() && std::find(selected.begin(), selected.end(), id) == selected.end()) {
+                selected.push_back(id);
+            }
+        };
+        add(step.frame);
+        if(const EntityRecord *frame = doc_->entities().find(step.frame)) {
+            add(frame->points[0]);
+            add(frame->points[1]);
+        }
+        selection_.set(std::move(selected));
+    }
+    refresh();
+    return true;
+}
+
+bool Session::rotateSelection(double degrees, AxisAnswer axes) {
+    recordAction("transform.rotate",
+                 {{"degrees", degrees},
+                  {"retarget", axes == AxisAnswer::RetargetToClusterFrame ? 1.0 : 0.0}});
+    const std::optional<Point> centre = transformCentre();
+    if(!centre) {
+        presentation_.structure.clear();
+        presentation_.structure.transformError = TransformError::NothingToMove;
+        return false;
+    }
+    RotateOptions options;
+    options.centre = *centre;
+    options.angle = degrees * 3.14159265358979323846 / 180.0;
+    options.axes = axes;
+    return applyTransform(rotateStep(*doc_, selection_.items(), options), "rotate");
+}
+
+bool Session::scaleSelection(double factor, ValueAnswer values) {
+    recordAction("transform.scale",
+                 {{"factor", factor},
+                  {"scale-values", values == ValueAnswer::ScaleTheValues ? 1.0 : 0.0}});
+    const std::optional<Point> centre = transformCentre();
+    if(!centre) {
+        presentation_.structure.clear();
+        presentation_.structure.transformError = TransformError::NothingToMove;
+        return false;
+    }
+    ScaleOptions options;
+    options.centre = *centre;
+    options.factor = factor;
+    options.values = values;
+    return applyTransform(scaleStep(*doc_, selection_.items(), options), "scale");
+}
+
+bool Session::scaleSelectionNonUniform(double factorX, double factorY) {
+    // No recording, deliberately, and this is the one action that must not.
+    //
+    // Its registry row is never applicable, so invokeAction refuses before it
+    // reaches here and no surface can produce this step. A step recorded anyway
+    // would replay into that refusal and re-record as nothing — record → replay
+    // → record broken, silently, with the first file the only one that ever
+    // mentioned it. Every other action records the request rather than the
+    // outcome because a refused request replays and is refused again, which is
+    // the same session; this one cannot even be requested.
+    //
+    // Refused in the model, and the refusal is the whole of what happens. Said
+    // out loud rather than by the action being absent: a user who cannot find
+    // non-uniform scale concludes the tool forgot it, and one who is told it does
+    // not commute with their constraints has learned what their document is.
+    return applyTransform(nonUniformScaleStep(*doc_, selection_.items(), factorX, factorY),
+                          "scale");
+}
+
+bool Session::duplicateSelection(double dx, double dy) {
+    recordAction("edit.duplicate", {{"dx", dx}, {"dy", dy}});
+    presentation_.structure.clear();
+    const CopyStep copy = copyStep(*doc_, selection_.items(), dx, dy);
+    if(copy.empty()) return false;
+
+    std::vector<Command> commands = copy.commands;
+    if(journal_->applyStep(*doc_, "duplicate", std::move(commands)) != CommandError::None) {
+        return false;
+    }
+    presentation_.structure.copied = copy.entities.size();
+    presentation_.structure.droppedRelations = copy.droppedConstraints;
+    presentation_.structure.droppedRegions = copy.droppedRegions;
+    presentation_.structure.droppedTags = copy.droppedTags;
+
+    // The copy becomes the selection, so a second duplicate offsets from it
+    // rather than laying a third shape over the second. That is what makes this
+    // the seed of arrays: repetition is repetition of the gesture.
+    select(copy.copiedEntities());
+    refresh();
+    return true;
+}
+
+bool Session::applyCompound(const CompoundStep &step, const char *label) {
+    presentation_.structure.clear();
+    presentation_.structure.compoundError = step.error;
+    if(!step.ok() || step.commands.empty()) return false;
+    std::vector<Command> commands = step.commands;
+    if(journal_->applyStep(*doc_, label, std::move(commands)) != CommandError::None) {
+        return false;
+    }
+    presentation_.structure.copied = step.entities.size();
+    refresh();
+    return true;
+}
+
+bool Session::distributeSelection() {
+    recordAction("relation.distribute");
+    return applyCompound(distributeStep(*doc_, selection_.items()), "distribute");
+}
+
+bool Session::mirrorSelection() {
+    recordAction("relation.mirror");
+    const EntityId axis = mirrorAxisIn(*doc_, selection_.items());
+    if(!axis.valid()) {
+        presentation_.structure.clear();
+        presentation_.structure.compoundError = CompoundError::NoAxis;
+        return false;
+    }
+    return applyCompound(mirrorStep(*doc_, selection_.items(), axis), "mirror");
+}
+
+std::vector<TagId> Session::selectedTags() const {
+    std::vector<TagId> out;
+    for(const TagRecord &t : doc_->tags().records()) {
+        // Every entity, not any: a tag is named by naming what it is over, the
+        // same rule a region follows, so brushing one edge of a rectangle does
+        // not put its tag under an action the user did not aim at.
+        if(t.entities.empty()) continue;
+        const bool whole = std::all_of(t.entities.begin(), t.entities.end(), [&](EntityId e) {
+            return selection_.contains(e);
+        });
+        if(whole) out.push_back(t.id);
+    }
+    return out;
+}
+
+bool Session::dissolveTags() {
+    recordAction("tag.dissolve");
+    const std::vector<TagId> tags = selectedTags();
+    if(tags.empty()) return false;
+    std::vector<Command> step;
+    step.reserve(tags.size());
+    for(TagId id : tags) step.push_back(RemoveRecord<TagRecord>{id});
+    // Nothing else goes. A tag owns none of what it names, which is why giving
+    // one up deliberately and losing one to an edit come to the same thing.
+    if(journal_->applyStep(*doc_, "dissolve tag", std::move(step)) != CommandError::None) {
+        return false;
+    }
+    refresh();
+    return true;
+}
+
+std::vector<Session::RectanglePanel> Session::rectanglePanels() const {
+    std::vector<RectanglePanel> out;
+    const Pose current = pose();
+    for(TagId id : selectedTags()) {
+        const std::optional<RectangleFrame> frame = rectangleFrame(*doc_, id);
+        if(!frame) continue;
+        if(const std::optional<RectangleSize> size = rectangleSize(*doc_, current, *frame)) {
+            out.push_back(RectanglePanel{id, *size});
+        }
+    }
+    return out;
+}
+
+// Sets one side of a tagged rectangle.
+//
+// Two paths that end in the same place. A dimensioned side is a value edit: the
+// slot is rewritten and the solver moves the geometry to hold it, which is one
+// of the two things PRINCIPLES allows to move a drawing. An undimensioned side
+// has no slot to drive, so the number the user typed becomes the dimension —
+// after which the handle drives it, which is what makes the panel and the handle
+// the same affordance from two directions rather than two features.
+bool Session::setRectangleSide(TagId tag, bool width, double value) {
+    presentation_.structure.clear();
+    if(!(value > 0.0)) return false;
+    const std::optional<RectangleFrame> frame = rectangleFrame(*doc_, tag);
+    if(!frame) return false;
+    const EntityId edge = width ? frame->widthEdge : frame->heightEdge;
+    const EntityRecord *e = doc_->entities().find(edge);
+    if(e == nullptr) return false;
+
+    const ConstraintId existing = edgeDimension(*doc_, edge);
+    std::vector<Command> step;
+    if(existing.valid()) {
+        ConstraintRecord next = *doc_->constraints().find(existing);
+        next.value = Slot(value);
+        step.push_back(SetRecord<ConstraintRecord>{next});
+    } else {
+        ConstraintRecord dimension;
+        dimension.id = ConstraintId(doc_->constraints().allocator().next());
+        dimension.kind = ConstraintKind::PointPointDistance;
+        dimension.operands[0] = e->points[0];
+        dimension.operands[1] = e->points[1];
+        dimension.value = Slot(value);
+
+        // Checked before it is committed, exactly as every other imposition path
+        // is. A rectangle whose width edge is already determined by other
+        // relations would otherwise take an unchecked driving constraint, the
+        // component would go inconsistent, refresh() would drop it, and the whole
+        // rectangle would freeze at its committed seeds with no verdict shown and
+        // no downgrade offered.
+        //
+        // Downgraded automatically rather than refused, matching the numeric
+        // path: the value is what the user was supplying, and losing it would be
+        // worse than not driving with it.
+        const CandidateCheck check = checkCandidate(*doc_, topology_, dimension);
+        presentation_.impositionVerdict = check.verdict;
+        presentation_.conflicting = check.conflicting;
+        presentation_.conflictAttributed = check.attributed;
+        dimension.driving = check.committable();
+        step.push_back(AddRecord<ConstraintRecord>{dimension});
+    }
+    if(journal_->applyStep(*doc_, width ? "rectangle width" : "rectangle height",
+                           std::move(step)) != CommandError::None) {
+        return false;
+    }
+    doc_->noteUsage(ConstraintKind::PointPointDistance);
+    refresh();
+    return true;
+}
+
+bool Session::setRectangleWidth(TagId tag, double width) {
+    recordAction("tag.set-width", {{"tag", static_cast<double>(tag.value())},
+                                   {"value", width}});
+    return setRectangleSide(tag, true, width);
+}
+
+bool Session::setRectangleHeight(TagId tag, double height) {
+    recordAction("tag.set-height", {{"tag", static_cast<double>(tag.value())},
+                                    {"value", height}});
+    return setRectangleSide(tag, false, height);
 }
 
 Bake Session::bake() const { return bakeForExport(*doc_, pose()); }

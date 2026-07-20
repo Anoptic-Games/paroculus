@@ -81,8 +81,22 @@ TEST_CASE("every action is invocable headlessly") {
         b.session->setTool(ToolKind::Select);
         b.click(Point{40.0, 0.0});
 
+        // A value inside each parameter's domain, not zero.
+        //
+        // The sweep tests reachability — can this action be driven with nothing
+        // but a name and numbers — and zero is outside the domain of a scale
+        // factor, where it is a collapse rather than a transform. Feeding it
+        // would test the refusal instead of the reach, and the refusal has its
+        // own test. Anything unnamed here takes zero, which is what every
+        // parameter took before any of them had a domain worth naming.
         ActionArguments arguments;
-        for(const ActionParameter &p : a.parameters) arguments.set(p.name, 0.0);
+        for(const ActionParameter &p : a.parameters) {
+            double value = 0.0;
+            if(p.name == "factor" || p.name == "x" || p.name == "y") value = 2.0;
+            if(p.name == "degrees") value = 90.0;
+            if(p.name == "dx" || p.name == "dy") value = 25.0;
+            arguments.set(p.name, value);
+        }
 
         INFO("action ", a.name);
         const ActionContext context = contextOf(*b.session);

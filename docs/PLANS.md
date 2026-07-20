@@ -802,6 +802,38 @@ perpendicularity.
 Exit: transform and copy semantics in corpus; compound tags dissolving
 gracefully under scripted abuse.
 
+Landed. The transforms are exact seed rewrites in core/transform, so the
+isometry property is checkable before anything re-solves rather than being a
+statement about Newton's tolerance. Both questions ride as arguments on their
+actions and therefore round-trip through scripts: an answer that failed to
+record would replay the other one, and the script would still be byte-identical
+to itself while describing a different drawing. Copy is core/copy, one bijection
+serving duplicate and mirror alike. Compounds are core/compound and emit nothing
+the catalogue did not already have. The rectangle's tag, handles and size panel
+are core/tags, asked in one place by render, hit testing and the panel.
+
+A high-effort adversarial review over the finished diff found ten defects, all
+fixed and all now carrying a regression test: the retarget frame was free and
+added four degrees of freedom (it is pinned); the transform centre came from the
+pose while the rewrite is in seeds; a negative scale factor was unguarded;
+distribute ordered its points by ID rather than along the run; edgeDimension
+matched point identity where a corner is two coincident points; the handle drag
+suppressed dimensions on corner membership rather than on the handle being
+offered, never wrote back on the numeric path, and flattened expression slots;
+the panel committed a driving dimension unchecked; and a broken tag was carried
+through a copy. The pattern worth carrying into stage 8 is that eight of the ten
+were on the two new surfaces where a mechanism was inferred from geometry rather
+than from what the user could see — the handle and the frame.
+
+Two things settled differently from the sketch above. Non-uniform scale is a
+permanently dimmed palette row rather than an applicable action that refuses,
+because applicable-and-refusing would break the property that an applicable
+action runs — the one that makes the registry trustworthy. And "handles drive
+the underlying slots" turned out to need suppression on the drag rather than a
+second mechanism: the handle suppresses the dimensions it is about, tracks
+freely, and commits their values from where the corner landed, which is the same
+value edit the panel performs from the other direction.
+
 ### Stage 8 — durability and scale
 
 Goal: the document format freezes, over-budget solving degrades gracefully,

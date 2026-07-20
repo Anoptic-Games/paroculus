@@ -84,6 +84,10 @@ add_library(paroculus-core STATIC
     src/core/bake.h
     src/core/composition.cpp
     src/core/composition.h
+    src/core/compound.cpp
+    src/core/compound.h
+    src/core/copy.cpp
+    src/core/copy.h
     src/core/document.cpp
     src/core/document.h
     src/core/geom.h
@@ -105,10 +109,14 @@ add_library(paroculus-core STATIC
     src/core/solution.cpp
     src/core/solution.h
     src/core/table.h
+    src/core/tags.cpp
+    src/core/tags.h
     src/core/taxonomy.cpp
     src/core/taxonomy.h
     src/core/topology.cpp
     src/core/topology.h
+    src/core/transform.cpp
+    src/core/transform.h
     src/core/undo.cpp
     src/core/undo.h
     src/core/units.cpp
@@ -300,11 +308,13 @@ if(PAROCULUS_TESTS)
         tests/gestures/composition.cpp
         tests/gestures/flagship.cpp
         tests/gestures/inference.cpp
+        tests/gestures/structure.cpp
         tests/unit/solve_context.cpp
         tests/unit/solve_demosketch.cpp
         tests/semantics/applicability.cpp
         tests/semantics/catalogue.cpp
         tests/semantics/branches.cpp
+        tests/semantics/structure.cpp
     )
     target_link_libraries(paroculus-tests PRIVATE
         doctest::doctest

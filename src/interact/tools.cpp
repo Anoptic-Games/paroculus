@@ -617,6 +617,14 @@ ToolOutput RectangleTool::press(const Document &doc, Point cursor) {
             AddRecord<EntityRecord>{segmentRecord(edges[i], ends[i][0], ends[i][1])});
     }
 
+    // The eight relations that square it, remembered so the tag can name them.
+    // Named rather than recovered afterwards by asking which constraints happen
+    // to bind these edges: an inference that declared a coincidence on the
+    // opening corner binds them too, and a tag that swept it up would report
+    // itself broken the moment the user declined it.
+    std::vector<ConstraintId> squaring;
+    squaring.reserve(8);
+
     for(int i = 0; i < 4; i++) {
         ConstraintRecord join;
         join.id = claimConstraint();
@@ -624,6 +632,7 @@ ToolOutput RectangleTool::press(const Document &doc, Point cursor) {
         join.operands[0] = ends[i][1];
         join.operands[1] = ends[(i + 1) % 4][0];
         out.commands.push_back(AddRecord<ConstraintRecord>{join});
+        squaring.push_back(join.id);
     }
 
     // Horizontal on the pair that runs across, vertical on the pair that runs
@@ -635,7 +644,28 @@ ToolOutput RectangleTool::press(const Document &doc, Point cursor) {
         axis.kind = (i % 2 == 0) ? ConstraintKind::Horizontal : ConstraintKind::Vertical;
         axis.operands[0] = edges[i];
         out.commands.push_back(AddRecord<ConstraintRecord>{axis});
+        squaring.push_back(axis.id);
     }
+
+    // The tag, recorded at creation rather than recognized after the fact.
+    //
+    // It owns nothing: the four edges and eight relations above are the whole
+    // rectangle, and they are ordinary records that constrain, serialize, drag
+    // and delete exactly as any others do. What the tag adds is that while all
+    // twelve are here, this set can be edited as one thing — corner handles, a
+    // width and height panel — and the moment an edit takes one away the tag
+    // reports itself broken and offers nothing. That is the graceful dissolution
+    // the macro design promises, and it is free precisely because there is
+    // nothing to convert back from.
+    //
+    // Emitted last, because a record may not name what does not exist yet, and
+    // the commands apply in order.
+    TagRecord tag;
+    tag.id = TagId(doc.tags().allocator().next());
+    tag.kind = TagKind::Rectangle;
+    tag.entities.assign(std::begin(edges), std::end(edges));
+    tag.constraints = std::move(squaring);
+    out.commands.push_back(AddRecord<TagRecord>{tag});
 
     // Inference binds to the corner the user placed first, so starting a
     // rectangle on an existing vertex means what it looks like it means.

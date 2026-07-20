@@ -69,6 +69,19 @@ struct Adornment {
     // selection, hover and a density budget, none of which are raster concerns.
     std::vector<GlyphMark> glyphs;
 
+    // Tags whose handles to draw, and tags to draw as broken.
+    //
+    // Render is told which, exactly as it is told which glyphs to draw: whether
+    // a tag's affordances are on screen is a question about selection and about
+    // what the surface is offering, and neither is a raster concern. What render
+    // owns is what a handle looks like.
+    //
+    // A broken tag draws its diagnostic unconditionally though — that is not an
+    // offer, it is the degradation the no-silent-changes policy requires be
+    // visible, and it is read from the document here for the same reason a
+    // broken region's is.
+    std::vector<TagId> handledTags;
+
     // Document-space spacing of the placement grid, or zero for no grid.
     //
     // Comes from the snap policy by way of the shell, never from a constant

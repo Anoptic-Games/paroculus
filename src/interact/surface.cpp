@@ -142,20 +142,74 @@ std::vector<SurfaceEntry> stripEntries(const Session &session) {
     return out;
 }
 
+// The readings a parameterized structure action offers.
+//
+// Same mechanism the strip uses for an ambiguous relation, applied to a
+// different ambiguity. An action whose value is a required number cannot be
+// invoked from a palette that only knows its name, so the palette carries the
+// reading — "Rotate 90°" and "Rotate 90° (retarget axes)" are two entries over
+// one action, exactly as "length ratio (A:B)" and "(B:A)" are.
+//
+// The quarter turns and the doubling are the readings worth naming rather than
+// every number a user might want: an arbitrary angle is the numeric twin's
+// business, and this is the discoverable surface that teaches the operation
+// exists and that it asks a question.
+struct Reading {
+    std::string_view action;
+    std::string_view title;
+    std::pair<std::string_view, double> first;
+    std::pair<std::string_view, double> second;
+};
+
+constexpr Reading READINGS[] = {
+    {"transform.rotate", "Rotate 90°", {"degrees", 90.0}, {"retarget", 0.0}},
+    {"transform.rotate", "Rotate 90°, retargeting the axes", {"degrees", 90.0},
+     {"retarget", 1.0}},
+    {"transform.rotate", "Rotate -90°", {"degrees", -90.0}, {"retarget", 0.0}},
+    {"transform.rotate", "Rotate -90°, retargeting the axes", {"degrees", -90.0},
+     {"retarget", 1.0}},
+    {"transform.rotate", "Rotate 180°", {"degrees", 180.0}, {"retarget", 0.0}},
+    {"transform.scale", "Scale ×2, letting dimensions resist", {"factor", 2.0},
+     {"scale-values", 0.0}},
+    {"transform.scale", "Scale ×2, scaling the values", {"factor", 2.0},
+     {"scale-values", 1.0}},
+    {"transform.scale", "Scale ×½, letting dimensions resist", {"factor", 0.5},
+     {"scale-values", 0.0}},
+    {"transform.scale", "Scale ×½, scaling the values", {"factor", 0.5},
+     {"scale-values", 1.0}},
+    {"edit.duplicate", "Duplicate, offset", {"dx", 20.0}, {"dy", -20.0}},
+};
+
 std::vector<SurfaceEntry> paletteEntries(const Session &session, std::string_view query) {
     const ActionContext context = contextOf(session);
     std::vector<SurfaceEntry> out;
     for(const Action &action : actions()) {
         if(!matchesQuery(action.title, query) && !matchesQuery(action.name, query)) continue;
-        SurfaceEntry entry;
-        entry.action = &action;
-        entry.title = std::string(action.title);
         // Applicability is reported, never used to filter. Inapplicable
         // commands dim rather than vanish, so the catalogue is the same shape
         // every time it is opened and learning where something sits is worth
         // doing.
-        entry.applicable =
+        const bool applicable =
             action.applicable == nullptr || action.applicable(context, action);
+
+        bool expanded = false;
+        for(const Reading &reading : READINGS) {
+            if(reading.action != action.name) continue;
+            SurfaceEntry entry;
+            entry.action = &action;
+            entry.title = std::string(reading.title);
+            entry.applicable = applicable;
+            entry.arguments.set(reading.first.first, reading.first.second);
+            entry.arguments.set(reading.second.first, reading.second.second);
+            out.push_back(std::move(entry));
+            expanded = true;
+        }
+        if(expanded) continue;
+
+        SurfaceEntry entry;
+        entry.action = &action;
+        entry.title = std::string(action.title);
+        entry.applicable = applicable;
         out.push_back(std::move(entry));
     }
     return out;

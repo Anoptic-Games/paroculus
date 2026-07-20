@@ -92,6 +92,25 @@ struct ActionContext {
     size_t selectedComposites = 0;
     // Some of the selection is in a group, so there is a grouping to dissolve.
     bool groupedSelection = false;
+    // What a transform would write into. Zero means the selection reaches no
+    // parameter, so every transform dims rather than refusing after the fact.
+    size_t transformable = 0;
+    // Axis-referenced relations a rotation would make a question of, and
+    // absolute dimensions a scale would. Both are counts rather than flags
+    // because the surface reports them: "this rotation is a question about four
+    // relations" is what turns the choice into an informed one.
+    size_t axisConstraints = 0;
+    size_t absoluteDimensions = 0;
+    // Points selected outright, for the compound that is a rhythm over points.
+    size_t selectedPoints = 0;
+    // Exactly one segment is selected and there is something besides it and its
+    // ends to reflect, so mirror has both an axis and a subject.
+    bool mirrorable = false;
+    // Tags the selection names whole, and how many of those are whole
+    // rectangles. A tag is named by naming what it is over, exactly as a region
+    // is, so both are counts over the geometry selection.
+    size_t selectedTags = 0;
+    size_t rectangleTags = 0;
     // A numeric field is open. Keyboard resolution needs it: while one is, the
     // letters that would pick a tool are the letters a unit is spelled with.
     bool numericActive = false;

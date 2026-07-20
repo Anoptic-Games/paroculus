@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <string>
+#include <set>
 
 #include "core/measure.h"
 #include "core/persist.h"
@@ -586,7 +587,17 @@ TEST_CASE("usage history survives a round trip and is droppable") {
 TEST_CASE("the palette searches by subsequence and dims rather than hides") {
     TwoSegments f;
     const std::vector<SurfaceEntry> all = paletteEntries(*f.session, "");
-    CHECK(all.size() == actions().size());
+    // At least one entry per action, and more than one for the few that carry a
+    // reading — a rotation with a required angle cannot be invoked from a
+    // palette that knows only its name, so the palette offers the readings worth
+    // naming exactly as the strip offers the readings of an ambiguous relation.
+    CHECK(all.size() >= actions().size());
+    std::set<std::string_view> reached;
+    for(const SurfaceEntry &e : all) {
+        REQUIRE(e.action != nullptr);
+        reached.insert(e.action->name);
+    }
+    CHECK(reached.size() == actions().size());
 
     const std::vector<SurfaceEntry> found = paletteEntries(*f.session, "prl");
     bool sawParallel = false;

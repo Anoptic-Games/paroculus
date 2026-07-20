@@ -18,6 +18,10 @@
 
 #include "core/bake.h"
 #include "core/composition.h"
+#include "core/compound.h"
+#include "core/copy.h"
+#include "core/tags.h"
+#include "core/transform.h"
 #include "core/undo.h"
 #include "interact/drag.h"
 #include "interact/events.h"
@@ -69,6 +73,37 @@ struct Presentation {
     // the no-silent-changes policy exists to rule out, so the influence is
     // named and the geometry doing it can be pointed at.
     std::vector<EntityId> hiddenInfluences;
+
+    // What the last structure operation did beyond moving geometry.
+    //
+    // Counted rather than confirmed, for the same reason deletion is: a
+    // transform that retargeted four axis relations, or a copy that could not
+    // bring three, has done something the user is entitled to know about without
+    // being asked to approve it. Cleared by the next one, never accumulated.
+    struct StructureReport {
+        size_t moved = 0;
+        size_t retargeted = 0;
+        size_t rescaled = 0;
+        // Absolute dimensions reaching outside what moved. They resist whichever
+        // answer was given, which is correct and is exactly the surprise worth
+        // naming.
+        size_t straddling = 0;
+        size_t copied = 0;
+        // Relations with one operand outside the copied set. They stayed with
+        // the original and the copy is free of them.
+        size_t droppedRelations = 0;
+        size_t droppedRegions = 0;
+        size_t droppedTags = 0;
+        // Set when the operation refused, and why.
+        TransformError transformError = TransformError::None;
+        CompoundError compoundError = CompoundError::None;
+        // The cluster frame a retarget created, so the surface can point at the
+        // construction geometry the cluster now belongs to.
+        EntityId frame;
+
+        void clear() { *this = StructureReport(); }
+    };
+    StructureReport structure;
 
     // Regions and tags that no longer have the parts to mean what they say.
     // Recomputed per refresh from the document, never accumulated: a region is
@@ -405,6 +440,113 @@ public:
     bool groupSelection();
     bool dissolveGroups();
 
+    // -----------------------------------------------------------------------
+    // Structure operations
+    // -----------------------------------------------------------------------
+
+    // The centre a transform turns or scales about: the midpoint of what the
+    // selection's points span.
+    //
+    // The selection's own centre and never the cursor, because a transform is a
+    // typed operation rather than a gesture — the number came from the digits,
+    // and a centre that came from wherever the pointer happened to be would make
+    // the same numbers do different things. A user wanting another centre puts a
+    // construction point there and includes it.
+    std::optional<Point> transformCentre() const;
+
+    // What a rotation would do to the selection, without doing any of it.
+    //
+    // The axis-constraint question is asked once, with preview, which is what
+    // this is: both answers, evaluated against a copy, so the surface can show
+    // what retargeting buys before the user commits to it. The document is
+    // untouched — an imposition preview forks a context because a candidate has
+    // no records, and a transform has to copy the document because it does,
+    // which is the same exception a checked imposition already takes.
+    struct TransformPreview {
+        TransformError error = TransformError::None;
+        size_t moved = 0;
+        // Axis-referenced relations the rotation would make a question of. Zero
+        // means there is no question, so the surface asks nothing.
+        size_t axisConstraints = 0;
+        // Absolute dimensions the scale would rewrite, and those that straddle
+        // the boundary and will resist whichever answer is given.
+        size_t absoluteDimensions = 0;
+        size_t straddling = 0;
+        // What the drawing does afterwards. A kept-axes rotation of an
+        // axis-constrained cluster does not converge to the rotated pose — that
+        // is the resistance, and showing it is how the question is answered
+        // honestly rather than by describing it in a dialog.
+        SolveStatus status = SolveStatus::Unsolved;
+        int dof = -1;
+        // How far the geometry ends up from where the transform put it, in
+        // document units, worst case over the moved points. Zero for a rotation
+        // that met no resistance; the resistance itself when it did.
+        double residual = 0.0;
+
+        bool ok() const { return error == TransformError::None; }
+    };
+
+    TransformPreview previewRotate(double degrees, AxisAnswer axes) const;
+    TransformPreview previewScale(double factor, ValueAnswer values) const;
+
+    // Rotates the selection about its centre. Exact: seeds are rewritten by the
+    // rotation and nothing is routed through a solve to get there, which is what
+    // makes the internal residuals of a rigid cluster still zero afterwards.
+    bool rotateSelection(double degrees, AxisAnswer axes);
+
+    // Scales the selection uniformly about its centre.
+    bool scaleSelection(double factor, ValueAnswer values);
+
+    // Refuses, and says so. Non-uniform scale does not commute with almost any
+    // relation in the catalogue, so the model does not have it; it remains
+    // available at the export bake. Present as an action because an operation
+    // that is missing teaches the user that the tool forgot, while one that
+    // refuses teaches them what the document is.
+    bool scaleSelectionNonUniform(double factorX, double factorY);
+
+    // Duplicates the selection, offset, and leaves the copy selected.
+    //
+    // Internal relations come along on fresh IDs; ones reaching outside are
+    // dropped and counted. A second invocation offsets from the copy, which is
+    // what makes this the seed of arrays and patterns rather than a one-shot.
+    bool duplicateSelection(double dx, double dy);
+
+    // Distributes the selected points evenly, as primitives plus a tag.
+    bool distributeSelection();
+
+    // Mirrors the selection about the one segment in it, as a copy plus
+    // symmetric relations plus a tag.
+    bool mirrorSelection();
+
+    // Removes the tags over the selection, leaving every primitive.
+    //
+    // The user-facing half of graceful dissolution: a tag can be given up
+    // deliberately as well as broken by an edit, and either way nothing is lost
+    // because the tag never owned anything.
+    bool dissolveTags();
+
+    // The tags the selection reaches, in ID order. A tag has no handle of its
+    // own — it is reached through the geometry it names, exactly as a region is.
+    std::vector<TagId> selectedTags() const;
+
+    // The rectangle panels the selection is showing: one per whole rectangle tag
+    // it reaches, with the width and height those handles are on.
+    struct RectanglePanel {
+        TagId tag;
+        RectangleSize size;
+    };
+    std::vector<RectanglePanel> rectanglePanels() const;
+
+    // Sets a tagged rectangle's width or height.
+    //
+    // Drives the underlying slot when the side is dimensioned — a value edit,
+    // which is one of the two things PRINCIPLES allows to move the drawing — and
+    // imposes the dimension at that value when it is not. So the panel and the
+    // handle end at the same place: a rectangle the user has sized by typing is
+    // one whose handle then drives the number rather than fighting it.
+    bool setRectangleWidth(TagId tag, double width);
+    bool setRectangleHeight(TagId tag, double height);
+
     // Flattens the visible drawing for export. The one destructive path in the
     // tool, and it leads out: nothing is written back, and there is no
     // in-document bake.
@@ -452,6 +594,20 @@ public:
     void setRecorder(ScriptRecorder *recorder) { recorder_ = recorder; }
 
 private:
+    // Applies a structure step and reports what it did beyond moving geometry.
+    // One place per family, because rotate, scale and translate owe the user the
+    // same report and a second copy of it is a report that drifts.
+    bool applyTransform(const TransformStep &step, const char *label);
+    bool applyCompound(const CompoundStep &step, const char *label);
+    bool setRectangleSide(TagId tag, bool width, double value);
+
+    // Appends the value rewrites a handle drag owes its suppressed dimensions,
+    // to whatever step is about to be journalled. Called from both places a drag
+    // can end — the pointer release and the numeric twin — because a rewrite
+    // that reached only one of them is a typed value silently undone by the next
+    // solve.
+    void appendHandleRewrites(std::vector<Command> &commit);
+
     // Writes an Action step, for the edits that have no other recording
     // surface behind them.
     //
@@ -610,6 +766,10 @@ private:
     // The measurements the drag in flight is adjusting, recomputed each frame
     // because a drag changes what they read. The numeric target indexes this.
     std::vector<DragDimension> dragDimensions_;
+    // The dimensions the drag in flight is driving rather than fighting: a
+    // tagged rectangle's width and height, when its corner is the grab. Empty
+    // for every other drag, which is every drag that is not a handle.
+    std::vector<ConstraintId> handleDimensions_;
     // Named storage for the strip's field labels: ToolParameter holds a bare
     // pointer, so the strings it points at have to outlive the frame.
     std::vector<std::string> dragLabels_;

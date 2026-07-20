@@ -48,6 +48,11 @@ class SketchView : public QQuickPaintedItem {
     // to enclose what it still says it encloses.
     Q_PROPERTY(int hiddenInfluences READ hiddenInfluences NOTIFY changed)
     Q_PROPERTY(int brokenRegions READ brokenRegions NOTIFY changed)
+    // And the third: a tag that no longer has the parts to mean what it means.
+    // Separate from brokenRegions because the two degrade differently — a
+    // region still declares an area it cannot bound, while a tag only ever
+    // offered affordances and has stopped.
+    Q_PROPERTY(int brokenTags READ brokenTags NOTIFY changed)
 
 public:
     explicit SketchView(QQuickItem *parent = nullptr);
@@ -63,6 +68,7 @@ public:
     QVariantList layers() const;
     int hiddenInfluences() const;
     int brokenRegions() const;
+    int brokenTags() const;
 
     // The whole catalogue, filtered. Inapplicable entries come back marked
     // rather than missing, because a command that vanishes is a command the
@@ -93,6 +99,12 @@ public:
     Q_INVOKABLE void redo();
     Q_INVOKABLE void deleteSelection();
     Q_INVOKABLE void resetView();
+
+    // The rectangle panel, one entry per whole rectangle tag the selection
+    // names: its tag id, width and height, and whether each side is driven.
+    // What the handles are showing, read from the same place they are drawn
+    // from, so the number in the field and the corner on screen cannot disagree.
+    Q_INVOKABLE QVariantList rectangles() const;
 
 signals:
     void changed();

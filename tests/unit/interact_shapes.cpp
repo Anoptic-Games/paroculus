@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "core/persist.h"
+#include "core/tags.h"
 #include "interact/script.h"
 #include "interact/session.h"
 #include "solve/solve.h"
@@ -135,7 +136,11 @@ TEST_CASE("a rectangle corner opens when its coincidence is deleted") {
         }
     }
     REQUIRE(join.valid());
-    REQUIRE(s.journal.applyStep(s.doc, "open", RemoveRecord<ConstraintRecord>{join}) ==
+    // Through deletionStep, because the tag names this relation and a bare
+    // removal would leave it dangling — which the model refuses. The step
+    // shrinks the tag and takes the relation, in that order.
+    const ConstraintId doomed[] = {join};
+    REQUIRE(s.journal.applyStep(s.doc, "open", deletionStep(s.doc, doomed)) ==
             CommandError::None);
     s.session->refresh();
 
@@ -144,6 +149,68 @@ TEST_CASE("a rectangle corner opens when its coincidence is deleted") {
     CHECK(s.count(ConstraintKind::Coincident) == 3);
     // And two more degrees of freedom appeared where the corner opened.
     CHECK(s.session->presentation().dof == 6);
+
+    // The tag is still here and offering nothing. It owned none of the above,
+    // so opening the corner cost the user the affordances and not a primitive.
+    REQUIRE(s.doc.tags().size() == 1);
+    const TagRecord &tag = s.doc.tags().records().front();
+    CHECK(tagState(s.doc, tag) == TagState::Broken);
+    CHECK(!rectangleFrame(s.doc, tag).has_value());
+    CHECK(tag.entities.size() == 4);
+}
+
+TEST_CASE("a rectangle arrives tagged, and the tag resolves to its affordances") {
+    Sketch s(ToolKind::Rectangle);
+    s.click(Point{-60.0, -40.0});
+    s.click(Point{60.0, 40.0});
+
+    REQUIRE(s.doc.tags().size() == 1);
+    const TagRecord &tag = s.doc.tags().records().front();
+    CHECK(tag.kind == TagKind::Rectangle);
+    // Four edges and the eight relations that square them. Not the corner
+    // points: they are reached through the edges, and naming them would make the
+    // tag's own bookkeeping the thing that decides when a rectangle is a
+    // rectangle.
+    CHECK(tag.entities.size() == 4);
+    CHECK(tag.constraints.size() == 8);
+    CHECK(tagState(s.doc, tag) == TagState::Whole);
+
+    const std::optional<RectangleFrame> frame = rectangleFrame(s.doc, tag);
+    REQUIRE(frame.has_value());
+    CHECK(frame->widthEdge.valid());
+    CHECK(frame->heightEdge.valid());
+    CHECK(frame->widthEdge != frame->heightEdge);
+
+    const Pose pose = s.session->pose();
+    const std::optional<std::array<Point, 4>> handles = rectangleHandles(pose, *frame);
+    REQUIRE(handles.has_value());
+    // One handle per corner, and the ring is the ring: consecutive handles differ
+    // in exactly one coordinate, because consecutive edges are axis constrained.
+    for(size_t i = 0; i < 4; i++) {
+        const Point a = (*handles)[i];
+        const Point b = (*handles)[(i + 1) % 4];
+        CHECK((std::abs(a.x - b.x) < 1e-9) != (std::abs(a.y - b.y) < 1e-9));
+    }
+
+    const std::optional<RectangleSize> size = rectangleSize(s.doc, pose, *frame);
+    REQUIRE(size.has_value());
+    CHECK(size->width == doctest::Approx(120.0));
+    CHECK(size->height == doctest::Approx(80.0));
+    // Undimensioned, so the handle moves geometry the ordinary way and a number
+    // typed into the panel imposes the dimension the handle then drives.
+    CHECK(!size->widthDimension.valid());
+    CHECK(!size->heightDimension.valid());
+}
+
+TEST_CASE("undo takes the rectangle's tag back with its geometry") {
+    Sketch s(ToolKind::Rectangle);
+    s.click(Point{-60.0, -40.0});
+    s.click(Point{60.0, 40.0});
+    REQUIRE(s.doc.tags().size() == 1);
+
+    s.session->handle(Key::Undo);
+    CHECK(s.doc.tags().size() == 0);
+    CHECK(s.doc.entities().size() == 0);
 }
 
 TEST_CASE("a degenerate rectangle is refused") {

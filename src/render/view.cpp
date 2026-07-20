@@ -2,6 +2,7 @@
 
 #include "core/composition.h"
 #include "core/measure.h"
+#include "core/tags.h"
 #include "render/typeface.h"
 
 #include "core/SkBitmap.h"
@@ -66,6 +67,12 @@ constexpr SkColor FILL_SELECTED = SkColorSetARGB(0x4c, 0xff, 0xa8, 0x5c);
 // the fill the user asked for is still declared, and one undo has it back.
 constexpr SkColor BROKEN = SkColorSetARGB(0xcc, 0xff, 0x8c, 0x42);
 constexpr float BROKEN_STROKE = 3.5f;
+
+// A tag's handles. Larger than a vertex and hollow, so the affordance the tag
+// supplies reads as an affordance rather than as the point beneath it.
+constexpr SkColor HANDLE = SkColorSetARGB(0xff, 0x2f, 0x6f, 0xd0);
+constexpr float HANDLE_RADIUS = 5.5f;
+constexpr float HANDLE_STROKE = 1.5f;
 
 // Walks a region's boundary into a closed path, in pixels.
 //
@@ -634,6 +641,54 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
                           contains(adornment.selected, e.id) ? SELECTED_POINT_RADIUS
                                                              : POINT_RADIUS,
                           dot);
+    }
+
+    // Tag affordances, above the vertices, because a handle is an adorner over
+    // an adorner: the corner it sits on is already a draggable point, and what
+    // the handle adds is that this point is a corner of something.
+    //
+    // Square rather than round, and hollow rather than filled, so a rectangle
+    // handle is distinguishable at a glance from the vertex underneath it — the
+    // affordance is the tag's, and mistaking it for the point would be mistaking
+    // a resize for a drag.
+    {
+        SkPaint handle;
+        handle.setAntiAlias(true);
+        handle.setStyle(SkPaint::kStroke_Style);
+        handle.setStrokeWidth(HANDLE_STROKE);
+        for(TagId id : adornment.handledTags) {
+            const std::optional<RectangleFrame> frame = rectangleFrame(pose.document(), id);
+            if(!frame) continue;
+            const std::optional<std::array<Point, 4>> corners = rectangleHandles(pose, *frame);
+            if(!corners) continue;
+            handle.setColor(HANDLE);
+            for(const Point &corner : *corners) {
+                const SkPoint p = toPixel(corner);
+                canvas.drawRect(SkRect::MakeLTRB(p.x() - HANDLE_RADIUS, p.y() - HANDLE_RADIUS,
+                                                 p.x() + HANDLE_RADIUS, p.y() + HANDLE_RADIUS),
+                                handle);
+            }
+        }
+
+        // And the degradation. A broken tag costs the user the affordances and
+        // nothing else — every primitive is untouched — so the diagnostic marks
+        // what the tag still names rather than covering the geometry: the user
+        // sees which rectangle stopped being one, and one undo puts it back.
+        handle.setColor(BROKEN);
+        for(TagId id : brokenTags(pose.document())) {
+            const TagRecord *tag = pose.document().tags().find(id);
+            if(tag == nullptr) continue;
+            for(EntityId e : tag->entities) {
+                const EntityRecord *record = pose.document().entities().find(e);
+                if(record == nullptr || !layerVisible(pose.document(), record->layer)) continue;
+                if(const auto ends = pose.segment(e)) {
+                    const SkPoint middle =
+                        toPixel(Point{0.5 * (ends->first.x + ends->second.x),
+                                      0.5 * (ends->first.y + ends->second.y)});
+                    canvas.drawCircle(middle, HANDLE_RADIUS, handle);
+                }
+            }
+        }
     }
 
     // One arc tessellation for both ghosts, the previewed relation's and the

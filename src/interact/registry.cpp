@@ -236,6 +236,98 @@ bool haveComposite(const ActionContext &c, const Action &) { return c.selectedCo
 bool haveGroupable(const ActionContext &c, const Action &) { return c.selection.size() > 1; }
 bool haveGroup(const ActionContext &c, const Action &) { return c.groupedSelection; }
 
+// ---------------------------------------------------------------------------
+// Structure operations
+// ---------------------------------------------------------------------------
+
+// Degrees for a rotation, and whether to retarget the axis constraints. Both
+// optional: an invocation with neither is a zero-degree rotation keeping the
+// document axes, which is a no-op rather than an error, and a surface that
+// prompts for the angle is supplying it either way.
+constexpr ActionParameter ROTATE_PARAMETERS[] = {{"degrees", true}, {"retarget", false}};
+// The factor, and which answer the absolute dimensions get.
+constexpr ActionParameter SCALE_PARAMETERS[] = {{"factor", true}, {"scale-values", false}};
+constexpr ActionParameter NON_UNIFORM_PARAMETERS[] = {{"x", true}, {"y", true}};
+constexpr ActionParameter OFFSET_PARAMETERS[] = {{"dx", false}, {"dy", false}};
+// Which rectangle, and what to set the side to. The tag is named rather than
+// inferred because a selection can reach two of them, and picking one would be
+// the silent choice the surface exists to prevent.
+constexpr ActionParameter SIDE_PARAMETERS[] = {{"tag", true}, {"value", true}};
+
+bool haveTransformable(const ActionContext &c, const Action &) { return c.transformable > 0; }
+
+// Never applicable, and present anyway.
+//
+// Non-uniform scale does not commute with almost any relation in the catalogue,
+// so the model does not have it. The permanent surfaces dim what does not apply
+// rather than hiding it, and this is the one row that is dimmed always: a user
+// who looks for non-uniform scale finds it, greyed, saying where it does live —
+// the export bake — instead of concluding the tool forgot. An action that
+// claimed to apply and then refused would break the property that an applicable
+// action runs, which is what makes the whole table trustworthy.
+bool never(const ActionContext &, const Action &) { return false; }
+
+bool doRotate(Session &session, const Action &, const ActionArguments &args) {
+    const std::optional<double> degrees = args.value("degrees");
+    if(!degrees) return false;
+    // Absent is keep-the-document-axes, which is the answer that changes no
+    // relation. A default that retargeted would edit constraints the caller
+    // never mentioned.
+    const bool retarget = args.value("retarget").value_or(0.0) != 0.0;
+    return session.rotateSelection(*degrees, retarget ? AxisAnswer::RetargetToClusterFrame
+                                                      : AxisAnswer::KeepDocumentAxes);
+}
+
+bool doScale(Session &session, const Action &, const ActionArguments &args) {
+    const std::optional<double> factor = args.value("factor");
+    if(!factor) return false;
+    // Absent is let-them-resist, for the same reason: the answer that rewrites
+    // nothing is the one a caller who said nothing gets.
+    const bool scaleValues = args.value("scale-values").value_or(0.0) != 0.0;
+    return session.scaleSelection(*factor, scaleValues ? ValueAnswer::ScaleTheValues
+                                                       : ValueAnswer::LetThemResist);
+}
+
+bool doScaleNonUniform(Session &session, const Action &, const ActionArguments &args) {
+    const std::optional<double> x = args.value("x");
+    const std::optional<double> y = args.value("y");
+    if(!x || !y) return false;
+    return session.scaleSelectionNonUniform(*x, *y);
+}
+
+bool doDuplicate(Session &session, const Action &, const ActionArguments &args) {
+    return session.duplicateSelection(args.value("dx").value_or(0.0),
+                                      args.value("dy").value_or(0.0));
+}
+
+bool haveDistributable(const ActionContext &c, const Action &) { return c.selectedPoints > 2; }
+bool haveMirrorable(const ActionContext &c, const Action &) { return c.mirrorable; }
+
+bool doDistribute(Session &session, const Action &, const ActionArguments &) {
+    return session.distributeSelection();
+}
+
+bool doMirror(Session &session, const Action &, const ActionArguments &) {
+    return session.mirrorSelection();
+}
+
+bool haveTags(const ActionContext &c, const Action &) { return c.selectedTags > 0; }
+bool haveRectangleTag(const ActionContext &c, const Action &) { return c.rectangleTags > 0; }
+
+bool doDissolveTags(Session &session, const Action &, const ActionArguments &) {
+    return session.dissolveTags();
+}
+
+template <bool Width>
+bool doSetSide(Session &session, const Action &, const ActionArguments &args) {
+    const std::optional<double> tag = args.value("tag");
+    const std::optional<double> value = args.value("value");
+    if(!tag || !value) return false;
+    const TagId id(static_cast<uint32_t>(*tag));
+    return Width ? session.setRectangleWidth(id, *value)
+                 : session.setRectangleHeight(id, *value);
+}
+
 // A title a surface can show, derived rather than stored: "point-on-line"
 // becomes "Point on line". The taxonomy's name is a serialization token and
 // therefore format; a title is presentation and free to change, so deriving one
@@ -350,6 +442,33 @@ const Catalogue &catalogue() {
             {"region.punch", "Punch through", {}, {}, haveRegions, doPunch},
             {"region.raise", "Raise", {}, {}, haveRegions, doMoveRegion<1>},
             {"region.lower", "Lower", {}, {}, haveRegions, doMoveRegion<-1>},
+
+            // Structure operations. Every one of them is a typed operation
+            // rather than a gesture — the numbers come from the digits, and the
+            // centre from the selection — which is why they take parameters and
+            // carry no bindings: a key that rotated by some remembered amount
+            // would be a key whose effect the user cannot read off the keyboard.
+            {"transform.rotate", "Rotate", {}, ROTATE_PARAMETERS, haveTransformable, doRotate},
+            {"transform.scale", "Scale", {}, SCALE_PARAMETERS, haveTransformable, doScale},
+            // Listed, permanently dimmed. See `never`.
+            {"transform.scale-non-uniform", "Scale non-uniformly (export only)", {},
+             NON_UNIFORM_PARAMETERS, never, doScaleNonUniform},
+            {"edit.duplicate", "Duplicate", {}, OFFSET_PARAMETERS, haveTransformable,
+             doDuplicate},
+
+            // Compound relations: primitives plus a tag, never a new kind.
+            {"relation.distribute", "Distribute evenly", {}, {}, haveDistributable,
+             doDistribute},
+            {"relation.mirror", "Mirror", {}, {}, haveMirrorable, doMirror},
+
+            // The tag surface. Dissolving is the deliberate half of graceful
+            // dissolution, and the width and height fields are the rectangle
+            // panel — the same slots its corner handles drive.
+            {"tag.dissolve", "Dissolve tag", {}, {}, haveTags, doDissolveTags},
+            {"tag.set-width", "Set width", {}, SIDE_PARAMETERS, haveRectangleTag,
+             doSetSide<true>},
+            {"tag.set-height", "Set height", {}, SIDE_PARAMETERS, haveRectangleTag,
+             doSetSide<false>},
 
             // The only destructive path in the tool, and it leads out of it.
             {"export.bake", "Bake for export", {}, {}, always, doBake},
@@ -518,6 +637,37 @@ ActionContext contextOf(const Session &session) {
                 break;
             }
         }
+    }
+
+    // The transform questions, asked of the same functions the transforms
+    // themselves ask. An applicability predicate that computed its own answer is
+    // a surface that can offer what the model refuses, which is the one thing
+    // this table exists to make impossible.
+    const std::vector<EntityId> moved = transformClosure(session.document(), c.selection);
+    for(EntityId id : moved) {
+        const EntityRecord *e = session.document().entities().find(id);
+        if(e != nullptr && entityInfo(e->kind).ownParamCount > 0) c.transformable++;
+        if(e != nullptr && e->kind == EntityKind::Point && session.selection().contains(id)) {
+            c.selectedPoints++;
+        }
+    }
+    c.axisConstraints = axisReferencedIn(session.document(), moved).size();
+    c.absoluteDimensions = absoluteValuedIn(session.document(), moved).size();
+
+    const EntityId axis = mirrorAxisIn(session.document(), c.selection);
+    if(axis.valid()) {
+        const EntityRecord *a = session.document().entities().find(axis);
+        for(EntityId id : c.selection) {
+            if(id == axis) continue;
+            if(a != nullptr && (id == a->points[0] || id == a->points[1])) continue;
+            c.mirrorable = true;
+            break;
+        }
+    }
+
+    for(TagId id : session.selectedTags()) {
+        c.selectedTags++;
+        if(rectangleFrame(session.document(), id)) c.rectangleTags++;
     }
     return c;
 }
