@@ -43,6 +43,19 @@ constexpr bool constraintTableIsWellFormed() {
         if(c.valueArity > 1) return false;
         if(c.name.empty()) return false;
         if(c.solverValueScale == 0.0) return false;
+        // Order sensitivity is a question about two slots that accept the same
+        // thing. A kind whose required operands are all of different kinds has
+        // its roles assigned by type, so claiming the question exists there
+        // would send the surface asking something it cannot ask.
+        if(c.orderSensitive) {
+            bool interchangeable = false;
+            for(size_t i = 0; i < c.operandCount && !interchangeable; i++) {
+                for(size_t j = i + 1; j < c.operandCount; j++) {
+                    if(c.operands[i] == c.operands[j]) interchangeable = true;
+                }
+            }
+            if(!interchangeable) return false;
+        }
     }
     return true;
 }
@@ -66,6 +79,15 @@ std::optional<ConstraintKind> constraintKindFromName(std::string_view name) {
         if(c.name == name) return c.kind;
     }
     return std::nullopt;
+}
+
+std::string_view strengthName(Strength s) {
+    switch(s) {
+        case Strength::Measure:   return "measure";
+        case Strength::Impose:    return "impose";
+        case Strength::Reference: return "reference";
+    }
+    return "impose";
 }
 
 bool signatureMatches(ConstraintKind k, std::span<const EntityKind> kinds) {

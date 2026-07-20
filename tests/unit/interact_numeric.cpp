@@ -4,6 +4,7 @@
 
 #include "core/persist.h"
 #include "interact/script.h"
+#include "interact/registry.h"
 #include "interact/session.h"
 #include "support/build.h"
 
@@ -627,4 +628,169 @@ TEST_CASE("a typed space survives the round trip") {
         if(step.kind == ScriptStep::Kind::Type && step.character == ' ') sawSpace = true;
     }
     CHECK(sawSpace);
+}
+
+// ---------------------------------------------------------------------------
+// The numeric twin of a drag
+// ---------------------------------------------------------------------------
+//
+// Stage 4 built the twin a creation tool has: place, type, enter. Typing during
+// a drag of geometry that already exists waited for this stage, because "the
+// length under adjustment" is ambiguous the moment a vertex belongs to more
+// than one segment and prose cannot resolve it — the strip has to.
+
+namespace {
+
+// A vertex shared by two segments of different lengths, so "the length under
+// adjustment" is a real question rather than a rhetorical one.
+struct Corner {
+    Document doc;
+    UndoJournal journal;
+    std::unique_ptr<Session> session;
+    EntityId shared, alongX, alongY, first, second;
+
+    Corner() {
+        shared = paroculus::test::addPoint(doc, 0.0, 0.0);
+        alongX = paroculus::test::addPoint(doc, 60.0, 0.0);
+        alongY = paroculus::test::addPoint(doc, 0.0, 40.0);
+        first = paroculus::test::addSegment(doc, shared, alongX);
+        second = paroculus::test::addSegment(doc, shared, alongY);
+        session = std::make_unique<Session>(doc, journal);
+        session->setViewport(entryViewport());
+    }
+
+    void grab(EntityId id) {
+        const ViewTransform &view = session->viewport().view;
+        const Eigen::Vector2d at = view.toScreen(*session->pose().point(id));
+        session->select({id});
+        session->handle(PointerEvent::at(PointerAction::Press, at, view, Button::Left));
+        // Far enough to pass the drag threshold, so a drag is genuinely running.
+        session->handle(PointerEvent::at(PointerAction::Move,
+                                         at + Eigen::Vector2d(25.0, 0.0), view, Button::Left));
+    }
+    void type(const char *text) {
+        for(const char *c = text; *c != 0; c++) session->type(*c);
+    }
+};
+
+}  // namespace
+
+TEST_CASE("a drag offers every measurement it is adjusting") {
+    Corner c;
+    c.grab(c.alongX);
+
+    // One dimension per segment the grabbed point ends. Which one the user
+    // meant is the question, and the strip is where it is asked.
+    REQUIRE(c.session->presentation().dragging);
+    const std::vector<ToolParameter> &fields = c.session->presentation().toolParameters;
+    REQUIRE(fields.size() == 1);  // alongX ends only the first segment
+
+    // The shared corner ends both, so dragging it offers both.
+    c.session->handle(PointerEvent::at(PointerAction::Release,
+                                       c.session->viewport().view.toScreen(
+                                           *c.session->pose().point(c.alongX)),
+                                       c.session->viewport().view, Button::Left));
+    Corner d;
+    d.grab(d.shared);
+    CHECK(d.session->presentation().toolParameters.size() == 2);
+}
+
+TEST_CASE("typing during a drag lands the geometry on the number exactly") {
+    Corner c;
+    c.grab(c.alongX);
+    c.type("100");
+    REQUIRE(c.session->presentation().numericActive);
+
+    c.session->numericResolve(false);
+
+    // Exactly, not nearly: the reason the entrance exists is that a drag cannot
+    // land on a number.
+    const Point a = *c.session->pose().point(c.shared);
+    const Point b = *c.session->pose().point(c.alongX);
+    CHECK(std::hypot(b.x - a.x, b.y - a.y) == doctest::Approx(100.0).epsilon(1e-9));
+
+    // Enter finished the gesture, and nothing was recorded — a resolved drag
+    // moves geometry, it does not declare anything.
+    CHECK_FALSE(c.session->presentation().dragging);
+    CHECK(c.doc.constraints().records().empty());
+    CHECK(c.session->canUndo());
+}
+
+TEST_CASE("tab picks which length the digits are about") {
+    Corner c;
+    c.grab(c.shared);
+    REQUIRE(c.session->presentation().toolParameters.size() == 2);
+
+    // Second field, so the digits land on the other segment's length.
+    c.session->numericAdvance();
+    c.session->numericAdvance();
+    REQUIRE(c.session->presentation().numericTarget == 1);
+    c.type("25");
+    c.session->numericResolve(false);
+
+    const Point shared = *c.session->pose().point(c.shared);
+    const Point x = *c.session->pose().point(c.alongX);
+    const Point y = *c.session->pose().point(c.alongY);
+    const double toX = std::hypot(x.x - shared.x, x.y - shared.y);
+    const double toY = std::hypot(y.x - shared.x, y.y - shared.y);
+    // Whichever field index 1 named got the value; the point is that one of
+    // them is exactly 25 and the machinery chose deterministically.
+    CHECK(std::min(std::fabs(toX - 25.0), std::fabs(toY - 25.0)) < 1e-9);
+}
+
+TEST_CASE("shift+enter during a drag imposes the value as a dimension") {
+    Corner c;
+    c.grab(c.alongX);
+    c.type("75");
+    c.session->numericResolve(true);
+
+    // The geometry landed on it and the value was pinned, in one undo step —
+    // which is why no imposition outlives the gesture that asked for it.
+    REQUIRE(c.doc.constraints().records().size() == 1);
+    const ConstraintRecord &r = c.doc.constraints().records().front();
+    CHECK(r.kind == ConstraintKind::PointPointDistance);
+    CHECK(r.driving);
+    CHECK(c.doc.evaluate(r.value).value_or(0.0) == doctest::Approx(75.0));
+
+    REQUIRE(invokeAction(*c.session, "edit.undo"));
+    CHECK(c.doc.constraints().records().empty());
+}
+
+TEST_CASE("a value the constraints cannot reach leaves the pose alone") {
+    // A drag that cannot reach a number is saturation, not a licence to move
+    // somewhere else. SolveSpace leaves parameters at the seeds it was handed,
+    // so an unguarded read of a refused solve looks like a perfect landing.
+    Corner c;
+    paroculus::test::addConstraint(c.doc, ConstraintKind::PointPointDistance,
+                                   {c.shared, c.alongX}, Slot(60.0));
+    c.session->refresh();
+    c.grab(c.alongX);
+
+    const Point before = *c.session->pose().point(c.alongX);
+    c.type("500");
+    c.session->numericResolve(false);
+
+    const Point after = *c.session->pose().point(c.alongX);
+    CHECK(std::hypot(after.x - before.x, after.y - before.y) < 1e-9);
+    // Still dragging, field still open: the user can try another number.
+    CHECK(c.session->presentation().dragging);
+}
+
+TEST_CASE("digits open a field during a drag, though the tool is Select") {
+    // Keyboard resolution is the registry's, not the shell's — so this is
+    // reachable headlessly, which is exactly how the digits once came to be
+    // unable to open a field while the documentation said they could.
+    Corner c;
+    c.grab(c.alongX);
+
+    ActionContext context = contextOf(*c.session);
+    REQUIRE(context.tool == ToolKind::Select);
+    REQUIRE(context.dragging);
+
+    KeyStroke stroke;
+    stroke.character = '4';
+    stroke.digit = 4;
+    const KeyBinding binding = resolveKey(context, stroke);
+    CHECK(binding.kind == KeyBinding::Kind::Text);
+    CHECK(binding.character == '4');
 }

@@ -14,6 +14,8 @@
 #include <QQuickPaintedItem>
 #include <QString>
 #include <QTimer>
+#include <QVariantList>
+#include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
 #include <memory>
@@ -28,6 +30,15 @@ class SketchView : public QQuickPaintedItem {
     QML_ELEMENT
     Q_PROPERTY(QString status READ status NOTIFY changed)
     Q_PROPERTY(QString selectionText READ selectionText NOTIFY changed)
+    // Under-constraint is the normal state, so this is displayed calmly rather
+    // than as a progress bar or a warning: a free degree of freedom is a thing
+    // the user can still push by hand.
+    Q_PROPERTY(int dof READ dof NOTIFY changed)
+    Q_PROPERTY(QString solveStatus READ solveStatus NOTIFY changed)
+    // The transient strip near the work: what the current selection admits,
+    // ranked. A projection of the registry and nothing else — the shell
+    // decides how an entry looks and never whether it applies.
+    Q_PROPERTY(QVariantList strip READ strip NOTIFY changed)
 
 public:
     explicit SketchView(QQuickItem *parent = nullptr);
@@ -37,6 +48,24 @@ public:
 
     QString status() const;
     QString selectionText() const;
+    int dof() const;
+    QString solveStatus() const;
+    QVariantList strip() const;
+
+    // The whole catalogue, filtered. Inapplicable entries come back marked
+    // rather than missing, because a command that vanishes is a command the
+    // user cannot learn.
+    Q_INVOKABLE QVariantList palette(const QString &query) const;
+
+    // Runs a registered action by name. The one entrance every surface uses:
+    // a surface that called the session directly could offer what the model
+    // would refuse, and the bug would look like a model bug rather than a UI
+    // one.
+    Q_INVOKABLE bool run(const QString &name, const QVariantMap &arguments = {});
+
+    // What imposing the named relation would do, for hover preview. Leaves the
+    // document byte-identical, so a hover storm costs nothing but time.
+    Q_INVOKABLE QString previewOf(const QString &name, int assignment) const;
 
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();

@@ -21,16 +21,19 @@ void Selection::normalise() {
 
 void Selection::clear() {
     items_.clear();
+    constraints_.clear();
     depth_ = 0;
 }
 
 void Selection::set(EntityId id) {
     items_.clear();
+    constraints_.clear();
     if(id.valid()) items_.push_back(id);
     depth_ = 0;
 }
 
 void Selection::set(std::vector<EntityId> ids) {
+    constraints_.clear();
     items_ = std::move(ids);
     items_.erase(std::remove_if(items_.begin(), items_.end(),
                                 [](EntityId id) { return !id.valid(); }),
@@ -60,6 +63,43 @@ void Selection::toggle(EntityId id) {
 
 bool Selection::contains(EntityId id) const {
     return std::binary_search(items_.begin(), items_.end(), id);
+}
+
+// Constraints keep the same discipline geometry does: ID-ordered and free of
+// duplicates, so two selections built by different routes compare alike and a
+// conflict set walked twice reads the same way both times.
+void Selection::setConstraints(std::vector<ConstraintId> ids) {
+    constraints_ = std::move(ids);
+    constraints_.erase(std::remove_if(constraints_.begin(), constraints_.end(),
+                                      [](ConstraintId id) { return !id.valid(); }),
+                       constraints_.end());
+    std::sort(constraints_.begin(), constraints_.end());
+    constraints_.erase(std::unique(constraints_.begin(), constraints_.end()),
+                       constraints_.end());
+}
+
+void Selection::addConstraint(ConstraintId id) {
+    if(!id.valid() || contains(id)) return;
+    constraints_.push_back(id);
+    std::sort(constraints_.begin(), constraints_.end());
+}
+
+void Selection::removeConstraint(ConstraintId id) {
+    constraints_.erase(std::remove(constraints_.begin(), constraints_.end(), id),
+                       constraints_.end());
+}
+
+void Selection::toggleConstraint(ConstraintId id) {
+    if(!id.valid()) return;
+    if(contains(id)) {
+        removeConstraint(id);
+    } else {
+        addConstraint(id);
+    }
+}
+
+bool Selection::contains(ConstraintId id) const {
+    return std::binary_search(constraints_.begin(), constraints_.end(), id);
 }
 
 // Expansion is over shared geometry, not over constraints. Two segments held

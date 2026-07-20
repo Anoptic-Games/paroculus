@@ -58,10 +58,61 @@ bool alreadyDeclared(const Document &doc, const ConstraintRecord &candidate) {
     return false;
 }
 
+// Every driving relation whose operands all sit inside `context`. These are the
+// ones a solve of that context actually carries, and so the only ones that can
+// be disagreeing with the candidate.
+//
+// ID-ordered, because it is walked in order and the resulting conflict set is
+// something the user selects through — a set that reshuffled between two
+// identical asks would be a set nobody could point at.
+std::vector<ConstraintId> relationsIn(const Document &doc, const SolveContext &context) {
+    std::vector<ConstraintId> out;
+    for(const ConstraintRecord &c : doc.constraints().records()) {
+        if(!c.driving) continue;  // a measurement drives nothing and blames nothing
+        const size_t n = boundOperandCount(c);
+        bool inside = true;
+        for(size_t i = 0; i < n && inside; i++) {
+            inside = context.contains(c.operands[i]);
+        }
+        if(inside) out.push_back(c.id);
+    }
+    return out;
+}
+
+// Which existing relations the candidate disagrees with.
+//
+// The counterfactual: suppress one relation, add the candidate, and see whether
+// the system becomes solvable. Every relation that buys solvability is one the
+// candidate contradicts. Asking the solver directly does not work — it reports
+// the set to remove to make the system solvable, and the candidate is always in
+// it, which names the question rather than the answer.
+//
+// A conflict needing two suppressions at once reports nothing and leaves
+// `attributed` false. That is honest: naming one of the pair would send the
+// user to delete a relation that is not sufficient, and enumerating pairs is
+// quadratic in a walk that is already linear in solves.
+std::vector<ConstraintId> walkConflicts(const Document &doc, const SolveContext &baseline,
+                                        const ConstraintRecord &driving,
+                                        const std::vector<ConstraintId> &relations,
+                                        bool &attributed) {
+    std::vector<ConstraintId> out;
+    for(ConstraintId id : relations) {
+        SolveContext trial = baseline;
+        SolveOptions options;
+        options.diagnoseFailures = false;
+        options.extra.push_back(driving);
+        options.suppressed.push_back(id);
+        if(solve(doc, trial, options).ok()) out.push_back(id);
+    }
+    attributed = true;
+    return out;
+}
+
 }  // namespace
 
 CandidateCheck checkCandidate(const Document &doc, const Topology &topology,
-                              const ConstraintRecord &candidate) {
+                              const ConstraintRecord &candidate,
+                              const DiagnoseOptions &diagnose) {
     CandidateCheck check;
 
     // The taxonomy answers first. An action the model would refuse gets one
@@ -109,18 +160,30 @@ CandidateCheck checkCandidate(const Document &doc, const Topology &topology,
         case SolveStatus::RedundantOkay:
             check.verdict = CandidateVerdict::Redundant;
             break;
-        case SolveStatus::Inconsistent:
+        case SolveStatus::Inconsistent: {
             check.verdict = CandidateVerdict::Inconsistent;
             // What it conflicts with, never itself. The candidate rides in as
             // an extra and is reported among the failures like any other, and
             // its id is usually null because nothing has allocated one yet — so
-            // stage 5 would highlight a constraint that does not exist.
+            // highlighting the solver's set unfiltered would point at a
+            // constraint that does not exist.
             check.conflicting.clear();
             for(ConstraintId id : outcome.failed) {
                 if(id == candidate.id) continue;
                 check.conflicting.push_back(id);
             }
+            // The solver having named something is not the same as its having
+            // attributed the conflict, and in practice it names nothing. The
+            // walk is what turns the verdict into a set the user can select.
+            if(diagnose.conflictWalk) {
+                const std::vector<ConstraintId> relations = relationsIn(doc, before);
+                if(relations.size() <= diagnose.conflictWalkLimit) {
+                    check.conflicting =
+                        walkConflicts(doc, before, driving, relations, check.attributed);
+                }
+            }
             break;
+        }
         default:
             check.verdict = CandidateVerdict::DidNotConverge;
             break;

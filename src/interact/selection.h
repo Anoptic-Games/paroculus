@@ -53,9 +53,27 @@ public:
     void toggle(EntityId id);
 
     bool contains(EntityId id) const;
-    bool empty() const { return items_.empty(); }
+    bool empty() const { return items_.empty() && constraints_.empty(); }
     size_t size() const { return items_.size(); }
     const std::vector<EntityId> &items() const { return items_; }
+
+    // Relations are selectable through their glyphs, by the same machinery
+    // geometry is. That is what makes a conflict set walkable — the failing
+    // constraints become an ordinary selection the user steps through — and
+    // what makes deleting or retoggling a relation use the same path as
+    // deleting geometry rather than a second one kept in agreement.
+    //
+    // Kept in a list of their own rather than mixed into `items_` because the
+    // two are different vocabularies: a signature is the typed multiset of
+    // *geometry*, which is what decides what can be imposed, and a constraint
+    // has no EntityKind to contribute to it. A selection holding both is honest
+    // about holding both.
+    void setConstraints(std::vector<ConstraintId> ids);
+    void addConstraint(ConstraintId id);
+    void removeConstraint(ConstraintId id);
+    void toggleConstraint(ConstraintId id);
+    bool contains(ConstraintId id) const;
+    const std::vector<ConstraintId> &constraints() const { return constraints_; }
 
     // How deep the last descent went. Zero is the home state.
     int depth() const { return depth_; }
@@ -77,6 +95,7 @@ private:
     void normalise();
 
     std::vector<EntityId> items_;
+    std::vector<ConstraintId> constraints_;
     int depth_ = 0;
 };
 

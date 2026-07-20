@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "interact/glyphs.h"
+#include "interact/registry.h"
 #include "interact/session.h"
 #include "support/build.h"
 
@@ -285,4 +286,101 @@ TEST_CASE("a session surfaces marks for what it has drawn") {
     bool anyFresh = false;
     for(const GlyphMark &m : marks) anyFresh = anyFresh || m.fresh;
     CHECK(anyFresh);
+}
+
+TEST_CASE("a mark is picked where it is drawn") {
+    // Placement is shared with render through layOutGlyphs. If hit testing
+    // computed the fan-out separately the two would drift and the user would
+    // click a mark and select nothing — the same failure the pose exists to
+    // rule out, one layer up.
+    Document doc;
+    const EntityId a = paroculus::test::addPoint(doc, -40.0, 0.0);
+    const EntityId b = paroculus::test::addPoint(doc, 40.0, 0.0);
+    const EntityId segment = paroculus::test::addSegment(doc, a, b);
+    const ConstraintId horizontal =
+        paroculus::test::addConstraint(doc, ConstraintKind::Horizontal, {segment});
+
+    UndoJournal journal;
+    Session session(doc, journal);
+    Viewport viewport;
+    viewport.view = glyphView();
+    viewport.width = W;
+    viewport.height = H;
+    session.setViewport(viewport);
+
+    const std::vector<GlyphMark> marks = session.glyphs();
+    REQUIRE(marksOf(marks, horizontal) >= 1);
+
+    const std::vector<Eigen::Vector2d> places = layOutGlyphs(marks, viewport.view);
+    REQUIRE(places.size() == marks.size());
+
+    // Every mark is pickable at exactly the place it was laid out.
+    for(size_t i = 0; i < marks.size(); i++) {
+        const std::optional<GlyphHit> hit = hitGlyph(marks, viewport.view, places[i]);
+        REQUIRE(hit);
+        CHECK(hit->constraint == marks[i].constraint);
+    }
+
+    // And nowhere near it, nothing is picked.
+    CHECK_FALSE(hitGlyph(marks, viewport.view, Eigen::Vector2d(5.0, 5.0)));
+}
+
+TEST_CASE("clicking a mark selects the relation it stands for") {
+    Document doc;
+    const EntityId a = paroculus::test::addPoint(doc, -40.0, 0.0);
+    const EntityId b = paroculus::test::addPoint(doc, 40.0, 0.0);
+    const EntityId segment = paroculus::test::addSegment(doc, a, b);
+    const ConstraintId horizontal =
+        paroculus::test::addConstraint(doc, ConstraintKind::Horizontal, {segment});
+
+    UndoJournal journal;
+    Session session(doc, journal);
+    Viewport viewport;
+    viewport.view = glyphView();
+    viewport.width = W;
+    viewport.height = H;
+    session.setViewport(viewport);
+
+    const std::vector<GlyphMark> marks = session.glyphs();
+    const std::vector<Eigen::Vector2d> places = layOutGlyphs(marks, viewport.view);
+    REQUIRE(!places.empty());
+
+    session.handle(
+        PointerEvent::at(PointerAction::Press, places.front(), viewport.view, Button::Left));
+
+    // The relation is selected, and the geometry is not: the question the user
+    // asked was about the relation.
+    CHECK(session.selection().contains(horizontal));
+    CHECK(session.selection().items().empty());
+
+    // Which makes the driving toggle applicable, so a conflict set is walkable
+    // and a dimension is editable by exactly the machinery geometry uses.
+    CHECK(invokeAction(session, "relation.toggle-driving"));
+    CHECK_FALSE(doc.constraints().find(horizontal)->driving);
+}
+
+TEST_CASE("a mark does not swallow the press that starts a drag") {
+    // Adorners sit above geometry in the priority policy, but a mark sits a few
+    // pixels off the vertex it annotates — well inside that vertex's own hit
+    // radius. A mark that always won would spend the gesture the tool is mostly
+    // used for on the one it is occasionally used for. Nearer wins.
+    Document doc;
+    const EntityId a = paroculus::test::addPoint(doc, -40.0, 0.0);
+    const EntityId b = paroculus::test::addPoint(doc, 40.0, 0.0);
+    const EntityId segment = paroculus::test::addSegment(doc, a, b);
+    paroculus::test::addConstraint(doc, ConstraintKind::Horizontal, {segment});
+
+    UndoJournal journal;
+    Session session(doc, journal);
+    Viewport viewport;
+    viewport.view = glyphView();
+    viewport.width = W;
+    viewport.height = H;
+    session.setViewport(viewport);
+
+    // Dead on the vertex: the geometry wins, and the drag starts.
+    const Eigen::Vector2d onVertex = viewport.view.toScreen(*session.pose().point(b));
+    session.handle(PointerEvent::at(PointerAction::Press, onVertex, viewport.view, Button::Left));
+    CHECK(session.selection().contains(b));
+    CHECK(session.selection().constraints().empty());
 }

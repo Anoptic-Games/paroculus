@@ -178,6 +178,28 @@ std::optional<Hit> hitTest(const Pose &pose, const SpatialIndex &index,
     return hits.front();
 }
 
+std::optional<GlyphHit> hitGlyph(std::span<const GlyphMark> marks, const ViewTransform &view,
+                                 const Eigen::Vector2d &screen, const GlyphLayout &layout) {
+    // Placed through the same function render draws with, so a mark is picked
+    // where it appears. Computing the fan-out again here is exactly how a user
+    // comes to click a mark and select nothing.
+    const std::vector<Eigen::Vector2d> places = layOutGlyphs(marks, view);
+
+    std::optional<GlyphHit> best;
+    for(size_t i = 0; i < marks.size() && i < places.size(); i++) {
+        // A ghost describes a relation that does not exist yet. Picking one
+        // would select an id nothing holds.
+        if(marks[i].ghost) continue;
+        if(!marks[i].constraint.valid()) continue;
+
+        const double distance = (places[i] - screen).norm();
+        if(distance > layout.radius) continue;
+        if(best && best->distance <= distance) continue;
+        best = GlyphHit{marks[i].constraint, marks[i].on, distance};
+    }
+    return best;
+}
+
 std::vector<EntityId> marquee(const Pose &pose, const ViewTransform &view,
                               const Eigen::Vector2d &cornerA, const Eigen::Vector2d &cornerB) {
     const Point a = view.toDocument(cornerA);

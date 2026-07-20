@@ -11,6 +11,7 @@
 
 #include "app/scriptplay.h"
 #include "interact/registry.h"
+#include "interact/surface.h"
 #include "render/view.h"
 #include "solve/demosketch.h"
 
@@ -437,6 +438,97 @@ QString SketchView::status() const {
                     .arg(p.deletedRelations);
     }
     return text;
+}
+
+int SketchView::dof() const { return session_->presentation().dof; }
+
+QString SketchView::solveStatus() const {
+    return QString::fromLatin1(paroculus::statusName(session_->presentation().status));
+}
+
+namespace {
+
+// One surface entry, as QML sees it. A plain map rather than a model type: the
+// list is short, it is rebuilt whenever anything changes, and a model would be
+// a second place for applicability to be decided.
+QVariantMap entryOf(const paroculus::SurfaceEntry &entry) {
+    QVariantMap map;
+    map[QStringLiteral("name")] = QString::fromLatin1(entry.action->name.data(),
+                                                      int(entry.action->name.size()));
+    map[QStringLiteral("title")] = QString::fromStdString(entry.title);
+    map[QStringLiteral("applicable")] = entry.applicable;
+    QVariantMap arguments;
+    for(const auto &[key, value] : entry.arguments.values) {
+        arguments[QString::fromStdString(key)] = value;
+    }
+    map[QStringLiteral("arguments")] = arguments;
+    return map;
+}
+
+}  // namespace
+
+QVariantList SketchView::strip() const {
+    QVariantList out;
+    for(const paroculus::SurfaceEntry &entry : paroculus::stripEntries(*session_)) {
+        out.append(entryOf(entry));
+    }
+    return out;
+}
+
+QVariantList SketchView::palette(const QString &query) const {
+    QVariantList out;
+    const std::string text = query.toStdString();
+    for(const paroculus::SurfaceEntry &entry : paroculus::paletteEntries(*session_, text)) {
+        out.append(entryOf(entry));
+    }
+    return out;
+}
+
+bool SketchView::run(const QString &name, const QVariantMap &arguments) {
+    paroculus::ActionArguments args;
+    for(auto it = arguments.begin(); it != arguments.end(); ++it) {
+        bool ok = false;
+        const double value = it.value().toDouble(&ok);
+        if(ok) args.set(it.key().toStdString(), value);
+    }
+    const bool ran = paroculus::invokeAction(*session_, name.toStdString(), args);
+    // No syncViewport: an action edits the sketch, and the view is not a
+    // function of the sketch. Growing a drawing is not a request to look
+    // somewhere else.
+    update();
+    emit changed();
+    return ran;
+}
+
+QString SketchView::previewOf(const QString &name, int assignment) const {
+    const paroculus::Action *action = paroculus::findAction(name.toStdString());
+    if(action == nullptr || !action->generated || assignment < 0) return {};
+
+    const std::optional<paroculus::ImpositionPreview> preview =
+        session_->previewImposition(action->constraintKind, size_t(assignment));
+    if(!preview) return QStringLiteral("not applicable");
+
+    switch(preview->check.verdict) {
+        case paroculus::CandidateVerdict::Consistent:
+            // Movement-free is the promise, so the exception is what gets said.
+            // The near-parallel snap-shut is the one imposition that moves
+            // geometry, and showing the motion is the whole of why it is
+            // allowed to.
+            return preview->motion <= session_->surfacePolicy().movementTolerance
+                       ? QStringLiteral("holds")
+                       : QStringLiteral("holds · moves %1").arg(preview->motion, 0, 'f', 2);
+        case paroculus::CandidateVerdict::Redundant:
+            // Flagged, not refused: redundancy is where later edits go to die
+            // rather than a fault today.
+            return QStringLiteral("already implied");
+        case paroculus::CandidateVerdict::Inconsistent:
+            return preview->check.attributed && !preview->check.conflicting.empty()
+                       ? QStringLiteral("conflicts with %1")
+                             .arg(preview->check.conflicting.size())
+                       : QStringLiteral("cannot hold");
+        default:
+            return QStringLiteral("cannot hold");
+    }
 }
 
 QString SketchView::selectionText() const {

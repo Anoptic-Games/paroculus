@@ -12,6 +12,9 @@
 // belongs beneath both.
 #pragma once
 
+#include <span>
+#include <vector>
+
 #include "core/geom.h"
 #include "core/ids.h"
 #include "core/taxonomy.h"
@@ -40,5 +43,37 @@ struct GlyphMark {
     // truth, and the truth includes which relations are about to exist.
     bool ghost = false;
 };
+
+// How marks are placed around the geometry they annotate.
+//
+// Pixel quantities, like every other adorner measurement: a glyph is the same
+// size and the same distance from its anchor at every magnification, which is
+// what makes it as pickable when zoomed out as when zoomed in.
+struct GlyphLayout {
+    // How far a mark sits from its anchor, so it never hides the vertex or edge
+    // it is describing.
+    double offset = 9.0;
+    // How far apart successive marks on one anchor fan, in radians.
+    double fanStep = 1.3;
+    double fanStart = -1.0;
+    // How close a click has to come to pick one.
+    double radius = 7.0;
+};
+
+// Where each mark actually sits on screen, in pixels, in the order given.
+//
+// Marks sharing an anchor fan out around it: a vertex with three relations has
+// to read as three, and stacking them would make two of the three invisible and
+// all three unpickable.
+//
+// This lives in core for the same reason the pose does. Render draws marks at
+// these positions and hit testing has to pick them at these positions, and if
+// the two computed the fan-out separately the user would click a mark and
+// select nothing — the same "picks one thing, selects another" failure the pose
+// exists to rule out. Neither layer may include the other, so the arithmetic
+// they share belongs beneath both.
+std::vector<Eigen::Vector2d> layOutGlyphs(std::span<const GlyphMark> marks,
+                                          const ViewTransform &view,
+                                          const GlyphLayout &layout = {});
 
 }  // namespace paroculus

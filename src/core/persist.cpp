@@ -19,6 +19,7 @@ struct DocumentLoader {
     static RecordTable<LayerRecord> &layers(Document &d) { return d.layers_; }
     static RecordTable<GroupRecord> &groups(Document &d) { return d.groups_; }
     static ParameterTable &parameters(Document &d) { return d.parameters_; }
+    static UsageHistory &usage(Document &d) { return d.usage_; }
     static std::vector<std::string> &unknown(Document &d) { return d.unknown_; }
 };
 
@@ -418,6 +419,16 @@ std::string serialize(const Document &doc) {
                " members=" + idList(r.members) + "\n";
     }
 
+    // Which relations this document reaches for. Ancillary and droppable: a
+    // build that deletes these lines opens the same drawing, with the context
+    // strip ranked by taxonomy order alone. Written in taxonomy order and only
+    // for the kinds that have a count, so a document that has imposed nothing
+    // writes no section rather than twenty-two zeroes.
+    for(const auto &[kind, count] : doc.usage().entries()) {
+        out += "usage kind=" + std::string(constraintInfo(kind).name) +
+               " count=" + std::to_string(count) + "\n";
+    }
+
     // Anything a newer version wrote that this build could not read, verbatim
     // and in the order it arrived. Emitted last so the known sections stay
     // stably ordered; a file therefore reaches a byte fixed point after one
@@ -686,6 +697,21 @@ LoadResult deserialize(std::string_view text, Document &out) {
             if(!DocumentLoader::groups(doc).addAt(std::move(r))) {
                 return fail("duplicate group id", lineNumber);
             }
+
+        } else if(f.kind == "usage") {
+            // Ranking history, not a declaration. A malformed line is refused
+            // like any other rather than silently ignored: the section is
+            // droppable, but a file that says something has to say it correctly
+            // or a round trip would not be a round trip.
+            const auto kindText = field(f, "kind");
+            if(!kindText) return fail("usage without a kind", lineNumber);
+            const auto kind = constraintKindFromName(*kindText);
+            if(!kind) return fail("unknown usage kind", lineNumber);
+            const auto countText = field(f, "count");
+            if(!countText) return fail("usage without a count", lineNumber);
+            const auto count = toUint(*countText);
+            if(!count) return fail("malformed usage count", lineNumber);
+            DocumentLoader::usage(doc).set(*kind, *count);
 
         } else {
             // A record kind this build does not know. Kept verbatim rather than

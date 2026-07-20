@@ -39,13 +39,22 @@ struct CandidateCheck {
     // itself, which rides in as an extra and has no ID to highlight. This
     // becomes a selection-like highlight the user can walk, not a modal dialog.
     //
-    // May be empty on an Inconsistent verdict, and often is: SolveSpace tends to
-    // blame the constraint it could not satisfy, which is the candidate, and
-    // says nothing about which of the existing ones it disagrees with. Empty
-    // means the failure could not be attributed more finely than "this
-    // candidate", not that there is no conflict — the verdict is what the
-    // downgrade reads. Attributing it properly is stage 5's conflict walking.
+    // The solver alone leaves this empty more often than not: SolveSpace blames
+    // the constraint it could not satisfy, which is the candidate, and says
+    // nothing about which of the existing ones it disagrees with. So the set is
+    // filled by asking the counterfactual instead — which relation, suppressed,
+    // would let the candidate hold — one solve per relation in the affected
+    // components. See conflictWalk below.
     std::vector<ConstraintId> conflicting;
+
+    // Whether the walk ran to completion. False with an Inconsistent verdict
+    // means the conflict could not be attributed more finely than "this
+    // candidate", not that there is no conflict — the component was larger than
+    // the walk's budget, or no single suppression was enough. The surface has
+    // to be able to tell those apart from "nothing conflicts", because offering
+    // an empty walkable set as though it were the answer is a lie the user
+    // cannot see through.
+    bool attributed = false;
 
     // Degrees of freedom the candidate would consume. Zero with a Consistent
     // verdict is what redundancy looks like from the other side.
@@ -60,6 +69,31 @@ struct CandidateCheck {
     }
 };
 
+// How hard to work at attributing a conflict.
+struct DiagnoseOptions {
+    // Suppress each existing relation in turn and ask whether the candidate can
+    // hold without it. Every relation that says yes is one the candidate
+    // disagrees with, which is exactly the set PRINCIPLES wants selectable and
+    // walkable.
+    //
+    // This is the same counterfactual stage 3's saturation attribution runs, and
+    // it uses the primitive that amendment introduced — SolveOptions::suppressed
+    // — for the same reason: a hard pin only ever names itself, and asking the
+    // solver who it blames only ever names the question.
+    bool conflictWalk = true;
+
+    // How many relations the walk will consider before giving up and reporting
+    // the conflict as unattributable. The walk costs one solve each, and it runs
+    // at a keystroke rather than per frame, so the bound is generous — but it is
+    // a bound, because a component with a thousand relations would otherwise
+    // turn one imposition into a thousand solves.
+    //
+    // Exceeding it leaves `attributed` false rather than reporting a truncated
+    // set, because a partial conflict set read as a whole one sends the user
+    // walking relations that are not the ones disagreeing.
+    size_t conflictWalkLimit = 96;
+};
+
 // Solves the affected components with `candidate` added, and reports what would
 // happen if it were committed.
 //
@@ -67,6 +101,7 @@ struct CandidateCheck {
 // Returns Malformed without solving when the record would be refused anyway,
 // so the action surface gets one answer rather than two failure modes.
 CandidateCheck checkCandidate(const Document &doc, const Topology &topology,
-                              const ConstraintRecord &candidate);
+                              const ConstraintRecord &candidate,
+                              const DiagnoseOptions &options = {});
 
 }  // namespace paroculus

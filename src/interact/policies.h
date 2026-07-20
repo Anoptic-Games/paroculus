@@ -114,6 +114,40 @@ struct GlyphPolicy {
     double proximityWeight = 1.0;
 };
 
+// Action-surface policy.
+//
+// Ranking within the transient strip is contextual; placement of the permanent
+// furniture is not. These numbers govern the first and say nothing about the
+// second — menus and the palette stay in taxonomy order however often a
+// relation is used, because a surface whose slots reshuffle with context is a
+// surface muscle memory cannot hold.
+struct SurfacePolicy {
+    // What one prior use of a kind in this document is worth. Small and linear:
+    // ranking is a nudge that a user can predict and inspect, not a model of
+    // them. No global learned magic.
+    double usageWeight = 1.0;
+    // Beyond which further uses stop counting, so a kind reached for a hundred
+    // times cannot bury one reached for twice. Habit should tilt the list, not
+    // freeze it.
+    double usageCeiling = 12.0;
+
+    // How many offers the strip carries. The rest stay reachable through the
+    // palette, which is the surface that does not rank.
+    size_t stripLimit = 8;
+
+    // How far geometry may move and still count as a movement-free imposition,
+    // in document units. Not a feel number so much as a numerical one: a solver
+    // asked to hold a value it is already holding still walks a Newton step or
+    // two, and the last bits move.
+    double movementTolerance = 1e-6;
+
+    // How near two segments must be to parallel, in degrees, for imposing
+    // parallelism to read as snapping the angle shut rather than as a
+    // reorientation. The one imposition that moves geometry on purpose; this is
+    // where the surface decides to say so.
+    double snapShutDegrees = 8.0;
+};
+
 // Ranks one candidate against another. Higher wins.
 //
 // tier: the candidate's commit tier. correction: how far the placement had to

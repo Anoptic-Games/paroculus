@@ -1,0 +1,21 @@
+paroculus-script 0
+document
+paroculus 0
+watermark entity=1 constraint=1 region=1 tag=1 style=1 layer=1 group=1 parameter=1
+end-document
+viewport width=800 height=600 m=1,-0,0,-1,400,300
+tool name=line
+move screen=280,380
+press screen=280,380 button=left
+move screen=520,379
+press screen=520,379 button=left
+move screen=519,220
+press screen=519,220 button=left
+move screen=280,221
+press screen=280,221 button=left
+move screen=281,379
+press screen=281,379 button=left
+tool name=select
+move screen=400,380
+press screen=400,380 button=left
+action name=region.make-solid

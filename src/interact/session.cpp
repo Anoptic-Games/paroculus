@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "interact/loops.h"
+#include "interact/registry.h"
 #include "interact/script.h"
 
 namespace paroculus {
@@ -227,6 +228,20 @@ std::vector<GlyphMark> Session::glyphs() const {
 
 void Session::type(char c) {
     if(recorder_ != nullptr) recorder_->type(c);
+
+    // A drag of existing geometry has a numeric twin too, and it is the one
+    // PRINCIPLES describes: start dragging a vertex, type 45, Enter. The field
+    // opens on the first measurement the drag is adjusting; Tab picks another,
+    // which is how "the length under adjustment" stops being ambiguous the
+    // moment a vertex belongs to two segments.
+    if(drag_) {
+        if(dragDimensions_.empty()) return;
+        if(!numeric_.active()) numeric_.begin(0);
+        numeric_.type(c);
+        refreshDragPresentation();
+        return;
+    }
+
     if(!tool_ || tool_->parameters().empty()) return;
     if(!numeric_.active()) numeric_.begin(0);
     numeric_.type(c);
@@ -236,6 +251,10 @@ void Session::type(char c) {
 void Session::numericBackspace() {
     if(recorder_ != nullptr) recorder_->numeric(ScriptStep::Kind::NumericBackspace);
     numeric_.backspace();
+    if(drag_) {
+        refreshDragPresentation();
+        return;
+    }
     refreshToolPresentation();
 }
 
@@ -246,6 +265,10 @@ void Session::numericCancel() {
 
 void Session::applyNumericCancel() {
     numeric_.cancel();
+    if(drag_) {
+        refreshDragPresentation();
+        return;
+    }
     refreshToolPresentation();
 }
 
@@ -255,6 +278,18 @@ void Session::numericAdvance() {
 }
 
 void Session::applyNumericAdvance() {
+    // Tab is what disambiguates a drag's measurements, so it cycles the
+    // dimensions rather than a tool's fields whenever one is in flight.
+    if(drag_) {
+        if(dragDimensions_.empty()) return;
+        if(!numeric_.active()) {
+            numeric_.begin(0);
+        } else {
+            numeric_.retarget((numeric_.target() + 1) % dragDimensions_.size());
+        }
+        refreshDragPresentation();
+        return;
+    }
     if(!tool_) return;
     const size_t count = tool_->parameters().size();
     if(count == 0) return;
@@ -275,6 +310,10 @@ void Session::numericResolve(bool impose) {
 }
 
 void Session::applyNumericResolve(bool impose) {
+    if(drag_) {
+        applyDragResolve(impose);
+        return;
+    }
     if(!tool_ || !numeric_.active()) return;
     const std::optional<double> value = numeric_.value();
     if(!value) return;
@@ -489,15 +528,11 @@ bool Session::runTool(ToolOutput output, std::vector<ConstraintId> inferred) {
         presentation_.inferred = std::move(inferred);
         refresh();
 
-        // Did that placement close an outline? Asked after refresh, because the
-        // topology has to see the coincidence the placement just declared
-        // before it can tell a closed run from a nearly closed one.
-        presentation_.closedLoop.clear();
-        if(closureSeed.valid()) {
-            if(const auto boundary = closedBoundaryContaining(*doc_, topology_, closureSeed)) {
-                presentation_.closedLoop = *boundary;
-            }
-        }
+        // Did that placement close an outline, or come near to it? Asked after
+        // refresh, because the topology has to see the coincidence the
+        // placement just declared before it can tell a closed run from a nearly
+        // closed one — which is the whole distinction between the two offers.
+        refreshLoopOffers(closureSeed);
     }
     refreshToolPresentation();
     return landed;
@@ -590,9 +625,39 @@ void Session::handle(const PointerEvent &event) {
                         selection_.items());
             pressed_ = hit ? hit->entity : EntityId();
 
+            // A relation is reachable from its mark, but only when the cursor is
+            // genuinely nearer the mark than the geometry.
+            //
+            // "Adorners over geometry" is the priority policy, and taken as an
+            // unconditional precedence here it is wrong: a mark sits a few
+            // pixels off the vertex it annotates, well inside that vertex's own
+            // hit radius, so a mark that always won would swallow the press that
+            // starts a drag. Dragging is the primary probe for what can still
+            // move; picking a relation is the occasional act. Comparing
+            // distances keeps every mark reachable without spending the gesture
+            // the tool is mostly used for.
+            //
+            // The set asked is the one on screen, so what is pickable is exactly
+            // what is visible: the glyph budget decides both, and a mark the
+            // overlay dropped is not a mark the user is aiming at.
+            const std::vector<GlyphMark> marks = glyphs();
+            const std::optional<GlyphHit> mark =
+                hitGlyph(marks, viewport_.view, event.screen);
+            if(mark && (!hit || mark->distance < hit->distance)) {
+                const bool additive = has(event.modifiers, Modifier::Shift);
+                // Geometry goes first, then the relation — Selection::set
+                // clears both lists, so selecting the relation before clearing
+                // the geometry would clear the relation too.
+                if(!additive) selection_.set(std::vector<EntityId>{});
+                selectConstraint(mark->constraint, additive);
+                pressed_ = EntityId();
+                return;
+            }
+
             if(!pressed_.valid()) {
                 // Empty space: a click clears, a drag becomes a marquee.
                 if(!has(event.modifiers, Modifier::Shift)) selection_.clear();
+                refreshSelectionOffers();
                 return;
             }
             // A second click descends a level: shape to edges, edges to points.
@@ -605,6 +670,7 @@ void Session::handle(const PointerEvent &event) {
             // descended shape would never reach the rung below.
             if(event.clicks >= 2) {
                 selection_.descend(*doc_, topology_);
+                refreshSelectionOffers();
                 return;
             }
             if(has(event.modifiers, Modifier::Shift)) {
@@ -614,6 +680,7 @@ void Session::handle(const PointerEvent &event) {
                 // keeps it, so a multi-selection can be dragged as one thing.
                 selection_.set(connectedRun(*doc_, topology_, pressed_));
             }
+            refreshSelectionOffers();
             return;
         }
 
@@ -629,6 +696,7 @@ void Session::handle(const PointerEvent &event) {
                 } else {
                     selection_.set(std::move(caught));
                 }
+                refreshSelectionOffers();
             }
             pressActive_ = false;
             dragStarted_ = false;
@@ -671,6 +739,7 @@ void Session::handle(Key key, Modifier modifiers) {
             // Esc ascends a level of depth, and clears once at the home state.
             // Selection is where Esc always eventually lands.
             if(!selection_.ascend(*doc_, topology_)) selection_.clear();
+            refreshSelectionOffers();
             return;
 
         case Key::Delete:
@@ -697,6 +766,94 @@ void Session::handle(Key key, Modifier modifiers) {
     (void)modifiers;
 }
 
+void Session::refreshDragPresentation() {
+    presentation_.toolParameters.clear();
+    dragLabels_.clear();
+    if(!drag_) {
+        presentation_.numericActive = false;
+        presentation_.numericText.clear();
+        return;
+    }
+
+    dragDimensions_ = dragDimensions(*doc_, pose(), drag_->grabbed());
+
+    // Named by what they measure, so two lengths off one vertex are told apart
+    // by the segments they are lengths of rather than by their order.
+    dragLabels_.reserve(dragDimensions_.size());
+    for(const DragDimension &d : dragDimensions_) {
+        dragLabels_.push_back(d.kind == ConstraintKind::Radius
+                                  ? "radius"
+                                  : "length " + std::to_string(d.subject.value()));
+    }
+    for(size_t i = 0; i < dragDimensions_.size(); i++) {
+        presentation_.toolParameters.push_back(
+            ToolParameter{dragLabels_[i].c_str(), dragDimensions_[i].value});
+    }
+
+    presentation_.numericActive = numeric_.active();
+    presentation_.numericTarget = numeric_.target();
+    presentation_.numericText = numeric_.text();
+}
+
+void Session::applyDragResolve(bool impose) {
+    if(!drag_ || !numeric_.active()) return;
+    const std::optional<double> value = numeric_.value();
+    if(!value) return;
+    const size_t target = numeric_.target();
+    if(target >= dragDimensions_.size()) return;
+
+    const ConstraintRecord dimension = dragDimensions_[target].recordAt(*value);
+    // Exactly, not nearly. A drag cannot land on a number, which is the whole
+    // reason this entrance exists — so the target stops being the cursor and
+    // becomes the value.
+    if(!drag_->resolve(*doc_, dimension)) {
+        // The constraints cannot reach it. The pose is unchanged and the field
+        // stays open, so the user can try another number rather than watching
+        // the geometry go somewhere nobody asked for.
+        refreshDragPresentation();
+        return;
+    }
+    numeric_.cancel();
+
+    std::vector<Command> step = drag_->commit(*doc_);
+
+    // Imposing pins the value as a driving dimension, in the same undo step as
+    // the motion it measures — which is why no imposition outlives the gesture
+    // that asked for it. Checked first: a dimension that cannot hold is
+    // committed as a reference measurement rather than driving the document
+    // into a contradiction.
+    ConstraintId imposed;
+    if(impose) {
+        ConstraintRecord record = dimension;
+        Document probe = *doc_;
+        for(const Command &c : step) probe.apply(c);
+        Topology probeTopology(probe);
+        const CandidateCheck check = checkCandidate(probe, probeTopology, record);
+        presentation_.impositionVerdict = check.verdict;
+        presentation_.conflicting = check.conflicting;
+        presentation_.conflictAttributed = check.attributed;
+        record.driving = check.committable();
+        step.push_back(AddRecord<ConstraintRecord>{record});
+    }
+
+    drag_.reset();
+    dragDimensions_.clear();
+    presentation_.dragging = false;
+    presentation_.saturated = false;
+    presentation_.resisting.clear();
+
+    if(!step.empty()) {
+        journal_->applyStep(*doc_, impose ? "drag to value" : "drag", std::move(step));
+    }
+    refresh();
+    if(impose && !doc_->constraints().records().empty()) {
+        imposed = doc_->constraints().records().back().id;
+        doc_->noteUsage(dimension.kind);
+    }
+    presentation_.imposed = imposed;
+    refreshDragPresentation();
+}
+
 void Session::beginDrag(EntityId grabbed, Point cursor) {
     // The whole selection comes along. Clicking inside a selection keeps it,
     // which is what makes a multi-selection draggable as one thing.
@@ -705,6 +862,7 @@ void Session::beginDrag(EntityId grabbed, Point cursor) {
     presentation_.dragging = true;
     updateCount_ = 0;
     updateDrag(cursor);
+    refreshDragPresentation();
 }
 
 void Session::updateDrag(Point cursor) {
@@ -718,6 +876,9 @@ void Session::updateDrag(Point cursor) {
     // Attribution persists between diagnosis frames, so the highlight does not
     // strobe at the interval rather than at the resistance.
     if(diagnose || !update.saturated) presentation_.resisting = update.resisting;
+    // The strip's numbers follow the geometry, so what the user is about to
+    // type over is what they are looking at.
+    refreshDragPresentation();
 }
 
 void Session::endDrag() {
@@ -726,12 +887,298 @@ void Session::endDrag() {
     // gesture is one undo step.
     std::vector<Command> commit = drag_->commit(*doc_);
     drag_.reset();
+    dragDimensions_.clear();
+    numeric_.cancel();
     presentation_.dragging = false;
     presentation_.saturated = false;
     presentation_.resisting.clear();
 
     if(!commit.empty()) journal_->applyStep(*doc_, "drag", std::move(commit));
     refresh();
+}
+
+// ---------------------------------------------------------------------------
+// Imposition
+// ---------------------------------------------------------------------------
+
+std::vector<RelationOffer> Session::relationOffers() const {
+    return relationsFor(*doc_, selection_.items(), surfacePolicy_);
+}
+
+void Session::select(std::vector<EntityId> ids) {
+    selection_.set(std::move(ids));
+    refreshSelectionOffers();
+}
+
+void Session::selectConstraint(ConstraintId id, bool additive) {
+    if(additive) {
+        selection_.toggleConstraint(id);
+    } else {
+        selection_.setConstraints({id});
+    }
+}
+
+std::optional<ImpositionPreview> Session::previewImposition(ConstraintKind kind,
+                                                            size_t assignment,
+                                                            std::optional<double> value) const {
+    const std::vector<RoleAssignment> readings =
+        assignmentsFor(*doc_, kind, selection_.items());
+    if(assignment >= readings.size()) return std::nullopt;
+
+    std::optional<ConstraintRecord> candidate =
+        candidateFor(pose(), kind, readings[assignment], Strength::Impose);
+    if(!candidate) return std::nullopt;
+    // A supplied value replaces the captured one. That is a value edit rather
+    // than an imposition, and the preview is where the user sees the difference
+    // before paying for it.
+    if(value && constraintInfo(kind).valueArity == 1) candidate->value = Slot(*value);
+
+    return previewCandidate(*doc_, topology_, *candidate);
+}
+
+bool Session::commitCandidate(const ConstraintRecord &candidate, Strength strength,
+                              const ImpositionPreview &preview) {
+    presentation_.impositionVerdict = preview.check.verdict;
+    presentation_.conflicting = preview.check.conflicting;
+    presentation_.conflictAttributed = preview.check.attributed;
+    presentation_.impositionMotion = preview.motion;
+    presentation_.downgradeOffered = false;
+    presentation_.imposed = ConstraintId();
+
+    if(strength != Strength::Reference && !preview.check.committable()) {
+        // The choice moves to the user. Stage 4 downgraded silently because
+        // there was no surface to ask on; here there is one, and committing a
+        // reference measurement nobody asked for would be declaring something
+        // other than what was requested.
+        presentation_.downgradeOffered =
+            preview.check.verdict == CandidateVerdict::Inconsistent;
+        return false;
+    }
+
+    // Measure-once records nothing. It applies the relation, keeps the geometry
+    // that comes out, and throws the relation away — which is what "align these
+    // now, remember nothing" is, and why it needs no record type of its own.
+    if(strength == Strength::Measure) {
+        if(preview.pose.empty()) return false;
+        SolveContext moved = SolveContext::forWholeDocument(*doc_);
+        for(SeedSpan &into : moved.params()) {
+            for(const SeedSpan &from : preview.pose) {
+                if(into.entity == from.entity) into.seeds = from.seeds;
+            }
+        }
+        std::vector<Command> step = moved.commitCommands(*doc_);
+        if(step.empty()) return true;  // it was already so; nothing to record
+        if(journal_->applyStep(*doc_, "align", std::move(step)) != CommandError::None) {
+            return false;
+        }
+        doc_->noteUsage(candidate.kind);
+        refresh();
+        return true;
+    }
+
+    ConstraintRecord record = candidate;
+    record.driving = strength == Strength::Impose;
+    if(journal_->applyStep(*doc_, "constrain", AddRecord<ConstraintRecord>{record}) !=
+       CommandError::None) {
+        return false;
+    }
+    // The journal allocated the id; find it by being the newest record of that
+    // kind, which is what an add at a null id always produces.
+    if(!doc_->constraints().records().empty()) {
+        presentation_.imposed = doc_->constraints().records().back().id;
+    }
+    // Reaching for a relation is not an edit, so this rides outside the
+    // journal: an undo takes back the constraint, not the fact that the user
+    // once reached for it.
+    doc_->noteUsage(candidate.kind);
+    refresh();
+    refreshLoopOffers(selection_.items().empty() ? EntityId() : selection_.items().front());
+    return true;
+}
+
+void Session::recordAction(std::string_view name,
+                           std::vector<std::pair<std::string, double>> arguments) {
+    if(recorder_ != nullptr) recorder_->action(name, arguments);
+}
+
+bool Session::impose(ConstraintKind kind, Strength strength, size_t assignment,
+                     std::optional<double> value) {
+    if(const Action *action = impositionAction(kind, strength)) {
+        std::vector<std::pair<std::string, double>> arguments;
+        // Only what was asked for. Writing the defaults out would make every
+        // recorded imposition carry two fields it did not need, and a
+        // hand-edited script noisier to read than the gesture was to perform.
+        if(assignment != 0) arguments.emplace_back("assignment", static_cast<double>(assignment));
+        if(value) arguments.emplace_back("value", *value);
+        recordAction(action->name, std::move(arguments));
+    }
+
+    const std::vector<RoleAssignment> readings =
+        assignmentsFor(*doc_, kind, selection_.items());
+    if(assignment >= readings.size()) return false;
+
+    std::optional<ConstraintRecord> candidate =
+        candidateFor(pose(), kind, readings[assignment], strength);
+    if(!candidate) return false;
+    if(value && constraintInfo(kind).valueArity == 1) candidate->value = Slot(*value);
+
+    const ImpositionPreview preview = previewCandidate(*doc_, topology_, *candidate);
+    return commitCandidate(*candidate, strength, preview);
+}
+
+bool Session::toggleDriving() {
+    recordAction("relation.toggle-driving");
+    if(selection_.constraints().empty()) return false;
+
+    const Pose current = pose();
+    std::vector<Command> step;
+    for(ConstraintId id : selection_.constraints()) {
+        const ConstraintRecord *r = doc_->constraints().find(id);
+        if(r == nullptr) continue;
+        ConstraintRecord flipped = *r;
+        flipped.driving = !flipped.driving;
+
+        // Promotion re-captures. A reference measurement is a live readout of
+        // what the geometry is doing, so its slot is whatever it last drove at
+        // and may be nothing like what it is showing. Promoting it to intent
+        // means declaring what it is showing — which is imposition, and
+        // imposition moves nothing. Carrying the stale slot forward instead
+        // would make a toggle yank the drawing to a value the user was not
+        // looking at.
+        //
+        // Demotion keeps the slot untouched: the value it was driving at is the
+        // value it would drive at again, and losing it would make the toggle
+        // one-way in everything but name.
+        if(flipped.driving && constraintInfo(flipped.kind).valueArity == 1) {
+            if(const std::optional<double> now = measure(current, flipped)) {
+                flipped.value = Slot(*now);
+            }
+        }
+        step.push_back(SetRecord<ConstraintRecord>{flipped});
+    }
+    if(step.empty()) return false;
+    if(journal_->applyStep(*doc_, "toggle driving", std::move(step)) != CommandError::None) {
+        return false;
+    }
+    refresh();
+    return true;
+}
+
+bool Session::selectConflicting() {
+    recordAction("relation.walk-conflicts");
+    if(presentation_.conflicting.empty()) return false;
+    selection_.clear();
+    selection_.setConstraints(presentation_.conflicting);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Regions
+// ---------------------------------------------------------------------------
+
+void Session::refreshLoopOffers(EntityId seed) {
+    presentation_.closedLoop.clear();
+    presentation_.healableLoop.clear();
+    presentation_.healableGaps.clear();
+    presentation_.healableWidestGap = 0.0;
+    loopSeed_ = seed;
+    if(!seed.valid()) return;
+
+    if(const auto boundary = closedBoundaryContaining(*doc_, topology_, seed)) {
+        presentation_.closedLoop = *boundary;
+        return;
+    }
+    // How near is near enough is a property of the hand and the zoom, so the
+    // pixel radius the snap policy holds is converted through the view rather
+    // than being a document constant. A gap the user could not see at this zoom
+    // is a gap they meant to close.
+    const double tolerance = viewport_.view.toDocumentLength(snapPolicy_.pointRadius);
+    if(const auto healable =
+           healableLoopContaining(*doc_, topology_, pose(), seed, tolerance)) {
+        presentation_.healableLoop = healable->boundary;
+        presentation_.healableGaps = healable->gaps;
+        presentation_.healableWidestGap = healable->widestGap;
+    }
+}
+
+void Session::refreshSelectionOffers() {
+    if(tool_) return;
+    refreshLoopOffers(selection_.items().empty() ? EntityId() : selection_.items().front());
+}
+
+// The region a boundary becomes. Style and layer come from whatever the
+// document already has, because stage 5 fills on one layer with a minimal
+// even-odd rule and choosing among several is stage 6's business.
+static RegionRecord regionOver(const Document &doc, std::vector<EntityId> boundary) {
+    RegionRecord r;
+    r.boundary = std::move(boundary);
+    if(!doc.styles().records().empty()) r.style = doc.styles().records().front().id;
+    if(!doc.layers().records().empty()) r.layer = doc.layers().records().front().id;
+    return r;
+}
+
+bool Session::makeSolid() {
+    recordAction("region.make-solid");
+    if(presentation_.closedLoop.empty()) return false;
+    presentation_.filled = RegionId();
+
+    const RegionRecord region = regionOver(*doc_, presentation_.closedLoop);
+    if(journal_->applyStep(*doc_, "make solid", AddRecord<RegionRecord>{region}) !=
+       CommandError::None) {
+        return false;
+    }
+    if(!doc_->regions().records().empty()) {
+        presentation_.filled = doc_->regions().records().back().id;
+    }
+    refresh();
+    refreshLoopOffers(loopSeed_);
+    return true;
+}
+
+bool Session::healAndFill() {
+    recordAction("region.heal-and-fill");
+    if(presentation_.healableLoop.empty()) return false;
+    presentation_.filled = RegionId();
+
+    HealableLoop loop;
+    loop.boundary = presentation_.healableLoop;
+    loop.gaps = presentation_.healableGaps;
+    loop.widestGap = presentation_.healableWidestGap;
+
+    // Healing and filling are one gesture and therefore one undo step: a user
+    // who takes it back means the fill and the joints together, not the fill
+    // and a drawing that has quietly moved.
+    std::vector<Command> step = healingStep(*doc_, loop);
+    if(step.empty()) return false;
+    step.push_back(AddRecord<RegionRecord>{regionOver(*doc_, loop.boundary)});
+
+    const Pose before = pose();
+    if(journal_->applyStep(*doc_, "heal and fill", std::move(step)) != CommandError::None) {
+        return false;
+    }
+    refresh();
+
+    // The motion is the point of the action, so it is measured and reported
+    // rather than assumed to be the gap it was offered as. The solver decides
+    // how the epsilon is shared between the two joints; what was promised is
+    // that nothing travels further than the widest gap.
+    presentation_.impositionMotion = 0.0;
+    const Pose after = pose();
+    for(const EntityRecord &e : doc_->entities().records()) {
+        const std::optional<Point> was = before.point(e.id);
+        const std::optional<Point> now = after.point(e.id);
+        if(!was || !now) continue;
+        const double dx = now->x - was->x;
+        const double dy = now->y - was->y;
+        presentation_.impositionMotion =
+            std::max(presentation_.impositionMotion, std::sqrt(dx * dx + dy * dy));
+    }
+
+    if(!doc_->regions().records().empty()) {
+        presentation_.filled = doc_->regions().records().back().id;
+    }
+    refreshLoopOffers(loopSeed_);
+    return true;
 }
 
 void Session::deleteSelection() {

@@ -86,7 +86,7 @@ TEST_CASE("every action is invocable headlessly") {
 
         INFO("action ", a.name);
         const ActionContext context = contextOf(*b.session);
-        const bool applies = a.applicable(context);
+        const bool applies = a.applicable(context, a);
         const bool ran = invokeAction(*b.session, a.name, arguments);
         // Applicable actions run; inapplicable ones refuse. Either way the call
         // is answered rather than crashing or silently doing something else.

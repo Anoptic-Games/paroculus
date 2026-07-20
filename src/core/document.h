@@ -20,6 +20,7 @@
 #include "core/parameters.h"
 #include "core/records.h"
 #include "core/table.h"
+#include "core/usage.h"
 
 namespace paroculus {
 
@@ -111,6 +112,18 @@ public:
     // round-trip through an older install is a silent data loss.
     const std::vector<std::string> &unknownRecords() const { return unknown_; }
 
+    // Which relations this document reaches for, and the whole of what the
+    // context strip ranks by.
+    //
+    // The one thing here that is not a declaration, and so the one thing that
+    // is not mutated through a command. Reaching for a relation is not an edit:
+    // it leaves the drawing alone, it has no inverse worth restoring, and an
+    // undo that rewound the ranking would take back something the user never
+    // did. It rides along with the document because ranking is document-local,
+    // and it is droppable because nothing depends on it.
+    const UsageHistory &usage() const { return usage_; }
+    void noteUsage(ConstraintKind kind) { usage_.note(kind); }
+
     // Validates, then applies. On refusal the document is untouched.
     CommandResult apply(const Command &command);
 
@@ -147,6 +160,7 @@ private:
     RecordTable<LayerRecord> layers_;
     RecordTable<GroupRecord> groups_;
     ParameterTable parameters_;
+    UsageHistory usage_;
     std::vector<std::string> unknown_;
 
     // Persist restores tables wholesale rather than replaying commands, since

@@ -161,6 +161,14 @@
             # platformbase.cpp uses the heap-arena API (mi_heap_new / _destroy / _zalloc),
             # not just the malloc override, so this is load-bearing rather than a swap.
             pkgs.mimalloc
+            # The bundled typeface. Dimension text has to render identically on
+            # every machine and inside the sandbox, so the font is a pinned
+            # build input rather than whatever fontconfig finds at runtime — a
+            # raster assertion against a host font is an assertion about the
+            # host. DejaVu because it is already in the pinned nixpkgs, is
+            # freely redistributable, and is a workhorse rather than a style
+            # statement, which is what a dimension label wants to be.
+            pkgs.dejavu_fonts
           ]
           # Header-only, test-only: paroculus-tests is the doctest runner over
           # every layer below the shell. Only configured in when tests are on.
@@ -170,6 +178,7 @@
 
           cmakeFlags = [
             "-DCMAKE_BUILD_TYPE=${buildType}"
+            "-DPAROCULUS_FONT=${pkgs.dejavu_fonts}/share/fonts/truetype/DejaVuSans.ttf"
           ]
           ++ lib.optional tests "-DPAROCULUS_TESTS=ON";
 
@@ -396,12 +405,17 @@
               pkgs.eigen
               pkgs.mimalloc
               pkgs.doctest
+              pkgs.dejavu_fonts
             ];
             # A work-tree binary is never wrapped, so it inherits none of the
             # plugin paths the installed app gets from wrapQtAppsHook. Without
             # these, `nix run .#dev` finds no QPA platform plugin and no
             # QtQuick.Controls.Basic, and exits 1 before the window appears.
             shellHook = ''
+              # The bundled typeface, for a work-tree configure. CMakeLists
+              # falls back to this when -DPAROCULUS_FONT was not passed, so
+              # `nix run .#dev` needs no extra flag of its own.
+              export PAROCULUS_FONT="${pkgs.dejavu_fonts}/share/fonts/truetype/DejaVuSans.ttf"
               export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/lib/qt-6/plugins''${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
               for v in QML_IMPORT_PATH QML2_IMPORT_PATH; do
                 export "$v=${pkgs.qt6.qtdeclarative}/lib/qt-6/qml"

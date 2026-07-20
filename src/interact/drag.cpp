@@ -1,5 +1,7 @@
 #include "interact/drag.h"
 
+#include "core/measure.h"
+
 #include <cmath>
 
 namespace paroculus {
@@ -244,6 +246,84 @@ DragUpdate DragSession::update(const Document &doc, const Viewport &viewport, Po
     }
 
     return result;
+}
+
+ConstraintRecord DragDimension::recordAt(double at) const {
+    ConstraintRecord r;
+    r.kind = kind;
+    r.operands = operands;
+    r.value = Slot(at);
+    return r;
+}
+
+std::vector<DragDimension> dragDimensions(const Document &doc, const Pose &pose,
+                                          EntityId grabbed) {
+    std::vector<DragDimension> out;
+    const EntityRecord *e = doc.entities().find(grabbed);
+    if(e == nullptr) return out;
+
+    // A circle owns one parameter, so grabbing one is a resize and the
+    // measurement under adjustment is its radius. Its centre is a point of its
+    // own and is dragged by grabbing the point.
+    if(e->kind == EntityKind::Circle) {
+        DragDimension d;
+        d.kind = ConstraintKind::Radius;
+        d.operands[0] = grabbed;
+        d.count = 1;
+        d.subject = grabbed;
+        d.value = pose.curveRadius(grabbed).value_or(0.0);
+        out.push_back(d);
+        return out;
+    }
+    if(e->kind != EntityKind::Point) return out;
+
+    // Every segment this point is an end of. Each is a length the drag is
+    // adjusting, and which one the user meant is the question the strip asks.
+    for(const EntityRecord &other : doc.entities().records()) {
+        if(other.kind != EntityKind::Segment) continue;
+        EntityId far;
+        if(other.points[0] == grabbed) {
+            far = other.points[1];
+        } else if(other.points[1] == grabbed) {
+            far = other.points[0];
+        } else {
+            continue;
+        }
+        if(!far.valid()) continue;
+
+        DragDimension d;
+        d.kind = ConstraintKind::PointPointDistance;
+        d.operands[0] = grabbed;
+        d.operands[1] = far;
+        d.count = 2;
+        d.subject = other.id;
+        d.value = measure(pose, ConstraintKind::PointPointDistance, d.operands).value_or(0.0);
+        out.push_back(d);
+    }
+    return out;
+}
+
+bool DragSession::resolve(const Document &doc, const ConstraintRecord &dimension) {
+    // The same solve the drag has been running, with one more constraint in it
+    // and no cursor target. Rolling back on failure rather than keeping what
+    // came out: SolveSpace leaves parameters at the seeds it was handed when it
+    // does not converge, so an unguarded read of a refused solve looks like a
+    // perfect landing while the geometry walks through its own constraints.
+    const SolveContext before = context_;
+
+    SolveOptions options;
+    options.dragged = dragged_;
+    options.diagnoseFailures = false;
+    options.generation = ++generation_;
+    ConstraintRecord driving = dimension;
+    driving.driving = true;
+    options.extra.push_back(driving);
+
+    if(!solve(doc, context_, options).ok()) {
+        context_ = before;
+        return false;
+    }
+    return true;
 }
 
 std::vector<Command> DragSession::commit(const Document &doc) const {

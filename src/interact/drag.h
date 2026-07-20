@@ -65,6 +65,47 @@ struct DragUpdate {
     double microseconds = 0.0;
 };
 
+// A measurement a drag in flight is adjusting.
+//
+// "The length under adjustment" is exactly as ambiguous as it sounds the moment
+// a vertex belongs to more than one segment, and prose cannot resolve it — the
+// surface has to. So a drag offers every measurement it is moving, the strip
+// names them, and Tab picks between them. That is the same disambiguation the
+// action surface does for role ambiguity, applied to the one place PRINCIPLES
+// left it implicit when it said "the length under adjustment becomes exactly
+// 45".
+//
+// Nothing here is a constraint yet. A resolved drag lands the geometry on the
+// number and records nothing; imposing it as a driving dimension is the one
+// extra key, in the same undo step as the motion it measures.
+struct DragDimension {
+    ConstraintKind kind = ConstraintKind::PointPointDistance;
+    std::array<EntityId, MAX_OPERANDS> operands{};
+    size_t count = 0;
+    // What it reads at the current pose, in document units. Live: a drag
+    // changes it every frame, and the strip shows what it is now rather than
+    // what it was when the drag began.
+    double value = 0.0;
+    // The entity the strip names, so two lengths off one vertex are told apart
+    // by what they are lengths of.
+    EntityId subject;
+
+    // The record that would hold it at `at`, for the solve and for the
+    // dimension an imposing resolve records.
+    ConstraintRecord recordAt(double at) const;
+};
+
+// The measurements dragging `grabbed` adjusts, in ID order.
+//
+// For a point: the length of every segment it is an end of. For a circle: its
+// radius, since a circle owns one parameter and grabbing it is a resize.
+//
+// ID-ordered because the strip's field order is what Tab cycles through, and an
+// order that changed between frames would move the field under the user
+// mid-entry.
+std::vector<DragDimension> dragDimensions(const Document &doc, const Pose &pose,
+                                          EntityId grabbed);
+
 // One drag, from press to release.
 //
 // The document is not touched until commit(): every intermediate pose lives in
@@ -104,6 +145,19 @@ public:
     EntityId grabbed() const { return grabbed_; }
     // What the solver is told the user is holding, grab first.
     const std::vector<EntityId> &dragged() const { return dragged_; }
+
+    // Re-solves with `dimension` held exactly, instead of with the cursor.
+    //
+    // The numeric twin of a drag, and the reason it is one solve rather than a
+    // second mechanism: the digits supply the precision the hand could not, so
+    // the target stops being the pointer and becomes the value. The dragged set
+    // is unchanged, which is what keeps the geometry that gives the geometry
+    // the user was not holding.
+    //
+    // Returns whether it held. A value the constraints cannot satisfy leaves
+    // the pose exactly as it was, because a drag that cannot reach a number is
+    // saturation and not a licence to move somewhere else.
+    bool resolve(const Document &doc, const ConstraintRecord &dimension);
 
     // The commands that make the current pose permanent. Empty when nothing
     // moved, so an abandoned or no-op drag journals nothing.

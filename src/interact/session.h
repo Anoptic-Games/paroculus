@@ -21,6 +21,7 @@
 #include "interact/events.h"
 #include "interact/glyphs.h"
 #include "interact/hit.h"
+#include "interact/impose.h"
 #include "interact/loops.h"
 #include "interact/numeric.h"
 #include "solve/diagnose.h"
@@ -87,22 +88,51 @@ struct Presentation {
     // constraint is shown at commit, not discovered later.
     std::vector<ConstraintId> inferred;
 
-    // How the last imposed dimension fared against what was already declared,
-    // and the constraints the solver blamed when it could not hold. Consistent
-    // with an empty set whenever nothing was imposed.
+    // How the last imposed dimension or relation fared against what was already
+    // declared, and the constraints it disagreed with when it could not hold.
+    // Consistent with an empty set whenever nothing was imposed.
     //
-    // A dimension that cannot hold is committed as a reference measurement
-    // rather than refused, so this is what says the value the user typed is
-    // recorded but not driving. Stage 5 turns it into the offer PRINCIPLES
-    // describes and the highlight the conflicting set is for.
+    // The conflicting set is walkable rather than merely rendered: it is filled
+    // by the suppression counterfactual, and selectConflicting() turns it into
+    // an ordinary selection the user steps through. Empty with `attributed`
+    // false means the conflict could not be pinned on any single relation, not
+    // that there is none.
     CandidateVerdict impositionVerdict = CandidateVerdict::Consistent;
     std::vector<ConstraintId> conflicting;
+    bool conflictAttributed = false;
+
+    // A driving imposition was refused as inconsistent, so the reference
+    // measurement is on offer. Stage 4 downgraded silently because there was no
+    // surface to ask on; the mechanism is unchanged and the choice is now the
+    // user's. Names the kind and strength the offer would invoke.
+    bool downgradeOffered = false;
+
+    // How far the last imposition moved geometry, in document units. Zero is
+    // what imposition promises; the near-parallel snap-shut is the exception,
+    // and this is how it shows its motion rather than making it quietly.
+    double impositionMotion = 0.0;
+
+    // What the last relation-imposing action created, so a surface can name it
+    // and a test can find it. Null when nothing was recorded — which is what
+    // measure-once always leaves behind.
+    ConstraintId imposed;
 
     // The outline the last placement closed, in boundary order, when it closed
-    // one. An offer and nothing more: filling it is a region record, and that
-    // action lands in stage 5. Detecting must leave the document as it was, or
+    // one. An offer and nothing more: filling it is a region record, which
+    // makeSolid() attaches. Detecting leaves the document exactly as it was, or
     // ignoring the offer would not be free.
     std::vector<EntityId> closedLoop;
+
+    // An outline that looks closed and is not, and the joints heal-and-fill
+    // would shut. Never both this and closedLoop: a run is one or the other,
+    // and the two offers differ in exactly the way that matters — one moves
+    // nothing, the other moves geometry by the epsilon it names here.
+    std::vector<EntityId> healableLoop;
+    std::vector<LoopGap> healableGaps;
+    double healableWidestGap = 0.0;
+
+    // The region the last make-solid or heal-and-fill attached. Null when none.
+    RegionId filled;
 
     double solveMicroseconds = 0.0;
 
@@ -207,6 +237,97 @@ public:
     // which is how a placement with two of them is typed out in full.
     void numericResolve(bool impose);
 
+    // ---------------------------------------------------------------------
+    // Imposition
+    // ---------------------------------------------------------------------
+
+    // Declares `kind` over the current selection at `strength`.
+    //
+    // The noun-verb half of the tool, and the one that has to move nothing:
+    // a valued relation captures the measurement already true, so the solver
+    // has nothing to do and the drawing does not shift under the declaration.
+    // Supplying `value` is the other thing — a value edit — and that is allowed
+    // to move geometry, because editing a value is one of the two ways
+    // PRINCIPLES says geometry is meant to move.
+    //
+    // assignment: which reading of the selection, for the kinds that read one
+    //   operand against the other. Out of range is refused rather than clamped:
+    //   a script written against a different selection has asked for something
+    //   that is not there, and silently imposing the other reading would
+    //   declare the wrong relation.
+    //
+    // Returns whether anything was applied. A driving imposition that cannot
+    // hold returns false and leaves the downgrade on offer rather than
+    // committing a reference measurement the user did not ask for — which is
+    // the one thing this stage changes about a mechanism that already worked.
+    // Redundant is committed and flagged: redundancy is where later edits go to
+    // die, not a fault today.
+    bool impose(ConstraintKind kind, Strength strength, size_t assignment = 0,
+                std::optional<double> value = std::nullopt);
+
+    // Attaches a region to the closed outline on offer.
+    //
+    // Not a conversion: the record references the cycle of edge IDs, no
+    // geometry is copied, no path is synthesized and no constraint is touched.
+    // The outline keeps operating, dragging a vertex moves the fill because the
+    // fill has no geometry of its own to go stale, and the inverse is deleting
+    // one record.
+    bool makeSolid();
+
+    // Shuts the gaps in an outline that only looks closed, then fills it.
+    //
+    // The exception to movement-free imposition, and an explicit one: the
+    // epsilon motion is the point of the action rather than a side effect, so
+    // it is offered separately from make-solid and reports what it moved.
+    bool healAndFill();
+
+    // Flips the selected relations between driving and reference.
+    //
+    // A reference dimension and a driving dimension are the same object with a
+    // toggle. Flipping it is how a measurement is promoted to intent, and how
+    // an over-constraint downgrade demotes one — the same operation from either
+    // side, which is why there is one action and not two.
+    bool toggleDriving();
+
+    // Makes the conflicting set the selection, so it can be walked.
+    //
+    // A conflict is presented as a selectable set of constraints plus tinted
+    // geometry, never a modal dialog. There is no error state that suspends
+    // editing; there are only states with more or less diagnostic adornment.
+    bool selectConflicting();
+
+    // What imposing `kind` over the current selection would do, without doing
+    // any of it. The hover preview, and the reason the catalogue is learnable by
+    // looking rather than by reading.
+    //
+    // The document is byte-identical afterwards, by construction rather than by
+    // discipline: the candidate rides in as a speculative extra on a forked
+    // context and nothing writes back.
+    std::optional<ImpositionPreview> previewImposition(
+        ConstraintKind kind, size_t assignment = 0,
+        std::optional<double> value = std::nullopt) const;
+
+    // The relations the current selection admits, ranked — what the context
+    // strip lists. A projection of the taxonomy and this document's usage, and
+    // nothing else.
+    std::vector<RelationOffer> relationOffers() const;
+
+    SurfacePolicy &surfacePolicy() { return surfacePolicy_; }
+    const SurfacePolicy &surfacePolicy() const { return surfacePolicy_; }
+
+    // Selection of relations, for the surfaces that walk them.
+    void selectConstraint(ConstraintId id, bool additive = false);
+
+    // Sets the geometry selection outright.
+    //
+    // The programmatic entrance, used by the actions that compute a selection
+    // rather than receive one — walking a conflict set is the first — and by
+    // headless tests, which have a document and no pointer. Not a recording
+    // surface: what a script records is the click, and replaying the click
+    // reproduces the selection. A shell that called this instead of feeding a
+    // pointer event would produce a session that does not replay.
+    void select(std::vector<EntityId> ids);
+
     // Attaches a recorder, or detaches with nullptr. Every event the session is
     // asked to handle from here on is captured, which is what makes a recording
     // a recording of the session rather than of the shell's interpretation of
@@ -217,6 +338,24 @@ public:
     void setRecorder(ScriptRecorder *recorder) { recorder_ = recorder; }
 
 private:
+    // Writes an Action step, for the edits that have no other recording
+    // surface behind them.
+    //
+    // Every other way of changing the document arrives through a method that
+    // records itself — a pointer event, a keystroke, a tool change — so an
+    // action that dispatched to one of those needed no recording of its own and
+    // re-recorded as the change it caused. Imposition and the fill actions have
+    // no such effect to be re-recorded as: they are reached by clicking a strip
+    // entry, and nothing else about that click is an input the session sees. So
+    // they record themselves, by the name and arguments that would reproduce
+    // them, and record → replay → record stays the identity the format exists
+    // to guarantee.
+    //
+    // Records the request rather than the outcome, matching confirmOffer: a
+    // refused action replays and is refused again, which is the same session.
+    void recordAction(std::string_view name,
+                      std::vector<std::pair<std::string, double>> arguments = {});
+
     // Applies whatever a tool asked for, and tells the tool only if it landed.
     // Applies a tool's output through the journal. Returns whether the step
     // landed: applyStep is all-or-nothing, and a caller that records anything
@@ -257,6 +396,33 @@ private:
     SnapResult inferAt(Point cursor) const;
     void rememberSnaps(const std::vector<SnapCandidate> &committed);
 
+    // Recomputes the fill offers around `seed`, or clears them when it is null.
+    // One place, because closed and healable are mutually exclusive answers to
+    // one question and computing them apart is how they come to disagree.
+    void refreshLoopOffers(EntityId seed);
+
+    // The same, seeded from whatever is selected. A no-op while a creation tool
+    // is running: the placement in flight owns the offers, and recomputing them
+    // off an empty selection would clear an offer the user is looking at.
+    void refreshSelectionOffers();
+
+    // Applies a candidate as a relation record, or as a one-shot solve for
+    // Strength::Measure. Shared by every entrance to imposition.
+    bool commitCandidate(const ConstraintRecord &candidate, Strength strength,
+                         const ImpositionPreview &preview);
+
+    // The strip, while a drag rather than a tool is what is in flight. The
+    // fields are the measurements the drag is adjusting, so the numeric machine
+    // above them is the one a creation tool uses and not a second one.
+    void refreshDragPresentation();
+
+    // Lands the drag on the typed value, and ends it.
+    //
+    // Enter finishes the gesture here for the same reason it does for a
+    // placement: the digits exist because the hand could not hit the number, so
+    // asking for a release afterwards would hand the result back to the hand.
+    void applyDragResolve(bool impose);
+
     void beginDrag(EntityId grabbed, Point cursor);
     void updateDrag(Point cursor);
     void endDrag();
@@ -275,6 +441,7 @@ private:
     HitPolicy policy_;
     SnapPolicy snapPolicy_;
     GlyphPolicy glyphPolicy_;
+    SurfacePolicy surfacePolicy_;
     Viewport viewport_;
 
     // The relations captured at clicks that created nothing yet, one set per
@@ -298,6 +465,11 @@ private:
     // contextual and document-local; this is the whole of the context.
     std::vector<SnapKind> recentSnaps_;
 
+    // What the fill offers were last computed around: the entity a placement
+    // just created, or the first thing selected. Kept so an imposition or a
+    // fill can recompute them without guessing what the user was looking at.
+    EntityId loopSeed_;
+
     NumericEntry numeric_;
 
     ScriptRecorder *recorder_ = nullptr;
@@ -306,6 +478,12 @@ private:
     std::unique_ptr<Tool> tool_;
 
     std::optional<DragSession> drag_;
+    // The measurements the drag in flight is adjusting, recomputed each frame
+    // because a drag changes what they read. The numeric target indexes this.
+    std::vector<DragDimension> dragDimensions_;
+    // Named storage for the strip's field labels: ToolParameter holds a bare
+    // pointer, so the strings it points at have to outlive the frame.
+    std::vector<std::string> dragLabels_;
     // Where the press landed, so a drag can be told from a click by distance.
     Eigen::Vector2d pressScreen_ = Eigen::Vector2d::Zero();
     EntityId pressed_;

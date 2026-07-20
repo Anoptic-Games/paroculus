@@ -148,7 +148,40 @@ struct ConstraintKindInfo {
     // and cannot say which from its operands. The solver reads the choice as
     // Slvs_Constraint.other.
     uint8_t alternatives;
+
+    // Whether swapping two operands the kind accepts in either slot changes
+    // what it says. False for almost everything: a coincidence between A and B
+    // is the coincidence between B and A, and offering both would be offering
+    // the same relation twice.
+    //
+    // True for the two kinds that read one operand against the other —
+    // len(A)/len(B) and len(A)-len(B) — which is precisely the role ambiguity
+    // PRINCIPLES sends to the surface rather than resolving in prose. The
+    // surface asks which way and previews the answer; this column is how it
+    // knows there is a question. A kind whose slots take different entity kinds
+    // has its roles assigned by type and needs no flag either way.
+    bool orderSensitive;
 };
+
+// The three strengths every relation the tool can compute exists at.
+//
+// One semantic, not three scattered features: align-left, distribute, measure
+// distance and dimension are the same relation presented at different
+// strengths, and the action surface offers them as one action with a choice
+// rather than as three menu entries that happen to be related.
+//
+// Measure is the one that records nothing. It solves with the relation in force
+// and keeps the geometry that comes out, then throws the relation away — which
+// is exactly "align these now, remember nothing", and is why it needs no record
+// type of its own.
+enum class Strength : uint8_t {
+    Measure,    // apply it once and record nothing
+    Impose,     // a driving constraint: the geometry must hold it
+    Reference,  // a driven measurement: recorded, displayed, never driving
+};
+
+// Stable token, used by action names and therefore format.
+std::string_view strengthName(Strength s);
 
 // Horizontal and vertical are recorded as axis-referenced parallelism rather
 // than intrinsic properties, which is what makes the rotate-a-subset question
@@ -189,10 +222,14 @@ inline constexpr std::array<ConstraintKindInfo, 22> CONSTRAINT_KINDS = {{
      {OperandKind::Point, OperandKind::Segment}, 1, Invariance::Absolute, 100003, 1.0},
     {ConstraintKind::EqualLength, "equal-length", 2,
      {OperandKind::Segment, OperandKind::Segment}, 0, Invariance::ScaleInvariant, 100008, 1.0},
+    // The two that read one operand against the other, and so the two the
+    // surface has to ask about: len(A)/len(B) is not len(B)/len(A).
     {ConstraintKind::LengthRatio, "length-ratio", 2,
-     {OperandKind::Segment, OperandKind::Segment}, 1, Invariance::ScaleInvariant, 100009, 1.0},
+     {OperandKind::Segment, OperandKind::Segment}, 1, Invariance::ScaleInvariant, 100009, 1.0,
+     0, 0, 0, true},
     {ConstraintKind::LengthDifference, "length-difference", 2,
-     {OperandKind::Segment, OperandKind::Segment}, 1, Invariance::Absolute, 100033, 1.0},
+     {OperandKind::Segment, OperandKind::Segment}, 1, Invariance::Absolute, 100033, 1.0,
+     0, 0, 0, true},
     {ConstraintKind::SymmetricHorizontal, "symmetric-horizontal", 2,
      {OperandKind::Point, OperandKind::Point}, 0, Invariance::ScaleInvariant, 100015, 1.0},
     {ConstraintKind::SymmetricVertical, "symmetric-vertical", 2,

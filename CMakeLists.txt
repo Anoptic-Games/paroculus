@@ -83,8 +83,11 @@ add_library(paroculus-core STATIC
     src/core/document.cpp
     src/core/document.h
     src/core/geom.h
+    src/core/glyphs.cpp
     src/core/glyphs.h
     src/core/ids.h
+    src/core/measure.cpp
+    src/core/measure.h
     src/core/parameters.cpp
     src/core/parameters.h
     src/core/persist.cpp
@@ -106,6 +109,8 @@ add_library(paroculus-core STATIC
     src/core/undo.h
     src/core/units.cpp
     src/core/units.h
+    src/core/usage.cpp
+    src/core/usage.h
 )
 target_include_directories(paroculus-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(paroculus-core PUBLIC Eigen3::Eigen)
@@ -131,12 +136,41 @@ target_link_libraries(paroculus-solve
     PUBLIC paroculus-core
     PRIVATE paroculus-solver PkgConfig::MIMALLOC)
 
+# The bundled typeface, compiled in rather than looked up.
+#
+# A pinned build input, embedded as bytes at configure time. Dimension text has
+# to render identically in the sandbox, in a raster assertion and on a user's
+# machine, and a font resolved through fontconfig at runtime makes all three
+# answer differently. Refused outright when absent: an application whose
+# dimensions are silently blank is worse than one that will not configure.
+set(PAROCULUS_FONT "$ENV{PAROCULUS_FONT}" CACHE FILEPATH
+    "TTF embedded as the bundled typeface for dimension text")
+if(NOT PAROCULUS_FONT OR NOT EXISTS "${PAROCULUS_FONT}")
+    message(FATAL_ERROR
+        "PAROCULUS_FONT is unset or missing (${PAROCULUS_FONT}).\n"
+        "The nix build and dev shell both supply it; a hand-driven cmake needs "
+        "-DPAROCULUS_FONT=/path/to/a.ttf")
+endif()
+set(PAROCULUS_TYPEFACE_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/typeface.cpp")
+# At configure time, not build time: the font is a fixed input, so regenerating
+# it per build would be work with no possible new answer.
+execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+            "-DFONT=${PAROCULUS_FONT}" "-DOUT=${PAROCULUS_TYPEFACE_CPP}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_font.cmake"
+    RESULT_VARIABLE embed_result)
+if(NOT embed_result EQUAL 0)
+    message(FATAL_ERROR "could not embed ${PAROCULUS_FONT}")
+endif()
+
 # render — the only target that may see Skia. Its headers speak in raw buffers,
 # so the QQuickPaintedItem shortcut can become the Ganesh/RHI path (track R)
 # without anything above this layer noticing.
 add_library(paroculus-render STATIC
     src/render/view.cpp
     src/render/view.h
+    src/render/typeface.h
+    "${PAROCULUS_TYPEFACE_CPP}"
 )
 target_link_libraries(paroculus-render PUBLIC paroculus-core PRIVATE PkgConfig::SKIA)
 
@@ -151,6 +185,8 @@ add_library(paroculus-interact STATIC
     src/interact/glyphs.cpp
     src/interact/glyphs.h
     src/interact/hit.cpp
+    src/interact/impose.cpp
+    src/interact/impose.h
     src/interact/hit.h
     src/interact/loops.cpp
     src/interact/loops.h
@@ -168,6 +204,8 @@ add_library(paroculus-interact STATIC
     src/interact/snap.cpp
     src/interact/snap.h
     src/interact/session.cpp
+    src/interact/surface.cpp
+    src/interact/surface.h
     src/interact/session.h
     src/interact/tools.cpp
     src/interact/tools.h
@@ -247,10 +285,16 @@ if(PAROCULUS_TESTS)
         tests/unit/interact_numeric.cpp
         tests/unit/interact_loops.cpp
         tests/unit/interact_registry.cpp
+        tests/unit/interact_impose.cpp
+        tests/unit/interact_regions.cpp
+        tests/raster/regions.cpp
+        tests/raster/dimensions.cpp
         tests/gestures/corpus.cpp
+        tests/gestures/flagship.cpp
         tests/gestures/inference.cpp
         tests/unit/solve_context.cpp
         tests/unit/solve_demosketch.cpp
+        tests/semantics/applicability.cpp
         tests/semantics/catalogue.cpp
         tests/semantics/branches.cpp
     )
@@ -264,6 +308,13 @@ if(PAROCULUS_TESTS)
     # Test-only: fixtures include "support/build.h" the same way sources include
     # their layer-qualified headers.
     target_include_directories(paroculus-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    # Corpus scripts are checked-in artefacts, not build outputs: a test that
+    # asserts one has to find it in the source tree whatever directory CTest
+    # runs from. Passed as a definition rather than resolved from the working
+    # directory, because the working directory is the one thing a sandbox is
+    # free to change.
+    target_compile_definitions(paroculus-tests PRIVATE
+        PAROCULUS_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus")
     add_test(NAME unit COMMAND paroculus-tests)
 
     # Offscreen QPA: the selftest constructs a QGuiApplication, so it needs a

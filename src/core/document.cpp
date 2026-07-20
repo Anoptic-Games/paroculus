@@ -408,7 +408,8 @@ bool operator==(const Document &a, const Document &b) {
     return a.entities_ == b.entities_ && a.constraints_ == b.constraints_ &&
            a.regions_ == b.regions_ && a.tags_ == b.tags_ && a.styles_ == b.styles_ &&
            a.layers_ == b.layers_ && a.groups_ == b.groups_ &&
-           a.parameters_ == b.parameters_ && a.unknown_ == b.unknown_;
+           a.parameters_ == b.parameters_ && a.usage_ == b.usage_ &&
+           a.unknown_ == b.unknown_;
 }
 
 bool sameRecords(const Document &a, const Document &b) {

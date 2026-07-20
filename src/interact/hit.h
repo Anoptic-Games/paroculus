@@ -11,8 +11,10 @@
 #pragma once
 
 #include <optional>
+#include <span>
 #include <vector>
 
+#include "core/glyphs.h"
 #include "core/pose.h"
 #include "interact/policies.h"
 
@@ -73,6 +75,31 @@ std::optional<Hit> hitTest(const Pose &pose, const SpatialIndex &index,
                            const ViewTransform &view, const Eigen::Vector2d &screen,
                            const HitPolicy &policy,
                            const std::vector<EntityId> &selected = {});
+
+// A constraint mark under the cursor.
+struct GlyphHit {
+    ConstraintId constraint;
+    // The operand the picked mark sits on, so a surface can say which end of a
+    // relation the user reached it from.
+    EntityId on;
+    double distance = 0.0;  // pixels
+};
+
+// The constraint mark nearest the cursor, or nullopt when none is within reach.
+//
+// Adorners sit above geometry in the hit priority, and a glyph is why: the mark
+// exists precisely so the relation can be reached, and a click that fell
+// through to the segment underneath would make every relation unreachable from
+// the thing it binds. No invisible constraints means no unpickable ones.
+//
+// marks: the visible set, exactly as it was handed to render. Placement runs
+//   through the same layOutGlyphs render draws with, so a mark is picked where
+//   it is drawn rather than where its anchor happens to be.
+// Ghost marks are never picked: they describe a relation that does not exist
+//   yet, and selecting one would select nothing.
+std::optional<GlyphHit> hitGlyph(std::span<const GlyphMark> marks, const ViewTransform &view,
+                                 const Eigen::Vector2d &screen,
+                                 const GlyphLayout &layout = {});
 
 // Everything wholly inside a screen-space rectangle, in ID order. The marquee.
 //

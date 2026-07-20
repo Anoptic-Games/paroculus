@@ -79,12 +79,12 @@ tests/
 | core/taxonomy | single-source tables: entity kinds (fields, param counts), constraint kinds (operand signatures, value arity, solver mapping, invariance class), snap candidate kinds, applicability data | Qt, Skia, slvs |
 | core/slots | value cells, named parameters, constant + arithmetic + reference evaluation, acyclicity | solver |
 | core/units | unit parse/format, the single conversion boundary | everything above core |
-| core/document | records for entities/constraints/regions/roles/tags/styles/layers/groups, edit commands, undo journal with seed spans, snapshots | Qt, Skia, slvs |
-| core/topology | coincidence graph, incremental component partition, cycle queries, connected-run queries | solver handles |
+| core/document | records for entities/constraints/regions/roles/tags/styles/layers/groups, edit commands, undo journal over exactly invertible commands, snapshots | Qt, Skia, slvs |
+| core/topology | coincidence graph, component partition rebuilt on demand, cycle queries, connected-run queries | solver handles |
 | core/geom | measurement math (distance, angle, length, intersection), capture-current-value, the doc↔screen transform type | ownership of view state |
 | solve/* | component → `Slvs_System` translation (arena-backed), invocation, readback, seed store, dragged sets, speculative contexts as value types, failure mapping, generation tokens | Qt, Skia, document mutation |
 | interact/* | selection model + signatures, spatial index + hit policy, snap candidate generation + ranking, tool state machines, action registry + dispatch, numeric entry sessions, replaceable feel policies | Qt, Skia |
-| render/* | solved-geometry tessellation, region fill and alpha-overwrite compositing, screen-space adorners, dimension text (bundled typeface), painting into caller surfaces | Qt, document mutation |
+| render/* | solved-geometry tessellation, region fill and alpha-overwrite compositing, screen-space adorners, dimension text (bundled typeface), view framing and the pan/zoom composition over it, painting into caller surfaces | Qt, document mutation |
 | shell/* | QQuickItem hosting, QEvent → interact events, QML surfaces projected from the registry, view state ownership | slvs, Skia types beyond the paint interface |
 | app/* | entry, --selftest, --script playback of corpus scenarios | — |
 
@@ -128,8 +128,9 @@ offscreen QPA), and `tests/bench` runs on demand with recorded baselines.
 - Property tests: apply+undo returns the document to byte-identical
   serialization; serialize(load(serialize(d))) == serialize(d); incremental
   topology equals from-scratch recomputation after every step of random edit
-  scripts; imposition is movement-free within tolerance; copied subgraphs
-  are kind-preserving isomorphic with fresh disjoint IDs.
+  scripts (a marked partition, not an incrementally maintained one — see the
+  stage 4 amendment); imposition is movement-free within tolerance; copied
+  subgraphs are kind-preserving isomorphic with fresh disjoint IDs.
 - Conformance sweeps, generated from the taxonomy: every constraint kind ×
   every operand signature — the applicability predicate must agree with the
   outcome of actually attempting it; every record kind serializes and
@@ -185,6 +186,13 @@ Stages 4 and 5 are the largest and each has a designated midpoint usable as a
 checkpoint: stage 4 after the line tool with coincidence/horizontal/vertical
 inference; stage 5 after registry projections plus imposition of distance,
 parallel, and equal.
+
+Stages 0 through 4 are complete and were reviewed as a block; docs/REVIEW.md
+holds the findings and all of them are closed. Where a finding changed what a
+stage does rather than merely what its code says, the stage carries an amendment
+paragraph — this document governs order, so a plan the work diverged from is
+worse than no plan. Work moved both ways: two format changes came forward into
+stage 4, and typing during a drag of existing geometry went back to stage 5.
 
 ### Stage 0 — seams and harness
 
@@ -312,6 +320,19 @@ which this plan already places at the point feel iteration begins in
 earnest. Building a player against C++ corpus builders now would be building
 it twice.
 
+Amended after the stage 0-4 review (findings 24 and 25). View state is still
+the shell's, but how a framing, a pan and a zoom compose into one transform is
+render's, beside the fitting it composes over: the arithmetic was living inside
+Qt event handlers where no headless test could reach it, which is the same
+reason keyboard resolution belongs to the registry. Three behaviours were named
+in this scope and not built — pan was accepted and dropped, zoom anchored on the
+viewport centre rather than the cursor, and the framing was re-derived from the
+document on every sync, so drawing geometry or confirming an offer re-framed the
+window mid-gesture. A framing is now fitted once and belongs to the user until
+resetView asks for another. The drawn grid also takes its step from the snap
+policy rather than a constant of render's own, since a grid is a promise about
+where a click lands.
+
 Tests: hit priority table-driven cases; signature correctness incl.
 mixed-depth selections; gesture corpus opening set — locality, saturation,
 release-commit, no-spring-back, undo-restores-predrag-bytes, delete counts;
@@ -385,6 +406,25 @@ belongs to more than one segment, and the surface that disambiguates it is
 stage 5's inline dimension editing. PRINCIPLES still fixes the semantics; this
 is an ordering change and nothing else.
 
+Amended after the stage 0-4 review (findings 12 and 20): two format changes
+stage 7 and stage 5 need arrived here instead. Horizontal and vertical carry a
+nullable reference axis, and tangency carries which end of the arc it holds at.
+Both are pure additions that serialize as they always did when unused, and both
+were pulled forward for the same reason: the format is versioned but not frozen
+until stage 8, and one change to it costs less than two. Stage 7's
+rotate-with-retarget and stage 5's imposable catalogue now find the vocabulary
+already there rather than amending the format under a feel window.
+
+Amended after the stage 0-4 review: WYSIWYG has a recall half, and the plan only
+named the precision one. A relation the commit would drop cannot be ghosted was
+built and tested; a relation the commit will declare must be ghosted was not,
+and every creation tool's opening click failed it — the click places a point
+whose relations wait in pendingSnaps_, so the overlay promised nothing and a
+coincidence appeared anyway. The property this stage exits on is both
+directions, and the corpus asserts the whole declared set rather than a member
+of it, because an assertion that only checks what should be present cannot fail
+on what should not.
+
 Exit: a sketch can be authored entirely by hand and gesture corpus covers
 drawing; feel window held for snap ranking and auto-commit tiering.
 
@@ -422,6 +462,88 @@ sampling); heal-and-fill scripts (epsilon joints healed, motion ≤ epsilon,
 region attached; loop with a crossing rejected with the deferred-case
 message per PRINCIPLES).
 
+Amended after the stage 0-4 review. Three things this stage inherits, each
+already load-bearing in stage 4:
+
+The conflicting set has to be walked, not rendered. checkCandidate reports what
+the solver blamed, and SolveSpace blames the constraint it could not satisfy —
+the candidate — while saying nothing about which existing one it disagrees with.
+The set is therefore often empty on an inconsistent verdict, and empty means
+unattributable rather than unconflicted. Populating it is the suppression walk
+stage 3's amendment already introduced SolveOptions::suppressed for; the verdict
+alone is what drives the downgrade until then.
+
+The downgrade itself exists and is automatic. A dimension that cannot hold is
+already committed as a driven reference measurement rather than as a driving
+constraint, checked against a copy of the document with the pending step applied
+— stage 4 had no surface to offer the choice on. This stage moves the choice to
+the user; the mechanism does not change.
+
+Make-solid refuses cycles shorter than three edges. Two straight segments over
+one pair of vertices pass the degree and connectivity tests and walk closed
+while enclosing nothing. The bound belongs with boundaries being segments-only
+and lifts when arcs become boundary-capable, since two curved edges do enclose a
+lens.
+
+Amended during the stage. Seven things the work settled that the plan did not
+say, each recorded because the reason is the load-bearing part:
+
+The constraint catalogue's actions are generated, not listed. Twenty-two kinds
+at three strengths is sixty-six rows, and a hand-written list of them would be
+the sixth projection free to drift that the taxonomy exists to prevent. They are
+built from CONSTRAINT_KINDS at first use, which cost one signature change —
+`applicable` and `invoke` take the action itself, so one function serves every
+generated row — and buys the property the stage was for: a relation added to the
+taxonomy reaches the strip, the palette, the keyboard, the script format and the
+conformance sweep without a second list being edited. The catalogue is therefore
+a runtime table rather than a constexpr one, built in one pass and never touched
+again so the string_views it hands out stay valid.
+
+Actions record themselves now, and stage 4's note that nothing records an Action
+step is retired. It was true while every action dispatched to a pointer event, a
+keystroke or a tool change, each of which records itself — so an action step
+re-recorded as the change it caused. Imposition and the fill actions have no such
+effect: they are reached by clicking a strip entry, and nothing else about that
+click is an input the session sees. Left alone, record → replay → record would
+have silently dropped every edit made through the new surface, which is the one
+property the script format exists to guarantee.
+
+A mark does not always beat the geometry under it. The hit priority policy puts
+adorners above geometry, and read unconditionally that is wrong: a mark sits a
+few pixels off the vertex it annotates, well inside that vertex's own hit radius,
+so a mark that always won swallowed the press that starts a drag. A stage 3
+corpus gesture caught it. Nearer wins — every mark stays reachable without
+spending the gesture the tool is mostly used for on the one it occasionally is.
+
+Where a mark sits on screen moved to core, beside GlyphMark. Render draws marks
+at their fanned-out positions and hit testing has to pick them there; computing
+the fan-out in both places is how a user comes to click a mark and select
+nothing. Same rule the pose follows, one layer up: one placement, two readers.
+
+Promoting a reference measurement to driving re-captures its value. A reference
+is a live readout of what the geometry is doing, so its slot holds whatever it
+last drove at and may be nothing like what it displays. Promotion is imposition,
+and imposition moves nothing — carrying the stale slot forward would make a
+toggle yank the drawing to a value the user was not looking at. Demotion leaves
+the slot alone, or the toggle would be one-way in everything but name.
+
+The typeface is a pinned build input, embedded as bytes rather than resolved at
+runtime. DejaVu Sans, from the pinned nixpkgs: freely redistributable, already
+in the closure, and a workhorse rather than a style statement, which is what a
+dimension label wants to be. Embedded because a font found through fontconfig
+makes the sandbox, a raster assertion and a user's machine answer differently,
+and a store path baked into the binary would be nix-specific and break the
+moment the app is copied. The build refuses to configure without one: an
+application whose dimensions are silently blank is worse than one that will not
+build.
+
+Carried forward deliberately: a region's fill draws straight edges only. Arcs
+are boundary-capable in the taxonomy, and a curved boundary needs the fill
+tessellated along the sweep — which lands with the arcs-as-boundaries work the
+three-edge minimum is already waiting on, since both are the same question about
+what a curved edge encloses. Region styling and the broken-region diagnostic are
+stage 6's, as scoped.
+
 By hand: select two segments, see ranked offers, hover to preview, impose;
 overdrive a value into conflict and walk the failing set; draw an
 almost-closed outline and heal-and-fill it; toggle a dimension between
@@ -444,6 +566,13 @@ in solves; hidden-still-constrains with the influence indication; region and
 tag degradation states rendered (broken-diagnostic rather than dissolution,
 one-step restore); bake-at-export stub recorded as the only destructive
 path (full export in stage 8).
+
+Amended after the stage 0-4 review (finding 26): groups are not in that
+deferral and never were. Membership is organization rather than structure, so a
+group that lost one entity still names the others correctly and shrinks rather
+than dies — deleting a member is a set-record over the membership today.
+Regions and tags are the ones whose contents are load-bearing, and they are what
+this stage's degradation states are about.
 
 Tests: analytic raster sampling for fills, punches, and composite stacks
 (inside/outside points, transparency where punched, layer-order
@@ -470,8 +599,11 @@ them.
 Scope: rotate and uniform scale of selections (exact isometry rewrite of
 seeds, then re-solve); the axis-constraint question surfaced once with
 preview (retarget horizontal/vertical to a cluster frame — construction
-geometry — or keep document axes); scale-the-values versus let-them-resist
-for absolute dimensions (slot rewrite by factor); non-uniform scale refused
+geometry — or keep document axes; the nullable reference axis this needs is
+already in the format, per the stage 4 amendment, so the work here is the
+surface and the flow rather than a format change under a feel window);
+scale-the-values versus let-them-resist for absolute dimensions (slot
+rewrite by factor); non-uniform scale refused
 in-model, available only at export-bake; copy/paste/duplicate with
 internal-constraint closure, fresh IDs, boundary-constraint drops indicated;
 duplicate-with-offset as the seed of patterns; compound relations —
@@ -562,7 +694,7 @@ earliest moment each becomes testable, and no later:
 | seeds | stage 1 journal shape; stage 2 store | branch fixture, undo byte-identity, scrub sweep |
 | slots | stage 1 | numeric twin scripts (4), scale-the-values (7) |
 | snapshots/contexts | stage 2 value types | preview-does-not-mutate (5), async determinism (8) |
-| topology | stage 1 graph | incremental-vs-rebuild property, regions (5, 6) |
+| topology | stage 1 graph | marked-vs-rebuild property, regions (5, 6) |
 | registry | stage 4 core, 5 projections | headless-invocable sweep, applicability conformance |
 | no-silent-changes | stage 3 ripple, 4 inference visibility, 5 motion display, 6 influence | corpus scripts per surface |
 
@@ -580,8 +712,8 @@ existing undo stream is the expensive path.
 | Risk | Probe | Contingency |
 |---|---|---|
 | translation overhead dominates warm solves | stage 2 bench isolates translate vs solve | persistent translation caches keyed by component version, behind the solve seam |
-| saturation attribution unclear or noisy | stage 3 spike: hard-pin speculative diagnosis | degrade to highlighting the constraint chain of the dragged component |
-| inference feels naggy or rigidifies documents | corpus precision/recall + decline counts in dev builds | tier thresholds are policies; worst case, parallel/perpendicular drop to offer-only |
+| saturation attribution unclear or noisy | settled in stage 3: the hard pin only ever names itself, so attribution is a leave-one-out counterfactual on absolute travel | degrade to highlighting the constraint chain of the dragged component |
+| inference feels naggy or rigidifies documents | tests/gestures/inference.cpp, exact declared sets either side of each tolerance edge; decline counts in dev builds | tier thresholds are policies; worst case, parallel/perpendicular drop to offer-only |
 | Skia GPU sharing with Qt RHI fails on pinned builds | track R spike before commitment | CPU raster + damage rects + upload; interface already isolates the choice |
 | taxonomy tables ossify or leak abstraction | three-consumers rule before any generalization | tables are plain data; projections are functions; no codegen until proven need |
 | SolveSpace redundancy quirks (`REDUNDANT_OKAY`) | stage 2 redundancy variants per catalogue entry | creation-time speculative check owns the policy; solver status never surfaces raw |
