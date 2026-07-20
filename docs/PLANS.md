@@ -574,6 +574,110 @@ than dies — deleting a member is a set-record over the membership today.
 Regions and tags are the ones whose contents are load-bearing, and they are what
 this stage's degradation states are about.
 
+Amended during the stage 6 build, in the order the decisions were forced.
+
+A lock is a solver group, not a Pin constraint. Locking means "this does not
+move", and in a solver world that means its parameters join the fixed set —
+GROUP_BASE, the one the workplane sits in, which Slvs_Solve treats as known. A
+Pin would be the wrong mechanism twice over: it is a relation the user asked for,
+it appears in the failing set, and it can over-constrain, where a lock is
+presentation state that must never be able to make a system inconsistent. It
+removes unknowns rather than adding equations. Which entities are locked is
+derived from the document inside the translation rather than passed in as an
+option, because otherwise every caller — the drag path, the diagnose path, each
+speculative preview — would have to remember, and forgetting produces geometry
+that slides out from under a lock with nothing asserting.
+
+That has a corollary the first corpus run found. A constraint every one of whose
+operands is locked has no unknown left to satisfy it, and emitting it anyway
+makes the verdict Inconsistent — a lock making a system contradictory, which is
+precisely what the paragraph above says it must never do. So a fully frozen
+constraint is left out of the system. It is already satisfied, by geometry that
+cannot move, so no answer changes. Seeding a locked parameter to the cursor is
+the same hazard from the other side: the solver takes a fixed parameter's seed as
+its known value, so writing the cursor there would not ask for a move, it would
+perform one — the one place a drag target does not go through the solver at all.
+
+Drag-together is a rigid translation outside the solve, not a dragged-set hint. A
+group usually joins geometry that is not connected — that is what makes it worth
+grouping — so there is no equation relating the members and locality would keep
+an unconnected component still. Whole components translate, not the named members
+alone: translating one end of a constrained bar would break the bar, and
+translating all of it cannot break anything, because every relation in the
+catalogue is translation-invariant. The offset is measured from where the grab
+started rather than accumulated per frame, so a drag that saturates and comes
+back does not leave the carried geometry displaced by the sum of the frames it
+spent stuck.
+
+z-order is on regions and nowhere else. Within a layer only fills occlude —
+strokes are stroked, and two strokes in a layer do not hide each other — so the
+whole of the occlusion order is the layer plus a signed z per region. Putting a z
+on every entity would have bought an ordering nobody can see and cost a
+restructure of the draw loop into per-entity passes. Raise and lower therefore
+act on regions and on layers, and the draw loop is per layer: that layer's fills
+composited among themselves, then its strokes, with vertices last over
+everything because a handle is an adorner.
+
+Degradation is a shrink, and shrinking made the validator's job smaller rather
+than larger. A region that lost a boundary edge keeps the edges it has; a
+composite that lost an operand keeps the operands it has; a tag keeps what it
+still names. None of them is refused for being thin, because refusing would mean
+a deletion could only proceed by taking the higher-order record with it, which is
+the silent discard the whole degradation story exists to prevent. Whether a
+region is whole enough to draw is therefore not a validation question at all —
+it is regionState(), asked in one place, by the renderer and by the diagnostic
+readout alike.
+
+That forced a real fix rather than a new feature. deletionStep grew a
+whole-selection overload, because the per-entity cascades a multi-selection used
+to be stitched together from each computed their own shrink of the same region,
+each dropping a different edge, and the deduplication in front of them kept
+whichever came first. The step then failed on the removals the surviving shrink
+had not accounted for and rolled back, so deleting two edges of a filled loop
+silently did nothing. Same shape as the group-shrink note in stage 1: a shrink
+has to be computed over the whole doomed set or it is computed wrong.
+
+Walking a region's boundary moved to core, and became topological on the way.
+Render was matching endpoints by coordinate, which is what it had; the
+degradation query needs the same answer and must not be a second implementation
+of it. Coincidence is what decides that two ends are one joint — corners are
+separate points joined by a relation, so identity matching would call every
+rectangle broken, and coordinate matching calls an unsolved document broken and
+flickers. boundaryRing asks the document and takes no pose.
+
+Booleans are records over live operands, and a region is named by selecting what
+bounds it. No third selection list: a fill has no handle of its own, which is the
+same reason it has no geometry of its own, so an outline counts as selected when
+every edge it names is and a composite counts when every operand does. An operand
+belongs to at most one composite, or it would draw twice and lifting it back out
+would have two answers. Punch-through draws inside a saved layer, so an alpha
+overwrite carves what its layer accumulated rather than cutting to the canvas —
+cutting through would make a hole's effect depend on what happened to be
+underneath it, which is the destructive reading of a boolean rather than the
+compositional one.
+
+Styling values are slots, and entities gained a style reference so strokes are
+covered by that. Opacity joined stroke width as a slot; the colours stay packed
+RGBA because they are not quantities arithmetic applies to. The payoff is the one
+the slot thread always promised: a named document parameter drives every fill's
+transparency at once, and scrubbing it is an ordinary value edit rather than a
+styling system of its own.
+
+The bake is a value-producing projection in core, and the polygon boolean is not
+in it. Baking never mutates a document and there is no in-document bake; what it
+returns is rings tagged with the operation that joins them, plus counts of what
+was lost. Resolving a union or an intersect into a single outline needs a path
+library, which belongs with the exporter in stage 8 — core has no business
+growing one, and a half-resolved boolean baked now would be the lossy converter
+this project refuses to build.
+
+Actions record under the registry's name for them, never a name of their own.
+Layer visibility is two actions and was briefly recorded as one with a flag; the
+step named something the registry does not have, so replay dropped it, the script
+still parsed, and the edit was gone. Record → replay → record held on both sides
+because both sides had lost it. The corpus gesture now checks that every step it
+recorded names a registered action.
+
 Tests: analytic raster sampling for fills, punches, and composite stacks
 (inside/outside points, transparency where punched, layer-order
 permutations); lock-as-pin (locked params bit-unchanged under connected
@@ -582,6 +686,15 @@ invisible operand moves a visible result; degradation and restore scripts
 (delete an edge of a filled loop → diagnostic state → undo restores bytes);
 cross-layer constraints solve identically to same-layer (partition is
 layer-blind).
+
+Carried forward deliberately. A region's fill still draws straight edges only,
+for the reason stage 5 recorded and this stage did not change: a curved boundary
+needs the fill tessellated along the sweep, which lands with arcs-as-boundaries
+alongside the three-edge minimum. Tag degradation is modelled, queryable and
+tested, but nothing renders a broken tag, because nothing creates a tag — the
+rectangle tool's tag is stage 7's, and it is the only producer there will be, so
+the affordance and its degraded state land together rather than one of them
+landing against a record no gesture can make.
 
 By hand: build a cut-out that stays constrained to what it cuts; drag the
 plate, hole follows; hide the driver layer and watch the influence

@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <variant>
 #include <vector>
 
@@ -225,14 +226,34 @@ ParameterDependents dependentsOf(const Document &doc, ParameterId id);
 // rely on, while keeping "cannot delete: in use" out of the tool entirely: the
 // answer to a deletion is always a bigger deletion, reported by count.
 //
-// Regions and tags are removed outright in stage 1. Stage 6 replaces that with
-// the degradation states PRINCIPLES calls for, where a region whose boundary
-// lost an edge renders broken rather than vanishing.
+// Nothing higher-order dies here. Relations naming a deleted operand are
+// meaningless without it and are removed; regions, tags and groups shrink and
+// keep what they have left. A region thinned past enclosing anything renders in
+// the broken-diagnostic state rather than vanishing, which is what makes undo a
+// one-step restore: the shrink is a whole-record set and its inverse is exact.
 //
-// Groups are not in that deferral and never were: membership is organization,
-// not structure, so a group that lost one entity still names the others
-// correctly and shrinks rather than dies.
+// The shrinks are emitted before the removals, so no record names something
+// already gone even between two commands of the same step.
+//
+// A multi-entity deletion is one call, never one call per victim stitched
+// together. Each shrink is computed over the whole doomed set: two calls would
+// each drop a different edge from the same region and one of them would have to
+// win, which is the wrong answer whichever it is.
 std::vector<Command> deletionStep(const Document &doc, EntityId id);
+std::vector<Command> deletionStep(const Document &doc, std::span<const EntityId> ids);
+
+// The composites naming `id` as an operand, in ID order.
+std::vector<RegionId> compositesOver(const Document &doc, RegionId id);
+
+// The ordered command sequence that removes a region, lifting it out of every
+// composite that names it first. Apply it as one undo step.
+//
+// The composites shrink rather than dying: a combination of the operands it has
+// left is still what it means, and the operands it kept become visible in their
+// own right again. That is the non-destructive half of the boolean promise —
+// nothing was consumed to make the composite, so nothing is stranded by
+// dismantling one.
+std::vector<Command> deletionStep(const Document &doc, RegionId id);
 
 // The ordered command sequence that removes a parameter without leaving a slot
 // reading a name that is gone. Apply it as one undo step.

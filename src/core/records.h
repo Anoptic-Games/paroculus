@@ -12,6 +12,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "core/ids.h"
@@ -53,6 +54,7 @@ struct EntityRecord {
     EntityKind kind = EntityKind::Point;
     Role role = Role::Normal;
     LayerId layer;
+    StyleId style;
     std::array<EntityId, MAX_ENTITY_POINTS> points{};
     std::array<double, MAX_ENTITY_PARAMS> seeds{};
 
@@ -109,16 +111,49 @@ inline size_t boundOperandCount(const ConstraintRecord &r) {
     return count;
 }
 
-// A fill referencing a closed cycle of edges. Not a copy of them: the outline
-// keeps its constraints, and dragging a vertex moves the fill because the fill
-// has no geometry of its own to go stale.
+// How a region gets its area. Outline walks a cycle of edges; the rest combine
+// other regions, which stay live records of their own.
+//
+// Booleans are composition, never consumption: a composite names its operands
+// and computes their combination every frame, so the operands keep their
+// constraints, can be constrained to each other — the hole staying concentric
+// with the plate — and reappear the moment the composite is deleted. Destructive
+// path booleans, where operands are consumed to mint a new outline, exist
+// nowhere in this model; the only place they exist at all is the export bake.
+enum class CompositeOp : uint8_t { Outline, Union, Intersect, Subtract };
+
+const char *compositeOpName(CompositeOp op);
+bool compositeOpFromName(std::string_view name, CompositeOp &out);
+
+// A fill referencing a closed cycle of edges, or a combination of other fills.
+// Not a copy of either: the outline keeps its constraints, and dragging a vertex
+// moves the fill because the fill has no geometry of its own to go stale.
 struct RegionRecord {
     using IdType = RegionId;
 
     RegionId id;
+    CompositeOp op = CompositeOp::Outline;
+
+    // Outline regions name edges here and nothing in `operands`; composites do
+    // the reverse. Exactly one of the two is populated, which is what makes
+    // "how does this region get its area" a question with one answer.
     std::vector<EntityId> boundary;
+    std::vector<RegionId> operands;
+
     StyleId style;
     LayerId layer;
+
+    // Order within the layer. Signed, so a region can be pushed below the ones
+    // that were there before it without renumbering them. Ties break by ID,
+    // which is creation order, so the order is total and stable.
+    int32_t z = 0;
+
+    // Alpha overwrite: this region carves visibility out of what its layer has
+    // accumulated so far rather than painting over it. The cut-out half of the
+    // README's layering thesis, and compositional like the rest of it — the
+    // shape stays a live constrained object and lifting it out restores what it
+    // was hiding.
+    bool punch = false;
 
     friend bool operator==(const RegionRecord &, const RegionRecord &);
     friend bool operator!=(const RegionRecord &a, const RegionRecord &b) { return !(a == b); }
@@ -141,8 +176,10 @@ struct TagRecord {
     friend bool operator!=(const TagRecord &a, const TagRecord &b) { return !(a == b); }
 };
 
-// Presentation properties. Widths are slots like every other value, so they
-// scrub and take expressions for free; colours are packed RGBA because they are
+// Presentation properties. The quantities are slots like every other value, so
+// they scrub, take expressions and follow a named document parameter for free —
+// that is the whole point of the slot indirection being unconditional rather
+// than reserved for constraint values. Colours are packed RGBA because they are
 // not quantities arithmetic applies to.
 struct StyleRecord {
     using IdType = StyleId;
@@ -150,6 +187,7 @@ struct StyleRecord {
     StyleId id;
     std::string name;
     Slot strokeWidth{1.0};
+    Slot opacity{1.0};
     uint32_t strokeColor = 0xff000000u;
     uint32_t fillColor = 0x00000000u;
     bool filled = false;

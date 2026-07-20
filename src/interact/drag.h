@@ -126,10 +126,20 @@ public:
     // what has to give into the geometry the user did not select. Anything
     // selected outside this component is not in this solve — locality outranks
     // it, and nothing connects the two.
+    // carried: entities that must travel with the grab whatever the constraint
+    // graph says. This is drag-together, and it is the one thing a group does
+    // that the solver cannot express. A group usually joins geometry that is
+    // not connected, so putting its members in the dragged set would do
+    // nothing — the solver has no equation relating them, and locality keeps
+    // an unconnected component from moving at all. So they translate rigidly
+    // by whatever the grab travelled, outside the solve rather than through it,
+    // which is also the honest reading: a group is a default, not a constraint,
+    // and grouping two things declares nothing about the document's meaning.
     static std::optional<DragSession> begin(const Document &doc, const Topology &topology,
                                             EntityId grabbed,
                                             const std::vector<EntityId> &selection,
-                                            const HitPolicy &policy);
+                                            const HitPolicy &policy,
+                                            const std::vector<EntityId> &carried = {});
 
     // Moves the target to `cursor` and re-solves, warm-started from the last
     // pose. Cheap by design: this runs once per frame.
@@ -169,6 +179,13 @@ private:
     // Everything whose parameters the solver is told the user is holding: the
     // grab, plus whatever else the selection contributes to this component.
     std::vector<EntityId> dragged_;
+    // Entities translating rigidly with the grab, and where they and the grab
+    // started. Measured from the origin rather than accumulated frame by frame,
+    // so a drag that saturates and comes back does not leave them displaced by
+    // the sum of the frames it spent stuck.
+    std::vector<SeedSpan> carriedOrigin_;
+    Point grabOrigin_;
+    bool haveGrabOrigin_ = false;
     HitPolicy policy_;
     uint64_t generation_ = 0;
 };

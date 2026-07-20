@@ -475,6 +475,32 @@ QVariantList SketchView::strip() const {
     return out;
 }
 
+// Back to front, so the list reads the way the drawing stacks. The implicit
+// base layer is left out: it has no record, so there is nothing to toggle and a
+// row offering to would be a row that cannot do anything.
+QVariantList SketchView::layers() const {
+    QVariantList out;
+    for(paroculus::LayerId id : paroculus::layerOrder(session_->document())) {
+        const paroculus::LayerRecord *layer = session_->document().layers().find(id);
+        if(layer == nullptr) continue;
+        QVariantMap row;
+        row["id"] = static_cast<int>(layer->id.value());
+        row["name"] = QString::fromStdString(layer->name);
+        row["visible"] = layer->visible;
+        row["locked"] = layer->locked;
+        out.prepend(row);
+    }
+    return out;
+}
+
+int SketchView::hiddenInfluences() const {
+    return static_cast<int>(session_->presentation().hiddenInfluences.size());
+}
+
+int SketchView::brokenRegions() const {
+    return static_cast<int>(session_->presentation().brokenRegions.size());
+}
+
 QVariantList SketchView::palette(const QString &query) const {
     QVariantList out;
     const std::string text = query.toStdString();

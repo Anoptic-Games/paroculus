@@ -173,6 +173,35 @@ ApplicationWindow {
         onActivated: palette.visible ? palette.close() : palette.open()
     }
 
+    // The layers, back to front. Permanent furniture, so it is spatially stable:
+    // a layer does not move in the list because the selection changed, and a
+    // hidden or locked one dims rather than vanishes — the same discipline the
+    // palette follows and the transient strip deliberately does not.
+    Column {
+        anchors { right: parent.right; rightMargin: 20; top: parent.top; topMargin: 56 }
+        spacing: 4
+        visible: sketch.layers.length > 0
+
+        Repeater {
+            model: sketch.layers
+            delegate: Row {
+                spacing: 8
+                Text {
+                    color: modelData.visible ? "#c8d2e0" : "#5c646f"
+                    font.pixelSize: 12
+                    text: modelData.name
+                }
+                Text {
+                    color: "#7f8794"
+                    font.pixelSize: 12
+                    font.family: "monospace"
+                    text: (modelData.visible ? "" : "hidden ") +
+                          (modelData.locked ? "locked" : "")
+                }
+            }
+        }
+    }
+
     Rectangle {
         anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
         height: 78
@@ -198,13 +227,42 @@ ApplicationWindow {
             text: sketch.dof >= 0 ? qsTr("%1 dof").arg(sketch.dof) : qsTr("unsolved")
         }
 
+        // Nothing the system does on its own initiative is invisible. These are
+        // two faces of that one policy: something the user cannot see moved
+        // something they can, and a deletion left a fill unable to enclose what
+        // it still says it encloses. Both are diagnostics beside the work, never
+        // dialogs, because there is no error state that suspends editing.
+        Text {
+            id: influence
+            anchors { left: dofLabel.right; leftMargin: 18; baseline: label.baseline }
+            visible: sketch.hiddenInfluences > 0
+            color: "#e0c07c"
+            font.pixelSize: 13
+            font.family: "monospace"
+            text: qsTr("%1 hidden influencing").arg(sketch.hiddenInfluences)
+        }
+
+        Text {
+            anchors {
+                left: influence.visible ? influence.right : dofLabel.right
+                leftMargin: 18
+                baseline: label.baseline
+            }
+            visible: sketch.brokenRegions > 0
+            color: "#ff8c42"
+            font.pixelSize: 13
+            font.family: "monospace"
+            text: qsTr("%1 broken").arg(sketch.brokenRegions)
+        }
+
         Text {
             anchors { left: parent.left; leftMargin: 20; top: label.bottom; topMargin: 8 }
             color: "#7f8794"
             font.pixelSize: 11
             // Drag is a solve; everything else is selection. Esc lands home.
             text: qsTr("drag a point · shift-click to extend · marquee on empty space · " +
-                       "del to delete · z / shift-z to undo · ctrl-p for commands · " +
+                       "del to delete · z / shift-z to undo · g / shift-g to group · " +
+                       "h / k to hide or lock a layer · ctrl-p for commands · " +
                        "wheel to zoom · esc to clear")
         }
 

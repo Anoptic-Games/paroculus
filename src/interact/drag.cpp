@@ -1,5 +1,6 @@
 #include "interact/drag.h"
 
+#include "core/composition.h"
 #include "core/measure.h"
 
 #include <cmath>
@@ -54,6 +55,12 @@ double componentExtent(const SolveContext &context, const Document &doc) {
 bool seedTarget(SolveContext &context, const Document &doc, EntityId grabbed, Point cursor) {
     const EntityRecord *e = doc.entities().find(grabbed);
     if(e == nullptr) return false;
+    // A locked parameter is a known, and the solver takes the value it was
+    // seeded with as that known. So seeding a lock to the cursor would not ask
+    // for a move, it would perform one — the one case where writing a target
+    // does not go through the solver at all. Leaving the span alone is what
+    // makes a locked layer feel pinned rather than merely claim to be.
+    if(isLocked(doc, grabbed)) return false;
 
     if(e->kind == EntityKind::Circle) {
         const std::optional<Point> centre = context.point(e->points[0]);
@@ -101,7 +108,8 @@ std::optional<Point> handlePose(const SolveContext &context, const Document &doc
 std::optional<DragSession> DragSession::begin(const Document &doc, const Topology &topology,
                                               EntityId grabbed,
                                               const std::vector<EntityId> &selection,
-                                              const HitPolicy &policy) {
+                                              const HitPolicy &policy,
+                                              const std::vector<EntityId> &carried) {
     const EntityRecord *e = doc.entities().find(grabbed);
     if(e == nullptr) return std::nullopt;
     // Only entities owning parameters can be dragged directly, which is points
@@ -112,10 +120,40 @@ std::optional<DragSession> DragSession::begin(const Document &doc, const Topolog
     if(entityInfo(e->kind).ownParamCount == 0) return std::nullopt;
 
     DragSession session;
-    session.context_ = SolveContext::forComponent(doc, topology, grabbed);
+    // The grabbed component, plus the components of anything carried. Carried
+    // geometry is usually unconnected — that is what makes it need carrying —
+    // so it has to be in the context to be moved and committed at all.
+    std::vector<EntityId> anchors{grabbed};
+    for(EntityId id : carried) {
+        if(id != grabbed) anchors.push_back(id);
+    }
+    session.context_ = anchors.size() > 1
+                           ? SolveContext::forComponents(doc, topology, anchors)
+                           : SolveContext::forComponent(doc, topology, grabbed);
     if(session.context_.empty()) return std::nullopt;
     session.grabbed_ = grabbed;
     session.policy_ = policy;
+
+    // Whole components, not the named members alone.
+    //
+    // Translating one end of a constrained bar would break the bar; translating
+    // all of it cannot break anything, because every relation in the catalogue
+    // is translation-invariant. Anything in the grabbed entity's own component
+    // is left out: there the constraints already do the work, and translating
+    // on top of the solver would fight it.
+    for(const SeedSpan &span : session.context_.params()) {
+        if(topology.sameComponent(span.entity, grabbed)) continue;
+        const bool withCarried = std::any_of(carried.begin(), carried.end(), [&](EntityId id) {
+            return topology.sameComponent(span.entity, id);
+        });
+        if(withCarried) session.carriedOrigin_.push_back(span);
+    }
+    if(!session.carriedOrigin_.empty()) {
+        if(const std::optional<Point> at = session.context_.point(grabbed)) {
+            session.grabOrigin_ = *at;
+            session.haveGrabOrigin_ = true;
+        }
+    }
 
     // The grab first, then everything else the user is holding that has
     // parameters of its own and is in this solve.
@@ -168,6 +206,26 @@ DragUpdate DragSession::update(const Document &doc, const Viewport &viewport, Po
     // write a constraint-violating document.
     const bool diverged = !outcome.ok();
     if(diverged) context_ = lastGood;
+
+    // Drag-together, applied after the solve rather than through it. Measured
+    // from where the grab started, so a drag that saturates and comes back
+    // leaves the carried geometry where the grab actually is rather than
+    // displaced by the sum of the frames it spent stuck.
+    if(haveGrabOrigin_) {
+        if(const std::optional<Point> now = context_.point(grabbed_)) {
+            const double dx = now->x - grabOrigin_.x;
+            const double dy = now->y - grabOrigin_.y;
+            for(const SeedSpan &origin : carriedOrigin_) {
+                const EntityRecord *carried = doc.entities().find(origin.entity);
+                if(carried == nullptr || carried->kind != EntityKind::Point) continue;
+                for(SeedSpan &span : context_.params()) {
+                    if(span.entity != origin.entity) continue;
+                    span.seeds[0] = origin.seeds[0] + dx;
+                    span.seeds[1] = origin.seeds[1] + dy;
+                }
+            }
+        }
+    }
 
     const std::optional<Point> landed = handlePose(context_, doc, grabbed_, cursor);
     if(landed) {

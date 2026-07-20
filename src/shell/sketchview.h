@@ -22,6 +22,7 @@
 
 #include "core/undo.h"
 #include "interact/script.h"
+#include "core/composition.h"
 #include "interact/session.h"
 #include "render/view.h"
 
@@ -39,6 +40,14 @@ class SketchView : public QQuickPaintedItem {
     // ranked. A projection of the registry and nothing else — the shell
     // decides how an entry looks and never whether it applies.
     Q_PROPERTY(QVariantList strip READ strip NOTIFY changed)
+    // The layers, back to front, with what the surface needs to toggle them.
+    // The implicit base layer is not in here: it has no record to change.
+    Q_PROPERTY(QVariantList layers READ layers NOTIFY changed)
+    // Two diagnostics, both faces of no-silent-changes. Something invisible
+    // moved something visible; something the user deleted left a region unable
+    // to enclose what it still says it encloses.
+    Q_PROPERTY(int hiddenInfluences READ hiddenInfluences NOTIFY changed)
+    Q_PROPERTY(int brokenRegions READ brokenRegions NOTIFY changed)
 
 public:
     explicit SketchView(QQuickItem *parent = nullptr);
@@ -51,6 +60,9 @@ public:
     int dof() const;
     QString solveStatus() const;
     QVariantList strip() const;
+    QVariantList layers() const;
+    int hiddenInfluences() const;
+    int brokenRegions() const;
 
     // The whole catalogue, filtered. Inapplicable entries come back marked
     // rather than missing, because a command that vanishes is a command the

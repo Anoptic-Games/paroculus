@@ -350,8 +350,12 @@ std::string serialize(const Document &doc) {
         out += "style " + std::to_string(r.id.value()) + " name=" + quote(r.name) +
                " stroke-width=" + writeSlot(r.strokeWidth) +
                " stroke=" + std::to_string(r.strokeColor) +
-               " fill=" + std::to_string(r.fillColor) + " filled=" + (r.filled ? "1" : "0") +
-               "\n";
+               " fill=" + std::to_string(r.fillColor) + " filled=" + (r.filled ? "1" : "0");
+        // Written only when it is not fully opaque, on the same rule as every
+        // other field added after the format existed: a document that does not
+        // use one writes the line it always wrote.
+        if(r.opacity != Slot(1.0)) out += " opacity=" + writeSlot(r.opacity);
+        out += "\n";
     }
     for(const ParameterRecord &r : doc.parameters().records()) {
         out += "parameter " + std::to_string(r.id.value()) + " name=" + quote(r.name) +
@@ -362,6 +366,7 @@ std::string serialize(const Document &doc) {
         out += "entity " + std::to_string(r.id.value()) + " kind=" + std::string(info.name) +
                " role=" + std::string(roleName(r.role)) +
                " layer=" + std::to_string(r.layer.value());
+        if(r.style.valid()) out += " style=" + std::to_string(r.style.value());
         out += " points=";
         if(info.pointCount == 0) {
             out += "-";
@@ -406,7 +411,17 @@ std::string serialize(const Document &doc) {
         out += "region " + std::to_string(r.id.value()) +
                " style=" + std::to_string(r.style.value()) +
                " layer=" + std::to_string(r.layer.value()) +
-               " boundary=" + idList(r.boundary) + "\n";
+               " boundary=" + idList(r.boundary);
+        // A plain filled outline writes exactly the line it wrote before the
+        // algebra existed. The op is named rather than numbered, so inserting
+        // an operation later cannot reinterpret a file written before it.
+        if(r.op != CompositeOp::Outline) {
+            out += " op=" + std::string(compositeOpName(r.op));
+            out += " operands=" + idList(r.operands);
+        }
+        if(r.z != 0) out += " z=" + std::to_string(r.z);
+        if(r.punch) out += " punch=1";
+        out += "\n";
     }
     for(const TagRecord &r : doc.tags().records()) {
         out += "tag " + std::to_string(r.id.value()) +
@@ -538,6 +553,11 @@ LoadResult deserialize(std::string_view text, Document &out) {
             if(const auto v = field(f, "stroke")) r.strokeColor = toUint(*v).value_or(0);
             if(const auto v = field(f, "fill")) r.fillColor = toUint(*v).value_or(0);
             if(const auto v = field(f, "filled")) r.filled = (*v == "1");
+            if(const auto v = field(f, "opacity")) {
+                const auto s = parseSlot(*v);
+                if(!s) return fail("malformed style opacity", lineNumber);
+                r.opacity = *s;
+            }
             if(!DocumentLoader::styles(doc).addAt(std::move(r))) {
                 return fail("duplicate style id", lineNumber);
             }
@@ -573,6 +593,7 @@ LoadResult deserialize(std::string_view text, Document &out) {
                 r.role = (*v == "construction") ? Role::Construction : Role::Normal;
             }
             if(const auto v = field(f, "layer")) r.layer = LayerId(toUint(*v).value_or(0));
+            if(const auto v = field(f, "style")) r.style = StyleId(toUint(*v).value_or(0));
 
             const EntityKindInfo &info = entityInfo(r.kind);
             if(const auto v = field(f, "points")) {
@@ -655,6 +676,22 @@ LoadResult deserialize(std::string_view text, Document &out) {
                 if(!list) return fail("malformed region boundary", lineNumber);
                 r.boundary = *list;
             }
+            if(const auto v = field(f, "op")) {
+                if(!compositeOpFromName(*v, r.op)) {
+                    return fail("unknown region operation", lineNumber);
+                }
+            }
+            if(const auto v = field(f, "operands")) {
+                const auto list = parseIdList<RegionId>(*v);
+                if(!list) return fail("malformed region operands", lineNumber);
+                r.operands = *list;
+            }
+            if(const auto v = field(f, "z")) {
+                const auto n = toInt(*v);
+                if(!n) return fail("malformed region order", lineNumber);
+                r.z = *n;
+            }
+            if(const auto v = field(f, "punch")) r.punch = (*v == "1");
             if(!DocumentLoader::regions(doc).addAt(std::move(r))) {
                 return fail("duplicate region id", lineNumber);
             }

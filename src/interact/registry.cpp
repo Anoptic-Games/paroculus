@@ -121,6 +121,106 @@ bool doWalkConflicts(Session &session, const Action &, const ActionArguments &) 
     return session.selectConflicting();
 }
 
+// Composition. Each of these is one line because Session owns the semantics;
+// what the registry contributes is that they are reachable identically from the
+// palette, the keyboard, a script and a test.
+bool doNewLayer(Session &session, const Action &, const ActionArguments &) {
+    return session.newLayer();
+}
+
+// Named, else the newest layer — which is the only reading under which "move to
+// layer" with nothing named does anything at all. Defaulting to the selection's
+// own layer, as the visibility and lock actions do, would make this action a
+// no-op every time it was invoked without an argument.
+bool doAssignLayer(Session &session, const Action &, const ActionArguments &a) {
+    const std::optional<double> named = a.value("layer");
+    return session.assignLayer(named && *named > 0.0
+                                   ? LayerId(static_cast<uint32_t>(*named))
+                                   : session.topLayer());
+}
+
+template <bool Visible>
+bool doLayerVisible(Session &session, const Action &, const ActionArguments &a) {
+    return session.setLayerVisible(session.targetLayer(a.value("layer")), Visible);
+}
+
+template <bool Locked>
+bool doLayerLocked(Session &session, const Action &, const ActionArguments &a) {
+    return session.setLayerLocked(session.targetLayer(a.value("layer")), Locked);
+}
+
+template <int Delta>
+bool doMoveLayer(Session &session, const Action &, const ActionArguments &a) {
+    return session.moveLayer(session.targetLayer(a.value("layer")), Delta);
+}
+
+template <CompositeOp Op>
+bool doCompose(Session &session, const Action &, const ActionArguments &) {
+    return session.composeRegions(Op);
+}
+
+bool doLift(Session &session, const Action &, const ActionArguments &) {
+    return session.liftComposite();
+}
+
+bool doPunch(Session &session, const Action &, const ActionArguments &) {
+    return session.togglePunch();
+}
+
+template <int Delta>
+bool doMoveRegion(Session &session, const Action &, const ActionArguments &) {
+    return session.moveRegion(Delta);
+}
+
+bool doGroup(Session &session, const Action &, const ActionArguments &) {
+    return session.groupSelection();
+}
+
+bool doDissolveGroup(Session &session, const Action &, const ActionArguments &) {
+    return session.dissolveGroups();
+}
+
+// The bake produces a value and changes nothing, so invoking it is not an edit
+// and journals nothing. Stage 8 hands the value to a writer.
+bool doBake(Session &session, const Action &, const ActionArguments &) {
+    session.bake();
+    return true;
+}
+
+constexpr ActionParameter LAYER_PARAMETERS[] = {{"layer", false}};
+
+// A layer action applies when there is a layer to act on and acting would
+// change something. An action that says it applies and then declines is a
+// surface offering what the model refuses, which is the one thing the registry
+// exists to make impossible.
+const LayerRecord *contextLayer(const ActionContext &c) {
+    if(c.document == nullptr || c.layer == 0) return nullptr;
+    return c.document->layers().find(LayerId(c.layer));
+}
+
+template <bool Visible>
+bool canSetVisible(const ActionContext &c, const Action &) {
+    const LayerRecord *l = contextLayer(c);
+    return l != nullptr && l->visible != Visible;
+}
+
+template <bool Locked>
+bool canSetLocked(const ActionContext &c, const Action &) {
+    const LayerRecord *l = contextLayer(c);
+    return l != nullptr && l->locked != Locked;
+}
+
+bool haveLayer(const ActionContext &c, const Action &) { return contextLayer(c) != nullptr; }
+
+bool canAssignLayer(const ActionContext &c, const Action &) {
+    return c.document != nullptr && !c.selection.empty() && !c.document->layers().empty();
+}
+bool haveRegions(const ActionContext &c, const Action &) { return c.selectedRegions > 0; }
+bool haveTwoRegions(const ActionContext &c, const Action &) { return c.selectedRegions > 1; }
+bool haveComposite(const ActionContext &c, const Action &) { return c.selectedComposites > 0; }
+bool haveGroupable(const ActionContext &c, const Action &) { return c.selection.size() > 1; }
+bool haveGroup(const ActionContext &c, const Action &) { return c.groupedSelection; }
+
 // A title a surface can show, derived rather than stored: "point-on-line"
 // becomes "Point on line". The taxonomy's name is a serialization token and
 // therefore format; a title is presentation and free to change, so deriving one
@@ -198,6 +298,41 @@ const Catalogue &catalogue() {
              haveSelectedConstraints, doToggleDriving},
             {"relation.walk-conflicts", "Select conflicting", "shift+w", {}, haveConflicts,
              doWalkConflicts},
+
+            // Layers and groups: organization, so none of these touches a
+            // constraint and none of them can refuse an edit. Only visibility
+            // and lock take keys — the rest live in the palette, where a
+            // permanent surface dims what does not apply rather than hiding it.
+            {"layer.new", "New layer", {}, {}, always, doNewLayer},
+            {"layer.assign", "Move to layer", {}, LAYER_PARAMETERS, canAssignLayer,
+             doAssignLayer},
+            {"layer.hide", "Hide layer", "h", LAYER_PARAMETERS, canSetVisible<false>,
+             doLayerVisible<false>},
+            {"layer.show", "Show layer", "shift+h", LAYER_PARAMETERS, canSetVisible<true>,
+             doLayerVisible<true>},
+            {"layer.lock", "Lock layer", "k", LAYER_PARAMETERS, canSetLocked<true>,
+             doLayerLocked<true>},
+            {"layer.unlock", "Unlock layer", "shift+k", LAYER_PARAMETERS, canSetLocked<false>,
+             doLayerLocked<false>},
+            {"layer.raise", "Raise layer", {}, LAYER_PARAMETERS, haveLayer, doMoveLayer<1>},
+            {"layer.lower", "Lower layer", {}, LAYER_PARAMETERS, haveLayer, doMoveLayer<-1>},
+            {"group.create", "Group", "g", {}, haveGroupable, doGroup},
+            {"group.dissolve", "Ungroup", "shift+g", {}, haveGroup, doDissolveGroup},
+
+            // Booleans as composition. The operands survive every one of these,
+            // which is what makes lift a real inverse rather than an undo.
+            {"region.union", "Union", {}, {}, haveTwoRegions, doCompose<CompositeOp::Union>},
+            {"region.intersect", "Intersect", {}, {}, haveTwoRegions,
+             doCompose<CompositeOp::Intersect>},
+            {"region.subtract", "Subtract", {}, {}, haveTwoRegions,
+             doCompose<CompositeOp::Subtract>},
+            {"region.lift", "Lift out", {}, {}, haveComposite, doLift},
+            {"region.punch", "Punch through", {}, {}, haveRegions, doPunch},
+            {"region.raise", "Raise", {}, {}, haveRegions, doMoveRegion<1>},
+            {"region.lower", "Lower", {}, {}, haveRegions, doMoveRegion<-1>},
+
+            // The only destructive path in the tool, and it leads out of it.
+            {"export.bake", "Bake for export", {}, {}, always, doBake},
         };
 
         constexpr std::array<Strength, 3> STRENGTHS = {Strength::Impose, Strength::Reference,
@@ -349,6 +484,21 @@ ActionContext contextOf(const Session &session) {
     c.healableLoop = !session.presentation().healableLoop.empty();
     c.selectedConstraints = session.selection().constraints().size();
     c.conflicting = session.presentation().conflicting;
+
+    c.layer = session.targetLayer().value();
+    for(RegionId id : session.selectedRegions()) {
+        c.selectedRegions++;
+        const RegionRecord *r = session.document().regions().find(id);
+        if(r != nullptr && r->op != CompositeOp::Outline) c.selectedComposites++;
+    }
+    for(const GroupRecord &g : session.document().groups().records()) {
+        for(EntityId m : g.members) {
+            if(session.selection().contains(m)) {
+                c.groupedSelection = true;
+                break;
+            }
+        }
+    }
     return c;
 }
 

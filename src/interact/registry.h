@@ -81,6 +81,17 @@ struct ActionContext {
     bool healableLoop = false;
     // A driving/reference toggle has something to toggle.
     size_t selectedConstraints = 0;
+    // The layer the composition actions would act on. Zero is the implicit base
+    // layer, which has no record and therefore nothing to hide, lock or
+    // reorder — every layer action dims until the user has made one.
+    uint32_t layer = 0;
+    // Regions the selection reaches, and how many of those are composites. A
+    // region is named by selecting what bounds it, so both are counts over the
+    // geometry selection rather than a selection kind of their own.
+    size_t selectedRegions = 0;
+    size_t selectedComposites = 0;
+    // Some of the selection is in a group, so there is a grouping to dissolve.
+    bool groupedSelection = false;
     // A numeric field is open. Keyboard resolution needs it: while one is, the
     // letters that would pick a tool are the letters a unit is spelled with.
     bool numericActive = false;

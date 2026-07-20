@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "core/composition.h"
+
 namespace paroculus {
 namespace {
 
@@ -115,6 +117,10 @@ std::vector<Hit> hitTestAll(const Pose &pose, const SpatialIndex &index,
     for(EntityId id : index.near(cursor, reach)) {
         const EntityRecord *e = pose.document().entities().find(id);
         if(e == nullptr) continue;
+        // Hidden geometry still constrains but cannot be picked. A thing the
+        // user cannot see is a thing they cannot be aiming at, and returning it
+        // would make an invisible layer a field of invisible obstacles.
+        if(!layerVisible(pose.document(), e->layer)) continue;
 
         if(const std::optional<Point> p = pose.point(id)) {
             const double distance = (toVec(*p) - cursorVec).norm();
@@ -234,6 +240,10 @@ std::vector<EntityId> marquee(const Pose &pose, const ViewTransform &view,
 
     std::vector<EntityId> out;
     for(const EntityRecord &e : pose.document().entities().records()) {
+        // Same rule as a click: a marquee takes what it wholly contains and can
+        // see. Sweeping a box over a hidden layer must not fill the selection
+        // with geometry that is not on screen.
+        if(!layerVisible(pose.document(), e.layer)) continue;
         if(const std::optional<Point> p = pose.point(e.id)) {
             if(inside(*p)) out.push_back(e.id);
             continue;

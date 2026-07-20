@@ -35,6 +35,33 @@ void pinAllocatedId(Command &command, uint32_t allocated) {
 // Validation
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// Whether installing `candidate` would let a composite region reach itself.
+//
+// Walks operands downward from the candidate, reading the candidate's own
+// operand list in place of whatever is stored under its ID — the question is
+// about the document as it would be, not as it is. A cycle here is not merely
+// nonsense: the per-frame path evaluation walks the same edges and would not
+// terminate.
+bool wouldCycleRegions(const RecordTable<RegionRecord> &regions, const RegionRecord &candidate) {
+    std::vector<RegionId> pending = candidate.operands;
+    std::vector<RegionId> seen;
+    while(!pending.empty()) {
+        const RegionId id = pending.back();
+        pending.pop_back();
+        if(id == candidate.id) return true;
+        if(std::find(seen.begin(), seen.end(), id) != seen.end()) continue;
+        seen.push_back(id);
+        const RegionRecord *r = regions.find(id);
+        if(r == nullptr) continue;
+        pending.insert(pending.end(), r->operands.begin(), r->operands.end());
+    }
+    return false;
+}
+
+}  // namespace
+
 CommandError Document::validate(const EntityRecord &r) const {
     const EntityKindInfo &info = entityInfo(r.kind);
     for(size_t i = 0; i < info.pointCount; i++) {
@@ -57,6 +84,7 @@ CommandError Document::validate(const EntityRecord &r) const {
         if(r.seeds[i] != 0.0) return CommandError::WrongSignature;
     }
     if(r.layer.valid() && !layers_.contains(r.layer)) return CommandError::UnknownOperand;
+    if(r.style.valid() && !styles_.contains(r.style)) return CommandError::UnknownOperand;
     return CommandError::None;
 }
 
@@ -110,14 +138,48 @@ CommandError Document::validate(const ConstraintRecord &r) const {
     return CommandError::None;
 }
 
+// A region gets its area exactly one way. An outline names edges and no
+// operands; a composite names operands and no edges. A record populating both
+// would leave "what is this region's area" with two answers and no rule for
+// which wins, which is the ambiguity a single field with two arms exists to
+// prevent.
+//
+// What a region may not do is have too few parts, and that is deliberate. A
+// deletion shrinks what it cannot satisfy — an outline down to no edges, a
+// composite down to one operand or none — and a region too thin to enclose
+// anything renders in the broken-diagnostic state rather than vanishing.
+// Refusing thin records here would mean a deletion could only proceed by taking
+// the region with it, which is the silent discard PRINCIPLES rules out. Whether
+// a region is whole enough to draw is one question asked in one place, and that
+// place is regionState(), not the validator.
 CommandError Document::validate(const RegionRecord &r) const {
-    if(r.boundary.empty()) return CommandError::UnknownOperand;
-    for(EntityId e : r.boundary) {
-        const EntityRecord *er = entities_.find(e);
-        if(er == nullptr) return CommandError::UnknownOperand;
-        // Points cannot bound an area, and construction geometry is excluded
-        // from regions by role.
-        if(!entityInfo(er->kind).boundaryCapable) return CommandError::UnknownOperand;
+    if(r.op == CompositeOp::Outline) {
+        if(!r.operands.empty()) return CommandError::WrongSignature;
+        for(EntityId e : r.boundary) {
+            const EntityRecord *er = entities_.find(e);
+            if(er == nullptr) return CommandError::UnknownOperand;
+            // Points cannot bound an area, and construction geometry is
+            // excluded from regions by role.
+            if(!entityInfo(er->kind).boundaryCapable) return CommandError::UnknownOperand;
+        }
+    } else {
+        if(!r.boundary.empty()) return CommandError::WrongSignature;
+        for(RegionId o : r.operands) {
+            if(o == r.id) return CommandError::CyclicParameter;
+            if(!regions_.contains(o)) return CommandError::UnknownOperand;
+        }
+        // An operand belongs to at most one composite. Two composites over one
+        // operand would draw it twice and give lift-it-back-out two answers.
+        for(RegionId o : r.operands) {
+            for(const RegionRecord &other : regions_.records()) {
+                if(other.id == r.id) continue;
+                if(std::find(other.operands.begin(), other.operands.end(), o) !=
+                   other.operands.end()) {
+                    return CommandError::HasDependents;
+                }
+            }
+        }
+        if(r.id.valid() && wouldCycleRegions(regions_, r)) return CommandError::CyclicParameter;
     }
     if(r.style.valid() && !styles_.contains(r.style)) return CommandError::UnknownOperand;
     if(r.layer.valid() && !layers_.contains(r.layer)) return CommandError::UnknownOperand;
@@ -141,11 +203,15 @@ CommandError Document::validate(const GroupRecord &r) const {
     return CommandError::None;
 }
 
-// A style's width is a slot like any other, so it can name a parameter and is
-// checked like any other. Nothing else on the record is a reference.
+// A style's quantities are slots like any other, so they can name a parameter
+// and are checked like any other — one named width driving every stroke in the
+// document is the slot thread's payoff, not a special case. The colours are the
+// only fields here that are not references.
 CommandError Document::validate(const StyleRecord &r) const {
-    for(ParameterId p : r.strokeWidth.references()) {
-        if(!parameters_.contains(p)) return CommandError::UnknownOperand;
+    for(const Slot *s : {&r.strokeWidth, &r.opacity}) {
+        for(ParameterId p : s->references()) {
+            if(!parameters_.contains(p)) return CommandError::UnknownOperand;
+        }
     }
     return CommandError::None;
 }
@@ -241,6 +307,14 @@ CommandResult Document::apply(const Command &command) {
             } else if constexpr(std::is_same_v<C, AddRecord<RegionRecord>>) {
                 return applyAdd(regions_, c.record, regionCheck);
             } else if constexpr(std::is_same_v<C, RemoveRecord<RegionRecord>>) {
+                // Same refusal as an entity removal: a composite naming a
+                // region that is gone would leave the per-frame path walk with
+                // nothing to evaluate. The region overload of deletionStep()
+                // shrinks the composites first, which is how lifting an operand
+                // back out is expressed.
+                if(!compositesOver(*this, c.id).empty()) {
+                    return CommandResult{CommandError::HasDependents, 0};
+                }
                 return applyRemove(regions_, c.id);
             } else if constexpr(std::is_same_v<C, SetRecord<RegionRecord>>) {
                 return applySet(regions_, c.record, regionCheck);
@@ -463,6 +537,36 @@ Dependents dependentsOf(const Document &doc, EntityId id) {
     return out;
 }
 
+std::vector<RegionId> compositesOver(const Document &doc, RegionId id) {
+    std::vector<RegionId> out;
+    for(const RegionRecord &r : doc.regions().records()) {
+        if(std::find(r.operands.begin(), r.operands.end(), id) != r.operands.end()) {
+            out.push_back(r.id);
+        }
+    }
+    return out;
+}
+
+// Lifting an operand out of every composite that names it, then removing it.
+//
+// The composite shrinks rather than dying, for the same reason a group does: it
+// is still a combination of the operands it has left, and a composite thinned
+// below what it can combine renders broken rather than evaporating. The
+// operands it kept become visible in their own right again, which is the
+// non-destructive half of the boolean promise made good.
+std::vector<Command> deletionStep(const Document &doc, RegionId id) {
+    std::vector<Command> out;
+    for(RegionId c : compositesOver(doc, id)) {
+        RegionRecord shrunk = *doc.regions().find(c);
+        shrunk.operands.erase(
+            std::remove(shrunk.operands.begin(), shrunk.operands.end(), id),
+            shrunk.operands.end());
+        out.push_back(SetRecord<RegionRecord>{std::move(shrunk)});
+    }
+    out.push_back(RemoveRecord<RegionRecord>{id});
+    return out;
+}
+
 ParameterDependents dependentsOf(const Document &doc, ParameterId id) {
     ParameterDependents out;
     auto reads = [id](const Slot &s) {
@@ -473,7 +577,7 @@ ParameterDependents dependentsOf(const Document &doc, ParameterId id) {
         if(reads(c.value)) out.constraints.push_back(c.id);
     }
     for(const StyleRecord &s : doc.styles().records()) {
-        if(reads(s.strokeWidth)) out.styles.push_back(s.id);
+        if(reads(s.strokeWidth) || reads(s.opacity)) out.styles.push_back(s.id);
     }
     for(const ParameterRecord &p : doc.parameters().records()) {
         if(p.id != id && reads(p.value)) out.parameters.push_back(p.id);
@@ -491,7 +595,15 @@ std::vector<Command> deletionStep(const Document &doc, ParameterId id) {
     // Evaluated against the document as it stands, before any freeze lands, so
     // a chain (b = a * 2, c = b + 1) freezes every link at the value it holds
     // now rather than at whatever a half-applied step would have produced.
-    auto frozen = [&doc](const Slot &s) { return Slot(doc.evaluate(s).value_or(0.0)); };
+    // Only the slots that actually read the doomed name freeze. A record can
+    // carry two slots — a style's width and its opacity — and flattening the one
+    // that named a different parameter would lose provenance the user never
+    // asked to delete.
+    auto frozen = [&doc, id](const Slot &s) {
+        const std::vector<ParameterId> refs = s.references();
+        if(std::find(refs.begin(), refs.end(), id) == refs.end()) return s;
+        return Slot(doc.evaluate(s).value_or(0.0));
+    };
 
     for(ConstraintId c : deps.constraints) {
         ConstraintRecord r = *doc.constraints().find(c);
@@ -501,6 +613,7 @@ std::vector<Command> deletionStep(const Document &doc, ParameterId id) {
     for(StyleId s : deps.styles) {
         StyleRecord r = *doc.styles().find(s);
         r.strokeWidth = frozen(r.strokeWidth);
+        r.opacity = frozen(r.opacity);
         out.push_back(SetRecord<StyleRecord>{std::move(r)});
     }
     for(ParameterId p : deps.parameters) {
@@ -516,11 +629,14 @@ std::vector<Command> deletionStep(const Document &doc, ParameterId id) {
 // that depends on it. Geometry recurses (deleting a point takes the segments
 // built on it, which take the constraints on those); relations are leaves.
 std::vector<Command> deletionStep(const Document &doc, EntityId id) {
+    const EntityId one[] = {id};
+    return deletionStep(doc, one);
+}
+
+std::vector<Command> deletionStep(const Document &doc, std::span<const EntityId> ids) {
     std::vector<Command> out;
     std::vector<EntityId> seenEntities;
     std::vector<ConstraintId> seenConstraints;
-    std::vector<RegionId> seenRegions;
-    std::vector<TagId> seenTags;
     // Every entity the cascade actually removes, dependents before what they
     // are built on. Held back rather than emitted inline because the group
     // shrinks below have to be computed over the whole set and applied before
@@ -541,18 +657,50 @@ std::vector<Command> deletionStep(const Document &doc, EntityId id) {
 
         const Dependents deps = dependentsOf(doc, victim);
         for(EntityId e : deps.entities) self(e, self);
-        for(ConstraintId c : deps.constraints) {
-            if(once(seenConstraints, c)) out.push_back(RemoveRecord<ConstraintRecord>{c});
-        }
-        for(RegionId r : deps.regions) {
-            if(once(seenRegions, r)) out.push_back(RemoveRecord<RegionRecord>{r});
-        }
-        for(TagId t : deps.tags) {
-            if(once(seenTags, t)) out.push_back(RemoveRecord<TagRecord>{t});
-        }
+        for(ConstraintId c : deps.constraints) once(seenConstraints, c);
         doomed.push_back(victim);
     };
-    collect(id, collect);
+    for(EntityId id : ids) collect(id, collect);
+
+    // Regions and tags shrink, and the shrinks go first.
+    //
+    // A region that lost a boundary edge no longer encloses anything, and it
+    // says so: it keeps the edges it has and renders in the broken-diagnostic
+    // state, which is what PRINCIPLES asks for in place of either blocking the
+    // deletion or silently discarding the fill. Undo puts the edge back and the
+    // region is whole again in one step, because the shrink is an ordinary
+    // whole-record set whose inverse is exact.
+    //
+    // Emitted before the removals rather than after, so no record ever names
+    // something that is already gone — not even between two commands of the
+    // same step.
+    auto doomedEntity = [&](EntityId e) {
+        return std::find(doomed.begin(), doomed.end(), e) != doomed.end();
+    };
+    auto doomedConstraint = [&](ConstraintId c) {
+        return std::find(seenConstraints.begin(), seenConstraints.end(), c) !=
+               seenConstraints.end();
+    };
+
+    for(const TagRecord &t : doc.tags().records()) {
+        TagRecord shrunk = t;
+        shrunk.entities.erase(
+            std::remove_if(shrunk.entities.begin(), shrunk.entities.end(), doomedEntity),
+            shrunk.entities.end());
+        shrunk.constraints.erase(
+            std::remove_if(shrunk.constraints.begin(), shrunk.constraints.end(),
+                           doomedConstraint),
+            shrunk.constraints.end());
+        if(shrunk != t) out.push_back(SetRecord<TagRecord>{std::move(shrunk)});
+    }
+
+    for(const RegionRecord &r : doc.regions().records()) {
+        RegionRecord shrunk = r;
+        shrunk.boundary.erase(
+            std::remove_if(shrunk.boundary.begin(), shrunk.boundary.end(), doomedEntity),
+            shrunk.boundary.end());
+        if(shrunk != r) out.push_back(SetRecord<RegionRecord>{std::move(shrunk)});
+    }
 
     // A group loses the member, never the grouping. Membership is organization
     // and nothing reads it as structure, so a group that lost one entity still
@@ -577,6 +725,8 @@ std::vector<Command> deletionStep(const Document &doc, EntityId id) {
             out.push_back(SetRecord<GroupRecord>{shrunk});
         }
     }
+
+    for(ConstraintId c : seenConstraints) out.push_back(RemoveRecord<ConstraintRecord>{c});
 
     // Entities last: a removal is refused while anything still names it, and by
     // here nothing does.

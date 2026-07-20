@@ -1,5 +1,6 @@
 #include "render/view.h"
 
+#include "core/composition.h"
 #include "core/measure.h"
 #include "render/typeface.h"
 
@@ -15,6 +16,7 @@
 #include "core/SkTypeface.h"
 #include "core/SkData.h"
 #include "ports/SkFontMgr_data.h"
+#include "pathops/SkPathOps.h"
 
 #include <algorithm>
 #include <cmath>
@@ -60,6 +62,11 @@ constexpr double CONTENT_WIDTH = 120.0;
 constexpr SkColor FILL = SkColorSetARGB(0x33, 0x6e, 0xc7, 0xff);
 constexpr SkColor FILL_SELECTED = SkColorSetARGB(0x4c, 0xff, 0xa8, 0x5c);
 
+// A region that no longer encloses anything. Diagnostic rather than dissolved:
+// the fill the user asked for is still declared, and one undo has it back.
+constexpr SkColor BROKEN = SkColorSetARGB(0xcc, 0xff, 0x8c, 0x42);
+constexpr float BROKEN_STROKE = 3.5f;
+
 // Walks a region's boundary into a closed path, in pixels.
 //
 // The path is rebuilt from the pose every frame rather than cached, because a
@@ -67,83 +74,130 @@ constexpr SkColor FILL_SELECTED = SkColorSetARGB(0x4c, 0xff, 0xa8, 0x5c);
 // edges are is a question only the current pose can answer. A cached path would
 // be exactly the second representation the whole equivalence exists to avoid.
 //
+// Which points the ring runs through is core's answer, not one computed again
+// here. Whether a region encloses anything decides both what is drawn and
+// whether the degradation state says broken, and two implementations of that
+// would eventually disagree about a region on screen.
+//
 // Returns false when the boundary cannot be walked — an edge deleted out from
 // under it, or two edges that do not meet. Drawing a partial fill would be
 // worse than drawing none: it would show an area the document does not bound.
-// Rendering the broken state as a diagnostic is stage 6's degradation work.
+// The broken state is drawn as a diagnostic instead, by its caller.
 bool buildBoundaryPath(const Pose &pose, const ViewTransform &view,
                        const RegionRecord &region, SkPathBuilder &out) {
-    if(region.boundary.size() < 3) return false;
+    // Arcs are boundary-capable in the taxonomy but are drawn here by their
+    // chord: a curved boundary needs the fill tessellated along the sweep,
+    // which lands with the arcs-as-boundaries work the three-edge minimum is
+    // already waiting on.
+    const std::optional<std::vector<EntityId>> ring = boundaryRing(pose.document(), region);
+    if(!ring) return false;
 
-    auto pixel = [&](const Point &p) {
-        const Eigen::Vector2d v = view.toScreen(p);
-        return SkPoint::Make(static_cast<SkScalar>(v.x()), static_cast<SkScalar>(v.y()));
-    };
-
-    // Which end of each edge to start from is decided by which end meets the
-    // previous edge, so the walk follows the ring rather than zig-zagging
-    // across it. The first edge picks the orientation that meets the last one.
-    std::vector<std::pair<Point, Point>> ends;
-    ends.reserve(region.boundary.size());
-    for(EntityId id : region.boundary) {
-        // Arcs are boundary-capable in the taxonomy but are drawn here by their
-        // chord: a curved boundary needs the fill tessellated along the sweep,
-        // which lands with the arcs-as-boundaries work the three-edge minimum
-        // is already waiting on.
-        const std::optional<std::pair<Point, Point>> segment = pose.segment(id);
-        if(!segment) return false;
-        ends.push_back(*segment);
-    }
-
-    // Two vertices are the same joint when they are at the same place. The
-    // topology is what decides that in the model; here the pose is all there
-    // is, and the pose is what the coincidence has already made equal.
-    auto same = [](const Point &a, const Point &b) {
-        return std::fabs(a.x - b.x) < 1e-9 && std::fabs(a.y - b.y) < 1e-9;
-    };
-
-    std::vector<Point> ring;
-    ring.reserve(ends.size() + 1);
-    // Orient the first edge against the last one, so the ring closes.
-    const std::pair<Point, Point> &last = ends.back();
-    bool forward = same(ends.front().first, last.first) || same(ends.front().first, last.second);
-    Point cursor = forward ? ends.front().second : ends.front().first;
-    ring.push_back(forward ? ends.front().first : ends.front().second);
-
-    for(size_t i = 1; i < ends.size(); i++) {
-        ring.push_back(cursor);
-        if(same(ends[i].first, cursor)) {
-            cursor = ends[i].second;
-        } else if(same(ends[i].second, cursor)) {
-            cursor = ends[i].first;
+    bool first = true;
+    for(EntityId id : *ring) {
+        const std::optional<Point> at = pose.point(id);
+        if(!at) return false;
+        const Eigen::Vector2d v = view.toScreen(*at);
+        const SkPoint p = SkPoint::Make(static_cast<SkScalar>(v.x()),
+                                        static_cast<SkScalar>(v.y()));
+        if(first) {
+            out.moveTo(p);
+            first = false;
         } else {
-            return false;  // the ring does not meet; nothing honest to fill
+            out.lineTo(p);
         }
     }
-
-    out.moveTo(pixel(ring.front()));
-    for(size_t i = 1; i < ring.size(); i++) out.lineTo(pixel(ring[i]));
     out.close();
     return true;
 }
 
+// A region's area as a path, resolving the algebra over its live operands.
+//
+// The booleans are evaluated here, per frame, from the operands as they
+// currently stand — never baked into a stored outline. That is what keeps a
+// composite editable: drag a vertex of the cutter and the hole follows, because
+// the hole was never anything but this computation.
+bool buildRegionPath(const Pose &pose, const ViewTransform &view, const RegionRecord &region,
+                     SkPath &out) {
+    if(region.op == CompositeOp::Outline) {
+        SkPathBuilder builder(SkPathFillType::kEvenOdd);
+        if(!buildBoundaryPath(pose, view, region, builder)) return false;
+        out = builder.detach();
+        return true;
+    }
+
+    SkPathOp op = kUnion_SkPathOp;
+    switch(region.op) {
+        case CompositeOp::Union:     op = kUnion_SkPathOp; break;
+        case CompositeOp::Intersect: op = kIntersect_SkPathOp; break;
+        case CompositeOp::Subtract:  op = kDifference_SkPathOp; break;
+        case CompositeOp::Outline:   break;
+    }
+
+    bool started = false;
+    for(RegionId id : region.operands) {
+        const RegionRecord *operand = pose.document().regions().find(id);
+        if(operand == nullptr) return false;
+        SkPath next;
+        if(!buildRegionPath(pose, view, *operand, next)) return false;
+        if(!started) {
+            out = next;
+            started = true;
+            continue;
+        }
+        SkPath combined;
+        if(!Op(out, next, op, &combined)) return false;
+        out = combined;
+    }
+    return started;
+}
+
+// Every edge a region reaches, its operands' included. A composite has no
+// boundary of its own, so "is this region selected" has to ask what it is made
+// of — the same recursion the algebra itself walks.
+void boundaryEdgesOf(const Document &doc, const RegionRecord &region,
+                     std::vector<EntityId> &out) {
+    for(EntityId id : region.boundary) out.push_back(id);
+    for(RegionId id : region.operands) {
+        if(const RegionRecord *operand = doc.regions().find(id)) {
+            boundaryEdgesOf(doc, *operand, out);
+        }
+    }
+}
+
+// How much of a style's opacity slot reaches the paint. Evaluated rather than
+// read, because it is a slot: a named document parameter can drive every fill's
+// transparency at once, which is the whole reason styling values are slots.
+uint8_t alphaOf(const Document &doc, const StyleRecord *style, uint8_t base) {
+    if(style == nullptr) return base;
+    const double factor = std::clamp(doc.evaluate(style->opacity).value_or(1.0), 0.0, 1.0);
+    return static_cast<uint8_t>(std::lround(base * factor));
+}
+
 SkColor fillColourOf(const Document &doc, const RegionRecord &region,
                      const Adornment &adornment) {
+    const StyleRecord *style = doc.styles().find(region.style);
+
     // A region is selected when the geometry bounding it is: the fill has no
     // identity of its own to select, which is the same reason it has no
     // geometry of its own to go stale.
-    for(EntityId id : region.boundary) {
+    std::vector<EntityId> edges;
+    boundaryEdgesOf(doc, region, edges);
+    for(EntityId id : edges) {
         for(EntityId selected : adornment.selected) {
-            if(selected == id) return FILL_SELECTED;
+            if(selected == id) {
+                return SkColorSetA(FILL_SELECTED,
+                                   alphaOf(doc, style, SkColorGetA(FILL_SELECTED)));
+            }
         }
     }
     // A style is honoured when the document names one and asks to be filled.
     // Regions without one take the default rather than vanishing, because a
     // fill nobody styled is still a fill somebody asked for.
-    if(const StyleRecord *style = doc.styles().find(region.style)) {
-        if(style->filled && (style->fillColor >> 24) != 0) return style->fillColor;
+    if(style != nullptr && style->filled && (style->fillColor >> 24) != 0) {
+        return SkColorSetA(style->fillColor,
+                           alphaOf(doc, style, SkColorGetA(style->fillColor)));
     }
-    return FILL;
+    return SkColorSetA(FILL, alphaOf(doc, style, SkColorGetA(FILL)));
 }
 
 constexpr SkColor DIMENSION_TEXT = SkColorSetRGB(0xd2, 0xd8, 0xe2);
@@ -397,63 +451,122 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
     // role, then selection, then hover, then resistance — the transient states
     // over the persistent ones, and resistance last because it is the answer to
     // a question the user is asking right now.
+    // Styling sits below the transient states and above nothing: a construction
+    // line reads as a guide however it is styled, because its role is what it
+    // is rather than how it looks.
     auto tintOf = [&](const EntityRecord &e) {
-        SkColor colour = e.role == Role::Construction ? CONSTRUCTION : GEOMETRY;
+        SkColor colour = GEOMETRY;
+        if(const StyleRecord *style = pose.document().styles().find(e.style)) {
+            colour = SkColorSetA(style->strokeColor,
+                                 alphaOf(pose.document(), style, SkColorGetA(style->strokeColor)));
+        }
+        if(e.role == Role::Construction) colour = CONSTRUCTION;
         if(contains(adornment.selected, e.id)) colour = SELECTED;
         if(adornment.hovered == e.id) colour = HOVERED;
         if(contains(resistingEntities, e.id)) colour = RESISTING;
         return colour;
     };
 
-    // Construction geometry reads as a guide: dashed would be better and is a
-    // stage 6 styling concern; for now it is thinner and dimmer.
+    // Construction geometry reads as a guide: thinner and dimmer, and not
+    // styleable, for the same reason it is not tintable.
     auto strokeWidthOf = [&](const EntityRecord &e) {
         if(e.role == Role::Construction) return 1.0f;
-        return contains(adornment.selected, e.id) ? SELECTED_STROKE_WIDTH : STROKE_WIDTH;
+        if(contains(adornment.selected, e.id)) return SELECTED_STROKE_WIDTH;
+        // A width is a slot, so it can be a constant, an expression, or a named
+        // parameter driving every stroke in the document at once.
+        if(const StyleRecord *style = pose.document().styles().find(e.style)) {
+            const double w = pose.document().evaluate(style->strokeWidth).value_or(1.0);
+            if(w > 0.0) return static_cast<float>(w);
+        }
+        return STROKE_WIDTH;
     };
 
-    // Fills, under everything else.
-    //
-    // A region has no geometry of its own. The path is walked from the boundary
-    // edges every frame, out of the same pose the outline is drawn from, which
-    // is exactly why dragging a vertex moves the fill: there is no second copy
-    // to go stale, and nothing to keep in step. That is the whole of the
-    // segments-to-solid equivalence as far as render is concerned.
     SkPaint fill;
     fill.setAntiAlias(true);
     fill.setStyle(SkPaint::kFill_Style);
-    for(const RegionRecord &region : pose.document().regions().records()) {
-        // Even-odd, so a boundary that crosses itself renders as the alternating
-        // fill a user expects rather than as a solid blob. Composition proper —
-        // punch-through and the region algebra over live operands — is stage 6;
-        // this is the minimal single-layer fill stage 5 owes it.
-        SkPathBuilder path(SkPathFillType::kEvenOdd);
-        if(!buildBoundaryPath(pose, view, region, path)) continue;
-        fill.setColor(fillColourOf(pose.document(), region, adornment));
-        canvas.drawPath(path.detach(), fill);
-    }
 
     SkPaint stroke;
     stroke.setAntiAlias(true);
     stroke.setStyle(SkPaint::kStroke_Style);
     stroke.setStrokeCap(SkPaint::kRound_Cap);
 
-    // Edges first, so vertices sit on top of what they join — which matches
-    // the hit priority that puts points above edges.
-    for(const EntityRecord &e : pose.document().entities().records()) {
-        const auto ends = pose.segment(e.id);
-        if(!ends) continue;
+    // One layer's fills, composited among themselves.
+    //
+    // A region has no geometry of its own. The path is walked from the boundary
+    // edges every frame, out of the same pose the outline is drawn from, which
+    // is exactly why dragging a vertex moves the fill: there is no second copy
+    // to go stale, and nothing to keep in step. A composite is the same claim
+    // one level up — its area is a computation over live operands, evaluated
+    // now, never a baked outline.
+    //
+    // Inside a saved layer, because punch-through is an alpha overwrite and has
+    // to carve what this layer has accumulated rather than what the canvas has.
+    // Cutting through to the background would make a cut-out's effect depend on
+    // what happened to be underneath it, which is precisely the destructive
+    // reading of a boolean that the compositional one exists to replace.
+    auto drawFills = [&](LayerId layer) {
+        const std::vector<RegionId> order = regionOrder(pose.document(), layer);
+        if(order.empty()) return;
+        canvas.saveLayer(nullptr, nullptr);
+        for(RegionId id : order) {
+            const RegionRecord &region = *pose.document().regions().find(id);
 
-        stroke.setColor(tintOf(e));
-        stroke.setStrokeWidth(strokeWidthOf(e));
-        canvas.drawLine(toPixel(ends->first), toPixel(ends->second), stroke);
-    }
+            // Broken renders as a diagnostic, never as nothing and never as a
+            // partial fill: what the user deleted is visibly still referred to,
+            // and one undo puts it back. A partial fill would show an area the
+            // document does not bound; silence would let a fill evaporate.
+            if(regionState(pose.document(), region) != RegionState::Whole) {
+                stroke.setColor(BROKEN);
+                stroke.setStrokeWidth(BROKEN_STROKE);
+                std::vector<EntityId> edges;
+                boundaryEdgesOf(pose.document(), region, edges);
+                for(EntityId edge : edges) {
+                    if(const auto ends = pose.segment(edge)) {
+                        canvas.drawLine(toPixel(ends->first), toPixel(ends->second), stroke);
+                    }
+                }
+                continue;
+            }
+
+            SkPath path;
+            if(!buildRegionPath(pose, view, region, path)) continue;
+            // Even-odd, so a boundary that crosses itself renders as the
+            // alternating fill a user expects rather than as a solid blob.
+            path.setFillType(SkPathFillType::kEvenOdd);
+
+            if(region.punch) {
+                fill.setBlendMode(SkBlendMode::kClear);
+                canvas.drawPath(path, fill);
+                fill.setBlendMode(SkBlendMode::kSrcOver);
+                continue;
+            }
+            fill.setColor(fillColourOf(pose.document(), region, adornment));
+            canvas.drawPath(path, fill);
+        }
+        canvas.restore();
+    };
+
+    // One layer's strokes. Edges before arcs before circles, and vertices not
+    // at all — those go last over every layer, because a handle is an adorner
+    // and adorners sit above the drawing rather than inside it, which is also
+    // what the hit priority says.
+    auto drawStrokes = [&](LayerId layer) {
+        for(const EntityRecord &e : pose.document().entities().records()) {
+            if(e.layer != layer) continue;
+            const auto ends = pose.segment(e.id);
+            if(!ends) continue;
+
+            stroke.setColor(tintOf(e));
+            stroke.setStrokeWidth(strokeWidthOf(e));
+            canvas.drawLine(toPixel(ends->first), toPixel(ends->second), stroke);
+        }
 
     // Arcs, tessellated in document space rather than handed to Skia as an
     // angular sweep. Everything else here goes through toPixel, and an arc
     // drawn by angle would have to undo the view's Y flip by hand — a second
     // way of converting is a second way of being wrong about zoom.
     for(const EntityRecord &e : pose.document().entities().records()) {
+        if(e.layer != layer) continue;
         const std::optional<Pose::ArcGeometry> g = pose.arc(e.id);
         if(!g) continue;
 
@@ -480,6 +593,7 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
 
     // Circles.
     for(const EntityRecord &e : pose.document().entities().records()) {
+        if(e.layer != layer) continue;
         const std::optional<double> radius = pose.radius(e.id);
         if(!radius) continue;
         const std::optional<Point> centre = pose.point(e.points[0]);
@@ -493,12 +607,24 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
         canvas.drawCircle(toPixel(*centre), static_cast<SkScalar>((edge - middle).norm()),
                           stroke);
     }
+    };
 
-    // Vertices, in screen space at a fixed size.
+    // Back to front. Hidden layers are skipped here and nowhere else: their
+    // geometry is in every solve exactly as it was, which is the whole
+    // difference between hiding a thing and deleting it.
+    const std::vector<LayerId> layers = layerOrder(pose.document());
+    for(LayerId layer : layers) {
+        if(!layerVisible(pose.document(), layer)) continue;
+        drawFills(layer);
+        drawStrokes(layer);
+    }
+
+    // Vertices, in screen space at a fixed size, over every layer.
     SkPaint dot;
     dot.setAntiAlias(true);
     dot.setStyle(SkPaint::kFill_Style);
     for(const EntityRecord &e : pose.document().entities().records()) {
+        if(!layerVisible(pose.document(), e.layer)) continue;
         const std::optional<Point> p = pose.point(e.id);
         if(!p) continue;
 

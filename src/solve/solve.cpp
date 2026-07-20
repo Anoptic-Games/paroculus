@@ -6,6 +6,7 @@
 #include <chrono>
 #include <unordered_map>
 
+#include "core/composition.h"
 #include "solve/arena.h"
 
 namespace paroculus {
@@ -95,6 +96,39 @@ bool fullyInside(const ConstraintRecord &c, const SolveContext &context) {
     return true;
 }
 
+// Which group an entity's own parameters belong to.
+//
+// Locking a layer means "this does not move", and in a solver world that means
+// its parameters join the fixed set — the base group, the same one the workplane
+// sits in, which Slvs_Solve treats as known. Not a Pin constraint: a pin is a
+// relation the user asked for, it appears in the failing set, and it can
+// over-constrain. A lock is presentation state and must never be able to make a
+// system inconsistent; it removes unknowns rather than adding equations.
+//
+// Derived from the document rather than passed in as an option, because every
+// caller would otherwise have to remember — the drag path, the diagnose path,
+// each speculative preview — and forgetting produces geometry that slides out
+// from under a lock with nothing asserting.
+Slvs_hGroup groupFor(const Document &doc, EntityId id) {
+    return isLocked(doc, id) ? GROUP_BASE : GROUP_SKETCH;
+}
+
+// Whether every operand of `c` has all of its parameters locked.
+//
+// Such a constraint has nothing to solve for. Emitting it anyway would hand the
+// solver an equation with no unknown to satisfy it, and the verdict would be
+// Inconsistent — a lock making a system contradictory, which is exactly what a
+// lock must never be able to do. It is already satisfied, by geometry that
+// cannot move, so leaving it out changes no answer.
+bool allFrozen(const Document &doc, const ConstraintRecord &c) {
+    const size_t n = boundOperandCount(c);
+    if(n == 0) return false;
+    for(size_t i = 0; i < n; i++) {
+        if(!isFrozen(doc, c.operands[i])) return false;
+    }
+    return true;
+}
+
 void translate(const Document &doc, const SolveContext &context, const SolveOptions &options,
                Translation &out) {
     // Upper bounds, so the arena is sized once rather than grown.
@@ -134,13 +168,13 @@ void translate(const Document &doc, const SolveContext &context, const SolveOpti
     for(const SeedSpan &span : context.params()) {
         const EntityRecord *e = doc.entities().find(span.entity);
         if(e == nullptr || e->kind != EntityKind::Point) continue;
+        const Slvs_hGroup group = groupFor(doc, span.entity);
         out.firstParam[span.entity] = nextParam;
-        out.params[out.paramCount++] = Slvs_MakeParam(nextParam, GROUP_SKETCH, span.seeds[0]);
-        out.params[out.paramCount++] =
-            Slvs_MakeParam(nextParam + 1, GROUP_SKETCH, span.seeds[1]);
+        out.params[out.paramCount++] = Slvs_MakeParam(nextParam, group, span.seeds[0]);
+        out.params[out.paramCount++] = Slvs_MakeParam(nextParam + 1, group, span.seeds[1]);
         out.entityHandle[span.entity] = nextEntity;
         out.entities[out.entityCount++] =
-            Slvs_MakePoint2d(nextEntity, GROUP_SKETCH, E_WORKPLANE, nextParam, nextParam + 1);
+            Slvs_MakePoint2d(nextEntity, group, E_WORKPLANE, nextParam, nextParam + 1);
         nextParam += 2;
         nextEntity++;
     }
@@ -177,16 +211,16 @@ void translate(const Document &doc, const SolveContext &context, const SolveOpti
                 // discard any speculative context that perturbed it.
                 const SeedSpan *span = spanFor(context, id);
                 if(span == nullptr) break;
+                const Slvs_hGroup group = groupFor(doc, id);
                 out.firstParam[id] = nextParam;
-                out.params[out.paramCount++] =
-                    Slvs_MakeParam(nextParam, GROUP_SKETCH, span->seeds[0]);
+                out.params[out.paramCount++] = Slvs_MakeParam(nextParam, group, span->seeds[0]);
                 const Slvs_hEntity distance = nextEntity++;
                 out.entities[out.entityCount++] =
-                    Slvs_MakeDistance(distance, GROUP_SKETCH, E_WORKPLANE, nextParam);
+                    Slvs_MakeDistance(distance, group, E_WORKPLANE, nextParam);
                 nextParam++;
                 out.entityHandle[id] = nextEntity;
                 out.entities[out.entityCount++] = Slvs_MakeCircle(
-                    nextEntity, GROUP_SKETCH, E_WORKPLANE, centre->second, E_NORMAL, distance);
+                    nextEntity, group, E_WORKPLANE, centre->second, E_NORMAL, distance);
                 nextEntity++;
                 break;
             }
@@ -220,6 +254,7 @@ void translate(const Document &doc, const SolveContext &context, const SolveOpti
         const ConstraintRecord &c = *record;
         if(!c.driving) continue;  // a reference measurement reads, it never drives
         if(!fullyInside(c, context)) continue;
+        if(allFrozen(doc, c)) continue;
         if(c.id.valid() && std::find(options.suppressed.begin(), options.suppressed.end(),
                                      c.id) != options.suppressed.end()) {
             continue;
@@ -279,6 +314,10 @@ void translate(const Document &doc, const SolveContext &context, const SolveOpti
     }
 
     for(EntityId id : options.dragged) {
+        // A locked entity's parameters are not unknowns, so asking the solver
+        // to favour keeping them near the cursor is asking about something it
+        // is not solving for.
+        if(isLocked(doc, id)) continue;
         const auto first = out.firstParam.find(id);
         if(first == out.firstParam.end()) continue;
         const EntityRecord *e = doc.entities().find(id);

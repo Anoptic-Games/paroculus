@@ -16,6 +16,8 @@
 
 #include <memory>
 
+#include "core/bake.h"
+#include "core/composition.h"
 #include "core/undo.h"
 #include "interact/drag.h"
 #include "interact/events.h"
@@ -52,9 +54,27 @@ struct Presentation {
     bool rippledOffScreen = false;
 
     // Counted, not confirmed: deletion reports what it took with it rather than
-    // asking permission.
+    // asking permission. Degraded is separate from deleted because a region,
+    // tag or group that lost a member is still there — visibly, in its broken
+    // state — and reporting it as gone would be the opposite of true.
     size_t deletedEntities = 0;
     size_t deletedRelations = 0;
+    size_t degraded = 0;
+
+    // Invisible geometry that took part in moving something visible.
+    //
+    // Hidden still constrains, which is what makes hiding different from
+    // deleting; this is the other half of that bargain. A drawing that
+    // rearranges itself under something not on screen is the haunted feeling
+    // the no-silent-changes policy exists to rule out, so the influence is
+    // named and the geometry doing it can be pointed at.
+    std::vector<EntityId> hiddenInfluences;
+
+    // Regions and tags that no longer have the parts to mean what they say.
+    // Recomputed per refresh from the document, never accumulated: a region is
+    // broken because of what it is now, not because of what once happened.
+    std::vector<RegionId> brokenRegions;
+    std::vector<TagId> brokenTags;
 
     // The tool in force, and what it wants shown. Select is the home state, so
     // this reads Select whenever no creation tool is running.
@@ -133,6 +153,10 @@ struct Presentation {
 
     // The region the last make-solid or heal-and-fill attached. Null when none.
     RegionId filled;
+
+    // The composite the last union, intersect or subtract made. Null when none,
+    // and cleared by lifting one back out.
+    RegionId composed;
 
     double solveMicroseconds = 0.0;
 
@@ -296,6 +320,66 @@ public:
     // editing; there are only states with more or less diagnostic adornment.
     bool selectConflicting();
 
+    // -----------------------------------------------------------------------
+    // Composition
+    // -----------------------------------------------------------------------
+
+    // The regions the current selection reaches, in ID order.
+    //
+    // A region has no handle of its own — it is reached through the geometry
+    // bounding it, which is what makes a fill a view of an outline rather than
+    // an object beside one. So selecting two outlines is how a user names two
+    // operands for a boolean.
+    std::vector<RegionId> selectedRegions() const;
+
+    // The layer an action acts on: the one named, else the selection's own.
+    LayerId targetLayer(std::optional<double> named = std::nullopt) const;
+
+    // The frontmost layer, or null when the document has none.
+    LayerId topLayer() const;
+
+    bool newLayer();
+    bool assignLayer(LayerId layer);
+
+    // Hiding leaves the geometry constraining exactly as it did, which is what
+    // separates hiding from deleting, and is why the influence indication
+    // exists to go with it.
+    bool setLayerVisible(LayerId layer, bool visible);
+
+    // Locking means "this does not move", which in a solver world means its
+    // parameters join the fixed set. Not a Pin: a pin is a relation the user
+    // asked for and can over-constrain, while a lock is presentation state and
+    // must never be able to make a system inconsistent.
+    bool setLayerLocked(LayerId layer, bool locked);
+
+    bool moveLayer(LayerId layer, int delta);
+
+    // Combines the selected regions without consuming them.
+    //
+    // The operands stay live records, keep their constraints, and can be
+    // constrained to each other — the hole stays concentric with the plate
+    // because that is an ordinary coincidence between two outlines that happen
+    // to be operands. Destructive path booleans exist nowhere in this model.
+    bool composeRegions(CompositeOp op);
+
+    // Dismantles the selected composites, restoring their operands to view. A
+    // real inverse, because nothing was consumed to make one.
+    bool liftComposite();
+
+    // Alpha overwrite: the selected regions carve visibility out of what their
+    // layer accumulated below them instead of painting over it.
+    bool togglePunch();
+
+    bool moveRegion(int delta);
+
+    bool groupSelection();
+    bool dissolveGroups();
+
+    // Flattens the visible drawing for export. The one destructive path in the
+    // tool, and it leads out: nothing is written back, and there is no
+    // in-document bake.
+    Bake bake() const;
+
     // What imposing `kind` over the current selection would do, without doing
     // any of it. The hover preview, and the reason the catalogue is learnable by
     // looking rather than by reading.
@@ -399,6 +483,12 @@ private:
     // Recomputes the fill offers around `seed`, or clears them when it is null.
     // One place, because closed and healable are mutually exclusive answers to
     // one question and computing them apart is how they come to disagree.
+    // before, after: the same component's parameter spans either side of a
+    // solve. Accumulates the invisible operands implicated in moving something
+    // visible, so one refresh over many components reports all of them.
+    void noteHiddenInfluence(const std::vector<SeedSpan> &before,
+                             const std::vector<SeedSpan> &after);
+
     void refreshLoopOffers(EntityId seed);
 
     // The same, seeded from whatever is selected. A no-op while a creation tool

@@ -54,8 +54,70 @@ Pose Session::pose() const {
     return pose;
 }
 
+// Which invisible geometry took part in moving something the user can see.
+//
+// Hidden still constrains — that is the whole point of hiding rather than
+// deleting — but a drawing that rearranges itself under the influence of
+// something not on screen is exactly the haunted feeling the no-silent-changes
+// policy exists to prevent. So the event is emitted on the narrow, checkable
+// condition PLANS names: a relation binding both an invisible operand and a
+// visible one, where the visible one moved.
+//
+// before, after: the same component's parameter spans either side of a solve.
+// Accumulates into the presentation rather than replacing it, because one
+// refresh solves every component in turn and each may implicate its own.
+void Session::noteHiddenInfluence(const std::vector<SeedSpan> &before,
+                                  const std::vector<SeedSpan> &after) {
+    auto moved = [&](EntityId id) {
+        const SeedSpan *a = nullptr;
+        const SeedSpan *b = nullptr;
+        for(const SeedSpan &s : before) {
+            if(s.entity == id) a = &s;
+        }
+        for(const SeedSpan &s : after) {
+            if(s.entity == id) b = &s;
+        }
+        return a != nullptr && b != nullptr && a->seeds != b->seeds;
+    };
+    // A segment has no parameters of its own, so "did it move" is a question
+    // about the points defining it.
+    auto stirred = [&](EntityId id) {
+        if(moved(id)) return true;
+        const EntityRecord *e = doc_->entities().find(id);
+        if(e == nullptr) return false;
+        for(size_t i = 0; i < entityInfo(e->kind).pointCount; i++) {
+            if(moved(e->points[i])) return true;
+        }
+        return false;
+    };
+
+    for(const ConstraintRecord &c : doc_->constraints().records()) {
+        if(!c.driving) continue;
+        const size_t n = boundOperandCount(c);
+        std::vector<EntityId> hidden;
+        bool visibleMoved = false;
+        for(size_t i = 0; i < n; i++) {
+            const EntityId id = c.operands[i];
+            if(isVisible(*doc_, id)) {
+                visibleMoved = visibleMoved || stirred(id);
+            } else {
+                hidden.push_back(id);
+            }
+        }
+        if(!visibleMoved || hidden.empty()) continue;
+        for(EntityId id : hidden) {
+            if(std::find(presentation_.hiddenInfluences.begin(),
+                         presentation_.hiddenInfluences.end(),
+                         id) == presentation_.hiddenInfluences.end()) {
+                presentation_.hiddenInfluences.push_back(id);
+            }
+        }
+    }
+}
+
 void Session::refresh() {
     topology_.markDirty();
+    presentation_.hiddenInfluences.clear();
 
     // Solved geometry is a derived cache, so it is kept here and never written
     // back as seeds. Committing it on open would dirty a document nobody
@@ -101,10 +163,12 @@ void Session::refresh() {
         SolveContext component = SolveContext::forMembers(*doc_, std::move(members));
         if(component.empty()) continue;
 
+        const std::vector<SeedSpan> before = component.params();
         const SolveOutcome outcome = solve(*doc_, component, options);
         worst = moreSevere(worst, outcome.status);
         if(!outcome.ok()) continue;  // this component holds its committed seeds
 
+        noteHiddenInfluence(before, component.params());
         dof += outcome.dof;
         solvedAnything = true;
         for(const SeedSpan &solved : component.params()) {
@@ -122,6 +186,11 @@ void Session::refresh() {
         presentation_.dof = solvedAnything ? dof : -1;
         presentation_.status = worst;
     }
+
+    // Recomputed rather than accumulated: a region is broken because of what it
+    // is now, and one that was mended by an undo has to stop saying so.
+    presentation_.brokenRegions = brokenRegions(*doc_);
+    presentation_.brokenTags = brokenTags(*doc_);
 
     index_.rebuild(pose());
 }
@@ -855,9 +924,33 @@ void Session::applyDragResolve(bool impose) {
 }
 
 void Session::beginDrag(EntityId grabbed, Point cursor) {
-    // The whole selection comes along. Clicking inside a selection keeps it,
-    // which is what makes a multi-selection draggable as one thing.
-    drag_ = DragSession::begin(*doc_, topology_, grabbed, selection_.items(), policy_);
+    // The whole selection comes along, and so does every group any of it
+    // belongs to.
+    //
+    // The two travel differently and have to. A selected parameter is held —
+    // the solver favours leaving it be, and what has to give gives elsewhere.
+    // A grouped one is carried: a group usually joins geometry that is not
+    // connected, so there is no equation to hold it and locality would keep it
+    // still, so it translates rigidly with the grab instead. Both are defaults
+    // rather than declarations: grouping two things says nothing about what the
+    // document means, and the grouping survives the drag either way.
+    std::vector<EntityId> held = selection_.items();
+    if(std::find(held.begin(), held.end(), grabbed) == held.end()) held.push_back(grabbed);
+
+    std::vector<EntityId> carried;
+    for(const GroupRecord &g : doc_->groups().records()) {
+        const bool touched = std::any_of(g.members.begin(), g.members.end(), [&](EntityId m) {
+            return m == grabbed || std::find(held.begin(), held.end(), m) != held.end();
+        });
+        if(!touched) continue;
+        for(EntityId m : g.members) {
+            if(std::find(carried.begin(), carried.end(), m) == carried.end()) {
+                carried.push_back(m);
+            }
+        }
+    }
+
+    drag_ = DragSession::begin(*doc_, topology_, grabbed, held, policy_, carried);
     if(!drag_) return;
     presentation_.dragging = true;
     updateCount_ = 0;
@@ -1188,43 +1281,28 @@ void Session::deleteSelection() {
 
     // One gesture, one undo step, whatever it took with it.
     //
-    // Each cascade is computed against the document as it stands, so two
-    // selected entities sharing a dependent name it twice. The second removal
-    // would be refused and roll the whole step back, so dedupe by
-    // (command alternative, record id) before applying.
-    std::vector<std::pair<size_t, uint32_t>> seen;
-    std::vector<Command> step;
-
-    auto identify = [](const Command &c) {
-        return std::visit(
-            [](const auto &command) -> uint32_t {
-                using C = std::decay_t<decltype(command)>;
-                if constexpr(requires { command.id; }) {
-                    return command.id.value();
-                } else {
-                    return command.record.id.value();
-                }
-            },
-            c);
-    };
-
-    for(EntityId id : selection_.items()) {
-        for(const Command &c : deletionStep(*doc_, id)) {
-            const std::pair<size_t, uint32_t> key{c.index(), identify(c)};
-            if(std::find(seen.begin(), seen.end(), key) != seen.end()) continue;
-            seen.push_back(key);
-            step.push_back(c);
-        }
-    }
+    // The whole selection goes to one cascade rather than one cascade per
+    // entity. Two selected edges of the same filled loop would otherwise
+    // produce two shrinks of that region, each dropping a different edge, and
+    // one of them would have to win — the wrong answer whichever it is.
+    std::vector<Command> step = deletionStep(*doc_, selection_.items());
     if(step.empty()) return;
 
     // Counts, not a confirmation dialog. The user is told what went, after it
     // went, and undo is one keystroke away.
+    //
+    // Three numbers rather than two, because a deletion no longer only removes.
+    // A region, tag or group that lost a member shrank rather than died, and
+    // reporting a degradation as a deletion would say something went that is
+    // still there — visibly, in its broken state.
+    presentation_.degraded = 0;
     for(const Command &c : step) {
         if(std::holds_alternative<RemoveRecord<EntityRecord>>(c)) {
             presentation_.deletedEntities++;
-        } else {
+        } else if(std::holds_alternative<RemoveRecord<ConstraintRecord>>(c)) {
             presentation_.deletedRelations++;
+        } else {
+            presentation_.degraded++;
         }
     }
 
@@ -1234,7 +1312,287 @@ void Session::deleteSelection() {
     } else {
         presentation_.deletedEntities = 0;
         presentation_.deletedRelations = 0;
+        presentation_.degraded = 0;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Composition
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The regions the selection reaches, in ID order.
+//
+// A region has no handle of its own: it is reached through the geometry that
+// bounds it, which is the same thing that makes a fill a view of an outline
+// rather than an object beside one. An outline counts as selected when every
+// edge it names is; a composite counts when every operand does, recursively —
+// so selecting two squares and asking for a subtract works, and selecting one
+// edge of one of them does not silently act on the whole fill.
+bool regionSelected(const Document &doc, const RegionRecord &r,
+                    const std::vector<EntityId> &selection) {
+    if(r.op == CompositeOp::Outline) {
+        if(r.boundary.empty()) return false;
+        for(EntityId e : r.boundary) {
+            if(std::find(selection.begin(), selection.end(), e) == selection.end()) return false;
+        }
+        return true;
+    }
+    if(r.operands.empty()) return false;
+    for(RegionId o : r.operands) {
+        const RegionRecord *child = doc.regions().find(o);
+        if(child == nullptr || !regionSelected(doc, *child, selection)) return false;
+    }
+    return true;
+}
+
+std::vector<RegionId> regionsIn(const Document &doc, const std::vector<EntityId> &selection) {
+    std::vector<RegionId> out;
+    for(const RegionRecord &r : doc.regions().records()) {
+        if(!isTopLevelRegion(doc, r.id)) continue;
+        if(regionSelected(doc, r, selection)) out.push_back(r.id);
+    }
+    return out;
+}
+
+}  // namespace
+
+std::vector<RegionId> Session::selectedRegions() const {
+    return regionsIn(*doc_, selection_.items());
+}
+
+// The layer an action acts on: the one named, else the one the selection is
+// already on. Naming it is what makes every layer action headlessly invocable
+// with an argument; defaulting to the selection's is what makes the keyboard
+// path mean something without one.
+LayerId Session::targetLayer(std::optional<double> named) const {
+    if(named && *named > 0.0) return LayerId(static_cast<uint32_t>(*named));
+    for(EntityId id : selection_.items()) {
+        if(const EntityRecord *e = doc_->entities().find(id)) return e->layer;
+    }
+    return LayerId();
+}
+
+LayerId Session::topLayer() const {
+    const LayerRecord *top = nullptr;
+    for(const LayerRecord &l : doc_->layers().records()) {
+        if(top == nullptr || l.order > top->order ||
+           (l.order == top->order && top->id < l.id)) {
+            top = &l;
+        }
+    }
+    return top != nullptr ? top->id : LayerId();
+}
+
+bool Session::newLayer() {
+    recordAction("layer.new");
+
+    // Above everything, because a layer made now is one the user is about to
+    // draw on. Ordering is signed and editable, so this is a starting position
+    // rather than a policy.
+    int32_t above = 0;
+    for(const LayerRecord &l : doc_->layers().records()) above = std::max(above, l.order + 1);
+
+    LayerRecord layer;
+    layer.order = above;
+    layer.name = "layer " + std::to_string(doc_->layers().size() + 1);
+    if(journal_->applyStep(*doc_, "new layer", AddRecord<LayerRecord>{layer}) !=
+       CommandError::None) {
+        return false;
+    }
+    return true;
+}
+
+// Moving geometry between layers is organization and nothing else: no constraint
+// is touched, no relation is dropped for crossing, and the partition does not
+// notice. That is what "layers are organization, not semantics" costs to
+// implement, which is nothing.
+bool Session::assignLayer(LayerId layer) {
+    recordAction("layer.assign", {{"layer", static_cast<double>(layer.value())}});
+    if(selection_.empty()) return false;
+    if(layer.valid() && doc_->layers().find(layer) == nullptr) return false;
+
+    std::vector<Command> step;
+    for(EntityId id : selection_.items()) {
+        const EntityRecord *e = doc_->entities().find(id);
+        if(e == nullptr || e->layer == layer) continue;
+        EntityRecord moved = *e;
+        moved.layer = layer;
+        step.push_back(SetRecord<EntityRecord>{std::move(moved)});
+    }
+    if(step.empty()) return false;
+    if(journal_->applyStep(*doc_, "assign layer", std::move(step)) != CommandError::None) {
+        return false;
+    }
+    refresh();
+    return true;
+}
+
+// Recorded under the name of the action that does it, never under a name of its
+// own. A step naming something the registry does not have is a step replay
+// cannot run, and the failure is silent — the script parses, the edit is gone.
+bool Session::setLayerVisible(LayerId layer, bool visible) {
+    recordAction(visible ? "layer.show" : "layer.hide",
+                 {{"layer", static_cast<double>(layer.value())}});
+    const LayerRecord *l = doc_->layers().find(layer);
+    if(l == nullptr || l->visible == visible) return false;
+    LayerRecord changed = *l;
+    changed.visible = visible;
+    if(journal_->applyStep(*doc_, "layer visibility", SetRecord<LayerRecord>{changed}) !=
+       CommandError::None) {
+        return false;
+    }
+    // Hiding does not re-solve anything — hidden still constrains, so the
+    // geometry is unchanged — but the influence indication is computed from a
+    // solve and has to be recomputed against the new visibility.
+    refresh();
+    return true;
+}
+
+bool Session::setLayerLocked(LayerId layer, bool locked) {
+    recordAction(locked ? "layer.lock" : "layer.unlock",
+                 {{"layer", static_cast<double>(layer.value())}});
+    const LayerRecord *l = doc_->layers().find(layer);
+    if(l == nullptr || l->locked == locked) return false;
+    LayerRecord changed = *l;
+    changed.locked = locked;
+    if(journal_->applyStep(*doc_, "layer lock", SetRecord<LayerRecord>{changed}) !=
+       CommandError::None) {
+        return false;
+    }
+    // Locking removes unknowns, so the degree-of-freedom readout changes even
+    // though nothing moved. Unlocking hands them back.
+    refresh();
+    return true;
+}
+
+bool Session::moveLayer(LayerId layer, int delta) {
+    recordAction(delta < 0 ? "layer.lower" : "layer.raise",
+                 {{"layer", static_cast<double>(layer.value())}});
+    const LayerRecord *l = doc_->layers().find(layer);
+    if(l == nullptr) return false;
+    LayerRecord changed = *l;
+    changed.order += delta;
+    return journal_->applyStep(*doc_, "layer order", SetRecord<LayerRecord>{changed}) ==
+           CommandError::None;
+}
+
+// Union, subtract and intersect over live operands. Nothing is consumed: the
+// operands stay exactly the records they were, keep their constraints, and go
+// on being constrainable to each other — a hole staying concentric with its
+// plate is an ordinary coincidence between two outlines that happen to be
+// operands. What the composite adds is one record saying how they combine.
+bool Session::composeRegions(CompositeOp op) {
+    recordAction(std::string("region.") + compositeOpName(op));
+    if(op == CompositeOp::Outline) return false;
+
+    const std::vector<RegionId> operands = selectedRegions();
+    if(operands.size() < 2) return false;
+
+    const RegionRecord *first = doc_->regions().find(operands.front());
+    if(first == nullptr) return false;
+
+    RegionRecord composite;
+    composite.op = op;
+    composite.operands = operands;
+    composite.layer = first->layer;
+    composite.style = first->style;
+    // On top of what it combines, so the composite is what the user sees where
+    // the operands used to be.
+    for(RegionId id : operands) {
+        if(const RegionRecord *r = doc_->regions().find(id)) {
+            composite.z = std::max(composite.z, r->z);
+        }
+    }
+
+    if(journal_->applyStep(*doc_, "compose regions", AddRecord<RegionRecord>{composite}) !=
+       CommandError::None) {
+        return false;
+    }
+    if(!doc_->regions().records().empty()) {
+        presentation_.composed = doc_->regions().records().back().id;
+    }
+    refresh();
+    return true;
+}
+
+// The inverse, and it is a real inverse: the composite record goes and the
+// operands are exactly where they were, which is what "can be lifted back out"
+// means when nothing was consumed to make it.
+bool Session::liftComposite() {
+    recordAction("region.lift");
+    std::vector<Command> step;
+    for(RegionId id : selectedRegions()) {
+        const RegionRecord *r = doc_->regions().find(id);
+        if(r == nullptr || r->op == CompositeOp::Outline) continue;
+        step.push_back(RemoveRecord<RegionRecord>{id});
+    }
+    if(step.empty()) return false;
+    if(journal_->applyStep(*doc_, "lift composite", std::move(step)) != CommandError::None) {
+        return false;
+    }
+    presentation_.composed = RegionId();
+    refresh();
+    return true;
+}
+
+bool Session::togglePunch() {
+    recordAction("region.punch");
+    std::vector<Command> step;
+    for(RegionId id : selectedRegions()) {
+        RegionRecord r = *doc_->regions().find(id);
+        r.punch = !r.punch;
+        step.push_back(SetRecord<RegionRecord>{std::move(r)});
+    }
+    if(step.empty()) return false;
+    if(journal_->applyStep(*doc_, "punch", std::move(step)) != CommandError::None) return false;
+    refresh();
+    return true;
+}
+
+bool Session::moveRegion(int delta) {
+    recordAction(delta < 0 ? "region.lower" : "region.raise");
+    std::vector<Command> step;
+    for(RegionId id : selectedRegions()) {
+        RegionRecord r = *doc_->regions().find(id);
+        r.z += delta;
+        step.push_back(SetRecord<RegionRecord>{std::move(r)});
+    }
+    if(step.empty()) return false;
+    if(journal_->applyStep(*doc_, "region order", std::move(step)) != CommandError::None) {
+        return false;
+    }
+    refresh();
+    return true;
+}
+
+bool Session::groupSelection() {
+    recordAction("group.create");
+    if(selection_.size() < 2) return false;
+    GroupRecord group;
+    group.name = "group " + std::to_string(doc_->groups().size() + 1);
+    group.members = selection_.items();
+    return journal_->applyStep(*doc_, "group", AddRecord<GroupRecord>{std::move(group)}) ==
+           CommandError::None;
+}
+
+// Dissolving takes the grouping and nothing else. A group owns no geometry, so
+// there is nothing here that could be lost by ungrouping — the same property
+// that makes a tag safe to dissolve.
+bool Session::dissolveGroups() {
+    recordAction("group.dissolve");
+    std::vector<Command> step;
+    for(const GroupRecord &g : doc_->groups().records()) {
+        const bool touched = std::any_of(g.members.begin(), g.members.end(), [&](EntityId m) {
+            return selection_.contains(m);
+        });
+        if(touched) step.push_back(RemoveRecord<GroupRecord>{g.id});
+    }
+    if(step.empty()) return false;
+    return journal_->applyStep(*doc_, "dissolve group", std::move(step)) == CommandError::None;
+}
+
+Bake Session::bake() const { return bakeForExport(*doc_, pose()); }
 
 }  // namespace paroculus

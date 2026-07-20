@@ -80,6 +80,10 @@ target_compile_options(paroculus-solver PRIVATE -w)
 # The PUBLIC src include directory is what gives every layer its "core/geom.h"
 # style include, so it is declared once here and inherited by linkage.
 add_library(paroculus-core STATIC
+    src/core/bake.cpp
+    src/core/bake.h
+    src/core/composition.cpp
+    src/core/composition.h
     src/core/document.cpp
     src/core/document.h
     src/core/geom.h
@@ -260,6 +264,7 @@ if(PAROCULUS_TESTS)
         tests/main.cpp
         tests/support/build.cpp
         tests/support/build.h
+        tests/unit/core_composition.cpp
         tests/unit/core_document.cpp
         tests/unit/core_geom.cpp
         tests/unit/core_ids.cpp
@@ -286,10 +291,13 @@ if(PAROCULUS_TESTS)
         tests/unit/interact_loops.cpp
         tests/unit/interact_registry.cpp
         tests/unit/interact_impose.cpp
+        tests/unit/interact_composition.cpp
         tests/unit/interact_regions.cpp
+        tests/raster/composition.cpp
         tests/raster/regions.cpp
         tests/raster/dimensions.cpp
         tests/gestures/corpus.cpp
+        tests/gestures/composition.cpp
         tests/gestures/flagship.cpp
         tests/gestures/inference.cpp
         tests/unit/solve_context.cpp

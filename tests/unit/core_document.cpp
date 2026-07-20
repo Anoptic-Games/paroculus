@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include "core/composition.h"
 #include "core/document.h"
 #include "core/persist.h"
 #include "support/build.h"
@@ -398,8 +399,106 @@ TEST_CASE("regions reference edges, never points") {
     good.boundary = {seg};
     CHECK(doc.apply(AddRecord<RegionRecord>{good}).ok());
 
+    // An empty outline is accepted, and only looks like a hole in the
+    // validation. It is the state a region lands in when the edges it bounded
+    // were deleted, and refusing it would mean a deletion could only proceed by
+    // taking the fill with it. Whether a region encloses anything is asked in
+    // one place, and that place is not the validator.
     RegionRecord empty;
-    CHECK_FALSE(doc.apply(AddRecord<RegionRecord>{empty}).ok());
+    CHECK(doc.apply(AddRecord<RegionRecord>{empty}).ok());
+    CHECK(regionState(doc, doc.regions().records().back()) == RegionState::Broken);
+}
+
+TEST_CASE("a region gets its area exactly one way") {
+    // Outline names edges, composite names regions, and never both: a record
+    // populating each would leave "what is this region's area" with two answers
+    // and no rule for which wins.
+    Document doc;
+    const EntityId p = addPoint(doc, 0.0, 0.0);
+    const EntityId q = addPoint(doc, 1.0, 0.0);
+    const EntityId seg = addSegment(doc, p, q);
+
+    RegionRecord outline;
+    outline.boundary = {seg};
+    REQUIRE(doc.apply(AddRecord<RegionRecord>{outline}).ok());
+    const RegionId first = doc.regions().records().back().id;
+
+    RegionRecord both;
+    both.op = CompositeOp::Union;
+    both.boundary = {seg};
+    both.operands = {first};
+    CHECK(doc.apply(AddRecord<RegionRecord>{both}).error == CommandError::WrongSignature);
+
+    RegionRecord composite;
+    composite.op = CompositeOp::Union;
+    composite.operands = {first};
+    REQUIRE(doc.apply(AddRecord<RegionRecord>{composite}).ok());
+    const RegionId second = doc.regions().records().back().id;
+
+    // An operand belongs to at most one composite: two would draw it twice and
+    // give lifting it back out two answers.
+    RegionRecord rival;
+    rival.op = CompositeOp::Intersect;
+    rival.operands = {first};
+    CHECK(doc.apply(AddRecord<RegionRecord>{rival}).error == CommandError::HasDependents);
+
+    // And a composite may not reach itself. The per-frame path walk follows the
+    // same edges, so a cycle is not merely nonsense, it does not terminate.
+    RegionRecord loop = *doc.regions().find(first);
+    loop.op = CompositeOp::Union;
+    loop.boundary.clear();
+    loop.operands = {second};
+    CHECK(doc.apply(SetRecord<RegionRecord>{loop}).error == CommandError::CyclicParameter);
+}
+
+TEST_CASE("a composite is dismantled, never consumed") {
+    // Nothing was taken to make it, so nothing is stranded by taking it apart.
+    Document doc;
+    const EntityId p = addPoint(doc, 0.0, 0.0);
+    const EntityId q = addPoint(doc, 1.0, 0.0);
+    const EntityId a = addSegment(doc, p, q);
+    const EntityId b = addSegment(doc, q, p);
+
+    RegionRecord one;
+    one.boundary = {a};
+    REQUIRE(doc.apply(AddRecord<RegionRecord>{one}).ok());
+    const RegionId first = doc.regions().records().back().id;
+    RegionRecord two;
+    two.boundary = {b};
+    REQUIRE(doc.apply(AddRecord<RegionRecord>{two}).ok());
+    const RegionId second = doc.regions().records().back().id;
+
+    RegionRecord composite;
+    composite.op = CompositeOp::Subtract;
+    composite.operands = {first, second};
+    REQUIRE(doc.apply(AddRecord<RegionRecord>{composite}).ok());
+    const RegionId both = doc.regions().records().back().id;
+
+    // The operands are no longer drawn in their own right, but they are still
+    // there — which is what makes lifting a real inverse.
+    CHECK_FALSE(isTopLevelRegion(doc, first));
+    CHECK(isTopLevelRegion(doc, both));
+
+    REQUIRE(doc.apply(RemoveRecord<RegionRecord>{both}).ok());
+    CHECK(doc.regions().contains(first));
+    CHECK(doc.regions().contains(second));
+    CHECK(isTopLevelRegion(doc, first));
+
+    // Removing an operand out from under a composite is refused, and the
+    // deletion step lifts it out first.
+    RegionRecord again;
+    again.op = CompositeOp::Subtract;
+    again.operands = {first, second};
+    REQUIRE(doc.apply(AddRecord<RegionRecord>{again}).ok());
+    const RegionId rebuilt = doc.regions().records().back().id;
+
+    CHECK(doc.apply(RemoveRecord<RegionRecord>{first}).error == CommandError::HasDependents);
+    for(const Command &c : deletionStep(doc, first)) REQUIRE(doc.apply(c).ok());
+    CHECK_FALSE(doc.regions().contains(first));
+    CHECK(doc.regions().find(rebuilt)->operands == std::vector<RegionId>{second});
+    // And a composite thinned past combining anything says so rather than
+    // vanishing.
+    CHECK(regionState(doc, rebuilt) == RegionState::Broken);
 }
 
 TEST_CASE("deletion dependents are reported, never hidden") {
@@ -449,7 +548,13 @@ TEST_CASE("a removal that would dangle is refused, and the cascade is available"
     CHECK_FALSE(doc.entities().contains(p));
     CHECK_FALSE(doc.entities().contains(seg));
     CHECK(doc.constraints().empty());
-    CHECK(doc.regions().empty());
+    // The region shrank rather than dying. Nothing higher-order is silently
+    // discarded: the fill the user asked for is still declared, it renders as a
+    // diagnostic because it no longer encloses anything, and one undo has it
+    // back whole.
+    REQUIRE(doc.regions().size() == 1);
+    CHECK(doc.regions().records().front().boundary.empty());
+    CHECK(regionState(doc, doc.regions().records().front()) == RegionState::Broken);
     // q was not part of the cascade: only what would have dangled goes.
     CHECK(doc.entities().contains(q));
 }
