@@ -897,9 +897,15 @@ void Session::refreshDragPresentation() {
     // by the segments they are lengths of rather than by their order.
     dragLabels_.reserve(dragDimensions_.size());
     for(const DragDimension &d : dragDimensions_) {
-        dragLabels_.push_back(d.kind == ConstraintKind::Radius
-                                  ? "radius"
-                                  : "length " + std::to_string(d.subject.value()));
+        // A distance whose subject is an arc is that arc's chord, not a length
+        // along it — naming it "length" would read as the arc's own length,
+        // which is not the thing the field sets.
+        const EntityRecord *subject = doc_->entities().find(d.subject);
+        const bool arcChord = d.kind == ConstraintKind::PointPointDistance && subject != nullptr &&
+                              subject->kind == EntityKind::Arc;
+        dragLabels_.push_back(d.kind == ConstraintKind::Radius ? "radius"
+                              : arcChord                       ? "chord"
+                              : "length " + std::to_string(d.subject.value()));
     }
     for(size_t i = 0; i < dragDimensions_.size(); i++) {
         presentation_.toolParameters.push_back(

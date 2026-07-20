@@ -370,28 +370,68 @@ std::vector<DragDimension> dragDimensions(const Document &doc, const Pose &pose,
     }
     if(e->kind != EntityKind::Point) return out;
 
-    // Every segment this point is an end of. Each is a length the drag is
-    // adjusting, and which one the user meant is the question the strip asks.
+    // Every edge this point is an end of, straight or curved, in ID order. Each
+    // is a measurement the drag is adjusting, and which one the user meant is the
+    // question the strip asks — the same disambiguation a vertex shared by two
+    // segments gets, extended to the arc endpoints that curves-as-boundaries made
+    // worth grabbing in anger. One pass over the table so the field order Tab
+    // cycles through is purely ID-ordered and cannot shift under the user
+    // mid-entry.
     for(const EntityRecord &other : doc.entities().records()) {
-        if(other.kind != EntityKind::Segment) continue;
-        EntityId far;
-        if(other.points[0] == grabbed) {
-            far = other.points[1];
-        } else if(other.points[1] == grabbed) {
-            far = other.points[0];
-        } else {
-            continue;
-        }
-        if(!far.valid()) continue;
+        if(other.kind == EntityKind::Segment) {
+            EntityId far;
+            if(other.points[0] == grabbed) {
+                far = other.points[1];
+            } else if(other.points[1] == grabbed) {
+                far = other.points[0];
+            } else {
+                continue;
+            }
+            if(!far.valid()) continue;
 
-        DragDimension d;
-        d.kind = ConstraintKind::PointPointDistance;
-        d.operands[0] = grabbed;
-        d.operands[1] = far;
-        d.count = 2;
-        d.subject = other.id;
-        d.value = measure(pose, ConstraintKind::PointPointDistance, d.operands).value_or(0.0);
-        out.push_back(d);
+            DragDimension d;
+            d.kind = ConstraintKind::PointPointDistance;
+            d.operands[0] = grabbed;
+            d.operands[1] = far;
+            d.count = 2;
+            d.subject = other.id;
+            d.value = measure(pose, ConstraintKind::PointPointDistance, d.operands).value_or(0.0);
+            out.push_back(d);
+        } else if(other.kind == EntityKind::Arc) {
+            // points[0] is the construction centre and is never grabbed as an
+            // arc end; the ends are points[1] and points[2]. Grabbing one is a
+            // resize, and two things resize with it: the arc's radius and the
+            // chord to its other end — the width of the opening. Both are offered,
+            // radius first, because it is the value an endpoint drag is usually
+            // reaching for.
+            EntityId far;
+            if(other.points[1] == grabbed) {
+                far = other.points[2];
+            } else if(other.points[2] == grabbed) {
+                far = other.points[1];
+            } else {
+                continue;
+            }
+            if(!far.valid()) continue;
+
+            DragDimension radius;
+            radius.kind = ConstraintKind::Radius;
+            radius.operands[0] = other.id;
+            radius.count = 1;
+            radius.subject = other.id;
+            radius.value = pose.curveRadius(other.id).value_or(0.0);
+            out.push_back(radius);
+
+            DragDimension chord;
+            chord.kind = ConstraintKind::PointPointDistance;
+            chord.operands[0] = grabbed;
+            chord.operands[1] = far;
+            chord.count = 2;
+            chord.subject = other.id;
+            chord.value =
+                measure(pose, ConstraintKind::PointPointDistance, chord.operands).value_or(0.0);
+            out.push_back(chord);
+        }
     }
     return out;
 }

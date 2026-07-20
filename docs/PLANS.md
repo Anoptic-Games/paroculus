@@ -847,6 +847,24 @@ reason parallel segments do. Heal-and-fill's own three-edge minimum went through
 that will enclose once the gap is shut, and a hard three would have refused to
 offer the heal that make-solid then accepts.
 
+Two more surfaces curves now reach were closed at the same time, both found by
+auditing every reader that had assumed an edge is a straight segment. The
+broken-region diagnostic stroked through Pose::segment alone, so a degraded
+curved boundary drew nothing — a circle-bounded fill evaporated with no
+diagnostic, the exact silence that state exists to prevent, arriving through the
+code written to prevent it. And fitView bounded from defining points only, so a
+document that is one filled circle framed from its centre; a circle alone is a
+complete drawing now that it bounds a region. Both are drawing-side and neither
+touches the model.
+
+The last one is the numeric twin for grabbing an arc endpoint, which the drag
+dimension collector had never offered because it walked segments only. It was
+harmless while an arc endpoint was rarely a drag target and became a real gap
+once curves bound regions and the endpoint is a corner a user drags in anger.
+Grabbing it now offers radius and chord, Tabbed exactly as a shared vertex's two
+lengths are — so every gesture has its numeric twin again, the arc included from
+both sides.
+
 The remaining deferral is unchanged and is the honest one: filling an area
 enclosed by edges that cross still needs explicit intersection points. The
 diagnostic now names that case wherever it occurs rather than only among

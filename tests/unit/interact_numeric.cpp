@@ -794,3 +794,226 @@ TEST_CASE("digits open a field during a drag, though the tool is Select") {
     CHECK(binding.kind == KeyBinding::Kind::Text);
     CHECK(binding.character == '4');
 }
+
+// ---------------------------------------------------------------------------
+// Grabbing an arc endpoint has a numeric twin too
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// An arc drawn through the tool, so its centre, endpoints and through-point are
+// exactly what a user's gesture makes. Draws a shallow arc on a chord of 100.
+struct DrawnArc {
+    Document doc;
+    UndoJournal journal;
+    std::unique_ptr<Session> session;
+    EntityId arc, start, end, centre;
+
+    DrawnArc() {
+        session = std::make_unique<Session>(doc, journal);
+        session->setViewport(entryViewport());
+        session->snapPolicy().gridEnabled = false;
+        session->setTool(ToolKind::Arc);
+        click(Point{-50.0, 0.0});  // start
+        click(Point{50.0, 0.0});   // end
+        click(Point{0.0, 30.0});   // through, fixing the bulge
+        session->setTool(ToolKind::Select);
+        for(const EntityRecord &e : doc.entities().records()) {
+            if(e.kind == EntityKind::Arc) {
+                arc = e.id;
+                centre = e.points[0];
+                start = e.points[1];
+                end = e.points[2];
+            }
+        }
+    }
+
+    void click(Point p) {
+        const ViewTransform &view = session->viewport().view;
+        const Eigen::Vector2d s = view.toScreen(p);
+        session->handle(PointerEvent::at(PointerAction::Move, s, view));
+        session->handle(PointerEvent::at(PointerAction::Press, s, view, Button::Left));
+    }
+
+    void grab(EntityId id) {
+        const ViewTransform &view = session->viewport().view;
+        const Eigen::Vector2d at = view.toScreen(*session->pose().point(id));
+        session->select({id});
+        session->handle(PointerEvent::at(PointerAction::Press, at, view, Button::Left));
+        session->handle(PointerEvent::at(PointerAction::Move, at + Eigen::Vector2d(10.0, 6.0),
+                                         view, Button::Left));
+    }
+    void release() {
+        session->handle(PointerEvent::at(PointerAction::Release,
+                                         session->viewport().view.toScreen(Point{0.0, 0.0}),
+                                         session->viewport().view, Button::Left));
+    }
+    void type(const char *text) {
+        for(const char *c = text; *c != 0; c++) session->type(*c);
+    }
+    std::optional<Pose::ArcGeometry> geometry() const { return session->pose().arc(arc); }
+    double chord() const {
+        const Pose pose = session->pose();
+        const Point a = *pose.point(start);
+        const Point b = *pose.point(end);
+        return std::hypot(b.x - a.x, b.y - a.y);
+    }
+};
+
+}  // namespace
+
+TEST_CASE("grabbing an arc endpoint offers its radius and its chord") {
+    DrawnArc a;
+    REQUIRE(a.arc.valid());
+    a.grab(a.start);
+
+    // The blind spot curves-as-boundaries left: dragDimensions collected segment
+    // lengths only, so grabbing an arc's endpoint offered no field at all, and
+    // the arc alone among gestures had no numeric twin for its resize.
+    REQUIRE(a.session->presentation().dragging);
+    const std::vector<ToolParameter> &fields = a.session->presentation().toolParameters;
+    REQUIRE(fields.size() == 2);
+    // Radius first — the value an endpoint drag usually reaches for — then the
+    // chord, and each is named for what it sets rather than by its index.
+    CHECK(std::string(fields[0].name) == "radius");
+    CHECK(std::string(fields[1].name) == "chord");
+    // The values are what the arc currently reads.
+    CHECK(fields[0].value == doctest::Approx(a.geometry()->radius));
+    CHECK(fields[1].value == doctest::Approx(a.chord()));
+}
+
+TEST_CASE("typing a radius resizes the arc exactly") {
+    DrawnArc a;
+    a.grab(a.start);
+    // Field 0 is the radius.
+    a.type("60");
+    REQUIRE(a.session->presentation().numericActive);
+    REQUIRE(a.session->presentation().numericTarget == 0);
+    a.session->numericResolve(false);
+    a.release();
+    a.session->refresh();
+
+    CHECK(a.geometry()->radius == doctest::Approx(60.0).epsilon(1e-6));
+    // A resolved drag moves geometry and declares nothing: no radius constraint
+    // was created, unlike the shift+enter path below.
+    bool declared = false;
+    for(const ConstraintRecord &r : a.doc.constraints().records()) {
+        if(r.kind == ConstraintKind::Radius) declared = true;
+    }
+    CHECK_FALSE(declared);
+    CHECK_FALSE(a.session->presentation().dragging);
+}
+
+TEST_CASE("tab reaches the chord and typing sets it exactly") {
+    DrawnArc a;
+    a.grab(a.start);
+    // Tab opens field 0, Tab again advances to the chord.
+    a.session->numericAdvance();
+    a.session->numericAdvance();
+    REQUIRE(a.session->presentation().numericTarget == 1);
+    a.type("140");
+    a.session->numericResolve(false);
+    a.release();
+    a.session->refresh();
+
+    // A drag cannot land on a number; the twin does, exactly.
+    CHECK(a.chord() == doctest::Approx(140.0).epsilon(1e-6));
+}
+
+TEST_CASE("shift+enter on an arc endpoint imposes the radius as a dimension") {
+    DrawnArc a;
+    a.grab(a.start);
+    a.type("70");
+    a.session->numericResolve(true);
+    a.session->refresh();
+
+    // The geometry landed on it and the value was pinned, in one undo step.
+    bool sawRadius = false;
+    for(const ConstraintRecord &r : a.doc.constraints().records()) {
+        if(r.kind != ConstraintKind::Radius) continue;
+        sawRadius = true;
+        CHECK(r.driving);
+        CHECK(a.doc.evaluate(r.value).value_or(0.0) == doctest::Approx(70.0));
+    }
+    CHECK(sawRadius);
+    CHECK(a.geometry()->radius == doctest::Approx(70.0).epsilon(1e-6));
+
+    REQUIRE(invokeAction(*a.session, "edit.undo"));
+    bool stillHas = false;
+    for(const ConstraintRecord &r : a.doc.constraints().records()) {
+        if(r.kind == ConstraintKind::Radius) stillHas = true;
+    }
+    CHECK_FALSE(stillHas);
+}
+
+TEST_CASE("an arc endpoint resize survives a script round-trip") {
+    // Every gesture the session produces is record → replay → record identity,
+    // and a drag's numeric steps are ordinary recording surfaces. The arc twin
+    // adds a Radius dimension to a drag, so it has to round-trip like the rest.
+    Document doc;
+    UndoJournal journal;
+    Session session(doc, journal);
+    session.setViewport(entryViewport());
+    session.snapPolicy().gridEnabled = false;
+
+    ScriptRecorder recorder;
+    session.setRecorder(&recorder);
+
+    session.setTool(ToolKind::Arc);
+    auto click = [&](Point p) {
+        const ViewTransform &view = session.viewport().view;
+        const Eigen::Vector2d s = view.toScreen(p);
+        session.handle(PointerEvent::at(PointerAction::Move, s, view));
+        session.handle(PointerEvent::at(PointerAction::Press, s, view, Button::Left));
+    };
+    click(Point{-50.0, 0.0});
+    click(Point{50.0, 0.0});
+    click(Point{0.0, 30.0});
+    session.setTool(ToolKind::Select);
+
+    EntityId start;
+    for(const EntityRecord &e : doc.entities().records()) {
+        if(e.kind == EntityKind::Arc) start = e.points[1];
+    }
+    REQUIRE(start.valid());
+    const ViewTransform &view = session.viewport().view;
+    const Eigen::Vector2d at = view.toScreen(*session.pose().point(start));
+    session.select({start});
+    session.handle(PointerEvent::at(PointerAction::Press, at, view, Button::Left));
+    session.handle(
+        PointerEvent::at(PointerAction::Move, at + Eigen::Vector2d(10.0, 6.0), view, Button::Left));
+    for(char c : std::string("70")) session.type(c);
+    session.numericResolve(true);  // impose, so a constraint lands to compare
+    session.handle(PointerEvent::at(PointerAction::Release, at, view, Button::Left));
+
+    GestureScript script;
+    script.document = Document();
+    script.steps = recorder.steps();
+    const std::string text = serializeScript(script);
+
+    GestureScript parsed;
+    REQUIRE(parseScript(text, parsed).ok);
+
+    Document replayDoc;
+    UndoJournal replayJournal;
+    Session replaySession(replayDoc, replayJournal);
+    replaySession.setViewport(entryViewport());
+    replaySession.snapPolicy().gridEnabled = false;
+    ScriptRecorder again;
+    replaySession.setRecorder(&again);
+    replay(replaySession, parsed);
+
+    GestureScript second;
+    second.document = Document();
+    second.steps = again.steps();
+    CHECK(serializeScript(second) == text);
+
+    // And the replay reproduced the resize: a driving radius of 70.
+    bool sawRadius = false;
+    for(const ConstraintRecord &r : replayDoc.constraints().records()) {
+        if(r.kind != ConstraintKind::Radius) continue;
+        sawRadius = true;
+        CHECK(replayDoc.evaluate(r.value).value_or(0.0) == doctest::Approx(70.0));
+    }
+    CHECK(sawRadius);
+}
