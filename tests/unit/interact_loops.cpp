@@ -3,6 +3,8 @@
 #include "core/persist.h"
 #include "interact/loops.h"
 #include "interact/session.h"
+#include "core/composition.h"
+#include "core/topology.h"
 #include "support/build.h"
 
 using namespace paroculus;
@@ -184,4 +186,188 @@ TEST_CASE("the offer clears when the placement that made it is undone") {
 
     d.session->setTool(ToolKind::Select);
     CHECK(d.session->presentation().closedLoop.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Curved boundaries
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a trapezoid with an arc for a corner closes") {
+    // The case that started this: an outline is straight edges plus one arc, and
+    // the offer never appeared because the cycle test threw out any edge that
+    // was not a segment. Detection lives in interact and the walk lives in core,
+    // and only one of them knew arcs were boundary-capable.
+    Document doc;
+    const EntityId a = test::addPoint(doc, -60.0, -30.0);
+    const EntityId b = test::addPoint(doc, 60.0, -30.0);
+    const EntityId c = test::addPoint(doc, 40.0, 30.0);
+    const EntityId d = test::addPoint(doc, -40.0, 30.0);
+
+    // Three straight sides, and the fourth corner rounded by an arc from d back
+    // to a. Its centre is construction geometry, exactly as the arc macro leaves
+    // it, and must not be read as a joint.
+    const EntityId centre = test::addPoint(doc, -50.0, 0.0);
+    EntityRecord construction = *doc.entities().find(centre);
+    construction.role = Role::Construction;
+    REQUIRE(doc.apply(SetRecord<EntityRecord>{construction}).ok());
+
+    const EntityId ab = test::addSegment(doc, a, b);
+    const EntityId bc = test::addSegment(doc, b, c);
+    const EntityId cd = test::addSegment(doc, c, d);
+    const EntityId da = test::addArc(doc, centre, d, a);
+    REQUIRE(da.valid());
+
+    const Topology topology(doc);
+    const std::optional<std::vector<EntityId>> loop =
+        closedBoundaryContaining(doc, topology, ab);
+    REQUIRE(loop);
+    CHECK(loop->size() == 4);
+    // The arc is in the cycle and the construction centre is not.
+    CHECK(std::find(loop->begin(), loop->end(), da) != loop->end());
+    CHECK(std::find(loop->begin(), loop->end(), centre) == loop->end());
+    CHECK(std::find(loop->begin(), loop->end(), cd) != loop->end());
+    (void)bc;
+
+    // And the fill the offer leads to is whole, walked through the arc's ends
+    // rather than through its centre.
+    RegionRecord region;
+    region.boundary = *loop;
+    const uint32_t id = doc.apply(AddRecord<RegionRecord>{region}).allocated;
+    REQUIRE(id != 0);
+    CHECK(regionState(doc, RegionId(id)) == RegionState::Whole);
+}
+
+TEST_CASE("a circle is its own boundary") {
+    // Foundational, and closed the moment it exists: a circle has no joints to
+    // match against a neighbour, so it never appears in a joint cycle and is
+    // answered from the seed instead.
+    Drawing d(ToolKind::Circle);
+    d.click(Point{0.0, 0.0});
+    d.click(Point{50.0, 0.0});
+
+    const std::vector<EntityId> loop = d.session->presentation().closedLoop;
+    REQUIRE(loop.size() == 1);
+    const EntityRecord *e = d.doc.entities().find(loop.front());
+    REQUIRE(e != nullptr);
+    CHECK(e->kind == EntityKind::Circle);
+
+    // The offer leads somewhere: make-solid fills it, and the fill is whole.
+    REQUIRE(d.session->makeSolid());
+    REQUIRE(d.doc.regions().size() == 1);
+    CHECK(regionState(d.doc, d.doc.regions().records().front().id) == RegionState::Whole);
+}
+
+TEST_CASE("a circle on a loop's corner leaves the loop detectable") {
+    // A self-closing edge takes no part in the joint walk, so it cannot spoil a
+    // cycle it merely touches. Refusing the whole set instead — which is what a
+    // "not a segment" guard does — made a circle anywhere near an outline
+    // silently kill the offer.
+    Document doc;
+    const EntityId a = test::addPoint(doc, 0.0, 0.0);
+    const EntityId b = test::addPoint(doc, 60.0, 0.0);
+    const EntityId c = test::addPoint(doc, 30.0, 50.0);
+    const EntityId ab = test::addSegment(doc, a, b);
+    const EntityId bc = test::addSegment(doc, b, c);
+    const EntityId ca = test::addSegment(doc, c, a);
+    // Centred on a corner, so it is in the same connected run as the triangle.
+    const EntityId circle = test::addCircle(doc, a, 12.0);
+    REQUIRE(circle.valid());
+
+    const Topology topology(doc);
+    const std::optional<std::vector<EntityId>> loop =
+        closedBoundaryContaining(doc, topology, ab);
+    REQUIRE(loop);
+    CHECK(loop->size() == 3);
+    CHECK(std::find(loop->begin(), loop->end(), circle) == loop->end());
+    (void)bc;
+    (void)ca;
+
+    // And the circle is still its own boundary when it is what was clicked.
+    const std::optional<std::vector<EntityId>> alone =
+        closedBoundaryContaining(doc, topology, circle);
+    REQUIRE(alone);
+    CHECK(alone->size() == 1);
+    CHECK(alone->front() == circle);
+}
+
+TEST_CASE("two straight edges still enclose nothing, and two curved ones do") {
+    // The bound is about what the edges are, not how many. Two segments over one
+    // pair of vertices walk closed and enclose nothing; swap one for an arc and
+    // the pair encloses a circular segment.
+    Document doc;
+    const EntityId p = test::addPoint(doc, 0.0, 0.0);
+    const EntityId q = test::addPoint(doc, 40.0, 0.0);
+    const EntityId first = test::addSegment(doc, p, q);
+    const EntityId second = test::addSegment(doc, p, q);
+
+    {
+        const Topology topology(doc);
+        CHECK_FALSE(closedBoundaryContaining(doc, topology, first).has_value());
+    }
+
+    // Replace the second straight edge with an arc over the same two ends.
+    REQUIRE(doc.apply(RemoveRecord<EntityRecord>{second}).ok());
+    const EntityId centre = test::addPoint(doc, 20.0, -10.0);
+    const EntityId bulge = test::addArc(doc, centre, q, p);
+    REQUIRE(bulge.valid());
+    EntityRecord construction = *doc.entities().find(centre);
+    construction.role = Role::Construction;
+    REQUIRE(doc.apply(SetRecord<EntityRecord>{construction}).ok());
+
+    const Topology topology(doc);
+    const std::optional<std::vector<EntityId>> lens =
+        closedBoundaryContaining(doc, topology, first);
+    REQUIRE(lens);
+    CHECK(lens->size() == 2);
+}
+
+TEST_CASE("selecting a circle offers to fill it") {
+    // Selecting takes the connected shape, which for a circle is its rim and its
+    // centre — and the offers are seeded from the front of that selection, which
+    // is the centre point rather than the curve. So a circle the user has just
+    // clicked has to find its own boundary through the run, not only when it is
+    // the thing just drawn. The unit tests missed this because they seeded from
+    // the placement; driving the real click found it.
+    Drawing d(ToolKind::Circle);
+    d.click(Point{0.0, 0.0});
+    d.click(Point{60.0, 0.0});
+    REQUIRE(d.session->presentation().closedLoop.size() == 1);
+
+    d.session->setTool(ToolKind::Select);
+    d.click(Point{60.0, 0.0});  // the rim
+    REQUIRE(d.session->selection().size() >= 1);
+
+    const std::vector<EntityId> loop = d.session->presentation().closedLoop;
+    REQUIRE(loop.size() == 1);
+    CHECK(d.doc.entities().find(loop.front())->kind == EntityKind::Circle);
+    REQUIRE(d.session->makeSolid());
+    CHECK(d.doc.regions().size() == 1);
+
+    // And the offer clears once it is filled, rather than stacking a second
+    // identical region over the first.
+    CHECK(d.session->presentation().closedLoop.empty());
+}
+
+TEST_CASE("two closed curves in one run offer neither") {
+    // Which one the user meant is a question, and guessing is the silent choice
+    // the surface exists to avoid. Reached from a point both are attached to;
+    // clicking either curve still answers for that curve, because the seed says.
+    Document doc;
+    const EntityId shared = test::addPoint(doc, 0.0, 0.0);
+    const EntityId inner = test::addCircle(doc, shared, 10.0);
+    const EntityId outer = test::addCircle(doc, shared, 40.0);
+    REQUIRE(inner.valid());
+    REQUIRE(outer.valid());
+
+    const Topology topology(doc);
+    CHECK_FALSE(closedBoundaryContaining(doc, topology, shared).has_value());
+
+    const std::optional<std::vector<EntityId>> pickedInner =
+        closedBoundaryContaining(doc, topology, inner);
+    REQUIRE(pickedInner);
+    CHECK(pickedInner->front() == inner);
+    const std::optional<std::vector<EntityId>> pickedOuter =
+        closedBoundaryContaining(doc, topology, outer);
+    REQUIRE(pickedOuter);
+    CHECK(pickedOuter->front() == outer);
 }

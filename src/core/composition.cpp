@@ -7,14 +7,14 @@ namespace paroculus {
 
 namespace {
 
-// The two ends of a boundary edge, or nullopt if it has none. Only
-// boundary-capable kinds reach here — validation refuses the rest — and every
-// one of them is defined by two points.
-std::optional<std::pair<EntityId, EntityId>> endsOf(const Document &doc, EntityId edge) {
+// The joints of a boundary edge, from the one function that knows which points
+// those are per kind. Not points[0] and points[1]: see boundaryEnds.
+std::optional<BoundaryEnds> endsOf(const Document &doc, EntityId edge) {
     const EntityRecord *e = doc.entities().find(edge);
-    if(e == nullptr || !entityInfo(e->kind).boundaryCapable) return std::nullopt;
-    if(!e->points[0].valid() || !e->points[1].valid()) return std::nullopt;
-    return std::pair<EntityId, EntityId>{e->points[0], e->points[1]};
+    if(e == nullptr) return std::nullopt;
+    const BoundaryEnds ends = boundaryEnds(*e);
+    if(!ends.capable) return std::nullopt;
+    return ends;
 }
 
 // Coincidence classes over every point any Coincident constraint names.
@@ -195,46 +195,91 @@ std::vector<RegionId> regionOrder(const Document &doc, LayerId layer) {
     return out;
 }
 
-std::optional<std::vector<EntityId>> boundaryRing(const Document &doc,
+std::optional<std::vector<BoundaryStep>> boundaryRing(const Document &doc,
                                                   const RegionRecord &region) {
     if(region.op != CompositeOp::Outline) return std::nullopt;
-    if(region.boundary.size() < 3) return std::nullopt;
+    if(region.boundary.empty()) return std::nullopt;
 
-    std::vector<std::pair<EntityId, EntityId>> ends;
+    std::vector<BoundaryEnds> ends;
     ends.reserve(region.boundary.size());
+    bool anyCurved = false;
     for(EntityId edge : region.boundary) {
-        const std::optional<std::pair<EntityId, EntityId>> e = endsOf(doc, edge);
+        const std::optional<BoundaryEnds> e = endsOf(doc, edge);
         if(!e) return std::nullopt;
+        if(e->curved) anyCurved = true;
         ends.push_back(*e);
+    }
+    if(!enclosesArea(ends.size(), anyCurved)) return std::nullopt;
+
+    // A closed curve bounds alone and meets nothing, so it is the whole ring and
+    // there is no walk to do. Alone, though: a boundary pairing a circle with
+    // other edges is not a ring the walk can close, and calling it whole would
+    // put a fill on an area the document does not bound.
+    if(ends.size() == 1 && ends.front().selfClosing) {
+        return std::vector<BoundaryStep>{BoundaryStep{region.boundary.front(), {}, {}}};
+    }
+    for(const BoundaryEnds &e : ends) {
+        if(e.selfClosing) return std::nullopt;
     }
 
     JointClasses joints(doc);
 
     // Orient the first edge against the last, so the ring closes rather than
     // starting off in whichever direction the record happened to store.
-    const std::pair<EntityId, EntityId> &last = ends.back();
+    const BoundaryEnds &last = ends.back();
     const bool forward =
-        joints.same(ends.front().first, last.first) || joints.same(ends.front().first, last.second);
+        joints.same(ends.front().from, last.from) || joints.same(ends.front().from, last.to);
 
-    std::vector<EntityId> ring;
+    std::vector<BoundaryStep> ring;
     ring.reserve(ends.size());
-    ring.push_back(forward ? ends.front().first : ends.front().second);
-    EntityId cursor = forward ? ends.front().second : ends.front().first;
+    EntityId cursor = forward ? ends.front().to : ends.front().from;
+    ring.push_back(BoundaryStep{region.boundary.front(),
+                                forward ? ends.front().from : ends.front().to, cursor,
+                                !forward});
 
     for(size_t i = 1; i < ends.size(); i++) {
-        ring.push_back(cursor);
-        if(joints.same(ends[i].first, cursor)) {
-            cursor = ends[i].second;
-        } else if(joints.same(ends[i].second, cursor)) {
-            cursor = ends[i].first;
+        const EntityId entered = cursor;
+        bool reversed = false;
+        if(joints.same(ends[i].from, cursor)) {
+            cursor = ends[i].to;
+        } else if(joints.same(ends[i].to, cursor)) {
+            cursor = ends[i].from;
+            reversed = true;
         } else {
             return std::nullopt;  // the ring does not meet; nothing honest to fill
         }
+        ring.push_back(BoundaryStep{region.boundary[i], entered, cursor, reversed});
     }
     // And the walk has to arrive back where it started, or this is an open run
     // whose ends merely happened to line up edge by edge.
-    if(!joints.same(cursor, ring.front())) return std::nullopt;
+    if(!joints.same(cursor, ring.front().from)) return std::nullopt;
     return ring;
+}
+
+std::optional<CurveRun> curveRunOf(const Pose &pose, const BoundaryStep &step) {
+    const EntityRecord *e = pose.document().entities().find(step.edge);
+    if(e == nullptr) return std::nullopt;
+
+    if(e->kind == EntityKind::Circle) {
+        const std::optional<Point> centre = pose.point(e->points[0]);
+        const std::optional<double> radius = pose.radius(step.edge);
+        if(!centre || !radius) return std::nullopt;
+        // A full turn from zero. Which way round is immaterial for a closed
+        // curve, and the fill rule does not care either.
+        return CurveRun{*centre, *radius, 0.0, 2.0 * 3.14159265358979323846};
+    }
+    if(e->kind != EntityKind::Arc) return std::nullopt;
+
+    const std::optional<Pose::ArcGeometry> arc = pose.arc(step.edge);
+    if(!arc) return std::nullopt;
+    // The pose reports the sweep counter-clockwise from the arc's own start. A
+    // ring entering at the other end runs the same curve backwards, which is the
+    // same set of points traversed in the opposite order — and getting this
+    // wrong draws the complementary arc, the long way round.
+    if(step.reversed) {
+        return CurveRun{arc->centre, arc->radius, arc->startAngle + arc->sweep, -arc->sweep};
+    }
+    return CurveRun{arc->centre, arc->radius, arc->startAngle, arc->sweep};
 }
 
 bool regionSelected(const Document &doc, const RegionRecord &region,

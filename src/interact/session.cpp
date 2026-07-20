@@ -598,7 +598,16 @@ void Session::rememberSnaps(const std::vector<SnapCandidate> &committed) {
 bool Session::runTool(ToolOutput output, std::vector<ConstraintId> inferred) {
     // Kept before the commands are moved out, so closure can be asked about the
     // edge the placement created.
+    // The edge the placement made, preferred over the point it landed on.
+    //
+    // A curve counts, and has to now that curves can bound: drawing a circle
+    // seeds the closure question with its centre otherwise, and the centre is a
+    // point the walk reaches the circle from rather than the closed thing the
+    // user just drew — so the offer never appeared for the one shape that is a
+    // boundary the moment it exists. An arc closing a run has the same problem
+    // from the other side.
     const EntityId closureSeed = output.placed.segment.valid() ? output.placed.segment
+                                 : output.placed.curve.valid() ? output.placed.curve
                                  : output.placed.point.valid() ? output.placed.point
                                  : output.opened.empty()       ? EntityId()
                                                                : output.opened.front();

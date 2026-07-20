@@ -239,3 +239,137 @@ TEST_CASE("fewer than three edges fill nothing") {
     CHECK_FALSE(painted(pixels, view, Point{0.0, 20.0}));
     CHECK_FALSE(painted(pixels, view, Point{0.0, -20.0}));
 }
+
+// ---------------------------------------------------------------------------
+// Curved boundaries
+// ---------------------------------------------------------------------------
+
+TEST_CASE("an arc boundary fills along its sweep, not across its chord") {
+    // The half of arcs-as-boundaries that is visible. A chord fill shows an area
+    // the document does not bound — it cuts the corner off a rounded shape — and
+    // it does so silently, which is worse than no fill at all.
+    Document doc;
+    // A half-disc: the chord from (-50,0) to (50,0), and an arc bulging up over
+    // it through (0,50).
+    const EntityId left = addPoint(doc, -50.0, 0.0);
+    const EntityId right = addPoint(doc, 50.0, 0.0);
+    const EntityId centre = addPoint(doc, 0.0, 0.0);
+    EntityRecord construction = *doc.entities().find(centre);
+    construction.role = Role::Construction;
+    REQUIRE(doc.apply(SetRecord<EntityRecord>{construction}).ok());
+
+    const EntityId chord = addSegment(doc, left, right);
+    // Counter-clockwise from right to left is the upper half.
+    const EntityId dome = addArc(doc, centre, right, left);
+    REQUIRE(dome.valid());
+
+    RegionRecord region;
+    region.boundary = {chord, dome};
+    const uint32_t id = doc.apply(AddRecord<RegionRecord>{region}).allocated;
+    REQUIRE(id != 0);
+    REQUIRE(regionState(doc, RegionId(id)) == RegionState::Whole);
+
+    const ViewTransform view = centredView();
+    const Pose pose(doc);
+    const std::vector<uint32_t> pixels = paint(pose, view);
+
+    // Inside the half-disc but well above the chord: painted either way, so this
+    // only proves there is a fill at all.
+    CHECK(painted(pixels, view, Point{0.0, 10.0}));
+    // High under the dome, and far outside the chord-to-chord triangle a chord
+    // fill would produce. This is the assertion that fails on a chord fill: with
+    // the boundary flattened to its chord the region is a degenerate sliver and
+    // nothing up here is painted.
+    CHECK(painted(pixels, view, Point{0.0, 40.0}));
+    CHECK(painted(pixels, view, Point{-30.0, 30.0}));
+    // And outside the arc entirely, nothing.
+    CHECK_FALSE(painted(pixels, view, Point{0.0, 60.0}));
+    CHECK_FALSE(painted(pixels, view, Point{0.0, -20.0}));
+}
+
+TEST_CASE("a circle fills as a disc") {
+    Document doc;
+    const EntityId centre = addPoint(doc, 0.0, 0.0);
+    const EntityId circle = addCircle(doc, centre, 40.0);
+    REQUIRE(circle.valid());
+
+    RegionRecord region;
+    region.boundary = {circle};
+    const uint32_t id = doc.apply(AddRecord<RegionRecord>{region}).allocated;
+    REQUIRE(id != 0);
+    REQUIRE(regionState(doc, RegionId(id)) == RegionState::Whole);
+
+    const ViewTransform view = centredView();
+    const Pose pose(doc);
+    const std::vector<uint32_t> pixels = paint(pose, view);
+
+    CHECK(painted(pixels, view, Point{0.0, 0.0}));
+    CHECK(painted(pixels, view, Point{30.0, 0.0}));
+    CHECK(painted(pixels, view, Point{0.0, -30.0}));
+    CHECK(painted(pixels, view, Point{-25.0, 25.0}));
+    // Outside the rim, and outside the diagonal a square fill would have covered.
+    CHECK_FALSE(painted(pixels, view, Point{34.0, 34.0}));
+    CHECK_FALSE(painted(pixels, view, Point{0.0, 55.0}));
+}
+
+TEST_CASE("a fill through an arc follows the arc when the geometry moves") {
+    // The equivalence, restated for curves: the fill has no geometry of its own,
+    // so moving the arc's centre moves the fill because there is nothing to keep
+    // in step.
+    Document doc;
+    const EntityId left = addPoint(doc, -50.0, 0.0);
+    const EntityId right = addPoint(doc, 50.0, 0.0);
+    const EntityId centre = addPoint(doc, 0.0, 0.0);
+    const EntityId chord = addSegment(doc, left, right);
+    const EntityId dome = addArc(doc, centre, right, left);
+    REQUIRE(dome.valid());
+
+    RegionRecord region;
+    region.boundary = {chord, dome};
+    REQUIRE(doc.apply(AddRecord<RegionRecord>{region}).allocated != 0);
+
+    const ViewTransform view = centredView();
+    CHECK(painted(paint(Pose(doc), view), view, Point{0.0, 40.0}));
+
+    // Pull the ends in, shrinking the arc. The point that was under the dome is
+    // now outside it, and no record was touched but the two endpoints.
+    for(EntityId end : {left, right}) {
+        EntityRecord e = *doc.entities().find(end);
+        e.seeds[0] *= 0.4;
+        REQUIRE(doc.apply(SetRecord<EntityRecord>{e}).ok());
+    }
+    CHECK_FALSE(painted(paint(Pose(doc), view), view, Point{0.0, 40.0}));
+}
+
+TEST_CASE("an arc bulges the same way whichever order the boundary stores it") {
+    // Which way round the ring traverses an arc is the walk's answer, carried on
+    // the step. Re-deriving it downstream is how render and the bake come to
+    // disagree; storing the boundary the other way round is what would expose
+    // that, so it is what this asserts.
+    auto discWith = [](bool arcFirst) {
+        Document doc;
+        const EntityId left = addPoint(doc, -50.0, 0.0);
+        const EntityId right = addPoint(doc, 50.0, 0.0);
+        const EntityId centre = addPoint(doc, 0.0, 0.0);
+        const EntityId chord = addSegment(doc, left, right);
+        const EntityId dome = addArc(doc, centre, right, left);
+        RegionRecord region;
+        region.boundary = arcFirst ? std::vector<EntityId>{dome, chord}
+                                   : std::vector<EntityId>{chord, dome};
+        REQUIRE(doc.apply(AddRecord<RegionRecord>{region}).allocated != 0);
+        const ViewTransform view = centredView();
+        return paint(Pose(doc), view);
+    };
+
+    const ViewTransform view = centredView();
+    const std::vector<uint32_t> chordFirst = discWith(false);
+    const std::vector<uint32_t> arcFirst = discWith(true);
+
+    // Both fill the upper half-disc, and neither fills below the chord.
+    for(const std::vector<uint32_t> *pixels : {&chordFirst, &arcFirst}) {
+        CHECK(painted(*pixels, view, Point{0.0, 40.0}));
+        CHECK(painted(*pixels, view, Point{-30.0, 30.0}));
+        CHECK_FALSE(painted(*pixels, view, Point{0.0, -20.0}));
+        CHECK_FALSE(painted(*pixels, view, Point{0.0, 60.0}));
+    }
+}

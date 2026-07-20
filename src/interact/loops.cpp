@@ -9,16 +9,21 @@
 namespace paroculus {
 namespace {
 
-// The endpoints an edge presents to a boundary walk. A segment has two; an arc
-// has two and a centre that is construction geometry and not a joint.
+// The joints an edge presents to a boundary walk, from the one function that
+// knows which points those are per kind. A closed curve presents none: it meets
+// no neighbour, which is exactly why it bounds a region alone.
 std::vector<EntityId> jointsOf(const Document &doc, EntityId edge) {
     const EntityRecord *e = doc.entities().find(edge);
     if(e == nullptr) return {};
-    switch(e->kind) {
-        case EntityKind::Segment: return {e->points[0], e->points[1]};
-        case EntityKind::Arc:     return {e->points[1], e->points[2]};
-        default:                  return {};
-    }
+    const BoundaryEnds ends = boundaryEnds(*e);
+    if(!ends.capable || ends.selfClosing) return {};
+    return {ends.from, ends.to};
+}
+
+// Whether this edge closes a region on its own.
+bool boundsAlone(const Document &doc, EntityId edge) {
+    const EntityRecord *e = doc.entities().find(edge);
+    return e != nullptr && boundaryEnds(*e).selfClosing;
 }
 
 bool isOutlineEdge(const Document &doc, EntityId id) {
@@ -129,6 +134,13 @@ std::optional<std::vector<EntityId>> closedBoundaryContaining(const Document &do
                                                               EntityId seed) {
     if(!seed.valid() || doc.entities().find(seed) == nullptr) return std::nullopt;
 
+    // A closed curve is its own boundary, answered here rather than in the cycle
+    // walk. It has no joints, so it can never be an edge of a joint cycle — and
+    // asking the walk to special-case it would mean deciding, for a circle
+    // sitting on a triangle's corner, which of the two closed things the user
+    // meant. The seed already says: they clicked one of them.
+    if(boundsAlone(doc, seed)) return std::vector<EntityId>{seed};
+
     // The run is what the user has been drawing: everything reachable through
     // shared and coincident vertices. Edges are what a boundary is made of, so
     // the points come along for the walk and drop out of the cycle test.
@@ -138,7 +150,31 @@ std::optional<std::vector<EntityId>> closedBoundaryContaining(const Document &do
     }
     if(edges.empty()) return std::nullopt;
 
-    return findBoundaryCycle(doc, topology, edges);
+    if(std::optional<std::vector<EntityId>> cycle = findBoundaryCycle(doc, topology, edges)) {
+        return cycle;
+    }
+
+    // No joint cycle, but the run may still hold a closed curve.
+    //
+    // Reached whenever the seed is not the curve itself, which is the ordinary
+    // case rather than an edge case: selecting a circle takes the connected
+    // shape — its centre and its rim — and the offers are seeded from the front
+    // of that selection, which is the centre point. A circle the user has just
+    // clicked on would otherwise offer nothing, while the same circle offered
+    // make-solid a moment earlier when it was the thing just drawn.
+    //
+    // Exactly one, because two closed curves in one run is a question about
+    // which the user meant, and guessing is the silent choice the surface exists
+    // to avoid. After the cycle walk, so a triangle with a circle centred on one
+    // of its corners still offers the triangle.
+    EntityId alone;
+    for(EntityId id : edges) {
+        if(!boundsAlone(doc, id)) continue;
+        if(alone.valid()) return std::nullopt;
+        alone = id;
+    }
+    if(alone.valid()) return std::vector<EntityId>{alone};
+    return std::nullopt;
 }
 
 std::optional<std::pair<EntityId, EntityId>> crossingAmong(const Document &doc,

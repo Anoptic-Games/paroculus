@@ -81,6 +81,10 @@ constexpr float HANDLE_STROKE = 1.5f;
 // edges are is a question only the current pose can answer. A cached path would
 // be exactly the second representation the whole equivalence exists to avoid.
 //
+// Curved edges are tessellated along their sweep. Which way round each one runs
+// is the ring walk's answer, carried on the step, so render never re-derives it
+// — an arc bulging the wrong way is what re-deriving it looks like.
+//
 // Which points the ring runs through is core's answer, not one computed again
 // here. Whether a region encloses anything decides both what is drawn and
 // whether the degradation state says broken, and two implementations of that
@@ -92,20 +96,47 @@ constexpr float HANDLE_STROKE = 1.5f;
 // The broken state is drawn as a diagnostic instead, by its caller.
 bool buildBoundaryPath(const Pose &pose, const ViewTransform &view,
                        const RegionRecord &region, SkPathBuilder &out) {
-    // Arcs are boundary-capable in the taxonomy but are drawn here by their
-    // chord: a curved boundary needs the fill tessellated along the sweep,
-    // which lands with the arcs-as-boundaries work the three-edge minimum is
-    // already waiting on.
-    const std::optional<std::vector<EntityId>> ring = boundaryRing(pose.document(), region);
+    const std::optional<std::vector<BoundaryStep>> ring = boundaryRing(pose.document(), region);
     if(!ring) return false;
 
+    auto toPixel = [&](Point at) {
+        const Eigen::Vector2d v = view.toScreen(at);
+        return SkPoint::Make(static_cast<SkScalar>(v.x()), static_cast<SkScalar>(v.y()));
+    };
+
     bool first = true;
-    for(EntityId id : *ring) {
-        const std::optional<Point> at = pose.point(id);
+    for(const BoundaryStep &step : *ring) {
+        // Curved edges are flattened along their sweep, not across their chord.
+        // A chord fill shows an area the document does not bound — it cuts the
+        // corner off a trapezoid rounded by an arc, and it does so silently,
+        // which is worse than the fill being absent.
+        if(const std::optional<CurveRun> run = curveRunOf(pose, step)) {
+            // Sampled against the arc's size on screen, so the flattening is
+            // invisible at every zoom rather than at one. The bake uses a fixed
+            // density instead, because an export has no zoom to be right at and
+            // a view-dependent one would make two sessions export differently.
+            const double onScreen =
+                (view.toScreen(Point{run->centre.x + run->radius, run->centre.y}) -
+                 view.toScreen(run->centre))
+                    .norm();
+            const int steps =
+                std::clamp(static_cast<int>(onScreen * std::abs(run->sweep) * 0.5), 8, 240);
+            for(int i = 0; i <= steps; i++) {
+                const double angle = run->startAngle + run->sweep * i / steps;
+                const SkPoint p = toPixel(Point{run->centre.x + run->radius * std::cos(angle),
+                                                run->centre.y + run->radius * std::sin(angle)});
+                if(first) {
+                    out.moveTo(p);
+                    first = false;
+                } else {
+                    out.lineTo(p);
+                }
+            }
+            continue;
+        }
+        const std::optional<Point> at = pose.point(step.from);
         if(!at) return false;
-        const Eigen::Vector2d v = view.toScreen(*at);
-        const SkPoint p = SkPoint::Make(static_cast<SkScalar>(v.x()),
-                                        static_cast<SkScalar>(v.y()));
+        const SkPoint p = toPixel(*at);
         if(first) {
             out.moveTo(p);
             first = false;

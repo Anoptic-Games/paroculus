@@ -111,6 +111,85 @@ inline size_t boundOperandCount(const ConstraintRecord &r) {
     return count;
 }
 
+// The joints a boundary edge presents to a walk, and whether it needs any.
+//
+// Which points these are is per-kind, and emphatically not "points[0] and
+// points[1]": an arc's first point is its centre, which is construction geometry
+// and never a joint, and a circle has no joints at all because it closes on
+// itself. Asking a circle for two ends is asking the wrong question rather than
+// getting a wrong answer, which is why `selfClosing` is a state here and not a
+// null pair.
+//
+// One function because three walks ask this — the connected run in interact, the
+// cycle test in topology, and the ring walk in core — and two of them had
+// answered it the segment way. A segments-only guard in the cycle test hid both,
+// so the bug was latent rather than visible: lifting that guard without this
+// would have produced regions bounded through an arc's centre. Same discipline
+// as boundOperandCount below, and for the same reason.
+struct BoundaryEnds {
+    // Whether this kind can bound a region at all.
+    bool capable = false;
+    // Whether it bounds one on its own, with no neighbour to meet.
+    bool selfClosing = false;
+    // Whether it encloses area between its two joints rather than along the
+    // straight line between them. What makes two edges enough to bound a region
+    // when one of them is curved, and three the minimum when none is.
+    bool curved = false;
+    // The joints, when it has them.
+    EntityId from;
+    EntityId to;
+};
+
+inline BoundaryEnds boundaryEnds(const EntityRecord &r) {
+    BoundaryEnds out;
+    if(!entityInfo(r.kind).boundaryCapable) return out;
+    out.capable = true;
+    switch(r.kind) {
+        case EntityKind::Segment:
+            out.from = r.points[0];
+            out.to = r.points[1];
+            break;
+        case EntityKind::Arc:
+            // points[0] is the centre. It is construction geometry the arc macro
+            // leaves behind, and treating it as a joint is how an arc comes to
+            // bound a region through the middle of itself.
+            out.from = r.points[1];
+            out.to = r.points[2];
+            out.curved = true;
+            break;
+        case EntityKind::Circle:
+            out.selfClosing = true;
+            out.curved = true;
+            break;
+        case EntityKind::Point:
+            out.capable = false;
+            break;
+    }
+    // A record missing a joint it should have is not a boundary edge, whatever
+    // its kind says. The loader validates, but a walk that trusted the kind
+    // alone would still have to guard, so it guards here once.
+    if(out.capable && !out.selfClosing && (!out.from.valid() || !out.to.valid())) {
+        out.capable = false;
+    }
+    return out;
+}
+
+// Whether a set of boundary edges encloses any area.
+//
+// Straight edges need three: two segments over one pair of vertices pass every
+// degree and connectivity test and walk closed, and the 2-gon they report
+// encloses nothing. A curve changes that — two arcs enclose a lens, an arc and a
+// chord enclose a circular segment, and a single closed curve encloses on its
+// own — so the bound is about what the edges are, not how many.
+//
+// Harmless while closure only notices; wrong the moment make-solid fills what it
+// is handed, which is why this is one predicate rather than a number compared in
+// two walks.
+inline bool enclosesArea(size_t edges, bool anyCurved) {
+    if(edges == 0) return false;
+    return anyCurved || edges >= 3;
+}
+
 // How a region gets its area. Outline walks a cycle of edges; the rest combine
 // other regions, which stay live records of their own.
 //

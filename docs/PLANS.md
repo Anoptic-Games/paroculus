@@ -825,6 +825,22 @@ through a copy. The pattern worth carrying into stage 8 is that eight of the ten
 were on the two new surfaces where a mechanism was inferred from geometry rather
 than from what the user could see — the handle and the frame.
 
+Arcs-as-boundaries landed after the stage, out of sequence, because live testing
+found the symptom: an outline with an arc for one corner never offered make-solid.
+The cause was the segments-only guard stage 5 put in findBoundaryCycle, whose
+stated condition — "arcs join them once their macro lands" — had been met since
+stage 4. Lifting it alone would not have been safe. Three walks encoded "the two
+ends of a boundary edge" independently, and two of them read points[0] and
+points[1], which is an arc's centre and its start; the guard had been hiding
+that rather than deferring it. So the fix is one shared `boundaryEnds` in
+core/records.h, one shared `enclosesArea` replacing the three-edge constant, a
+boundary ring that carries the traversal direction rather than bare corners, and
+fill tessellation along the sweep in both render and the bake. Circles came with
+it: a closed curve bounds alone, takes no part in the joint walk, and is answered
+from the seed — which is also what decides, unambiguously, which of two closed
+things a click meant. The remaining deferral is unchanged and is the honest one:
+areas enclosed by edges that *cross* still need explicit intersection points.
+
 Two things settled differently from the sketch above. Non-uniform scale is a
 permanently dimmed palette row rather than an applicable action that refuses,
 because applicable-and-refusing would break the property that an applicable

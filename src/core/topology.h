@@ -108,9 +108,11 @@ private:
 // visually-closed-but-topologically-open outline gets the heal-and-fill offer
 // instead of a fill.
 //
-// Fewer than three because two straight edges over one pair of endpoints walk
-// closed while enclosing nothing. Two curved edges would enclose a lens, so the
-// bound lifts when arcs become boundary-capable, not before.
+// How many edges are enough is enclosesArea's question: three while every edge
+// is straight, because two segments over one pair of endpoints walk closed while
+// enclosing nothing, and two once a curve is involved. Self-closing edges — a
+// circle — take no part here at all: they have no joints to match, so they bound
+// alone and closedBoundaryContaining answers for them from the seed.
 //
 // Areas enclosed by crossing segments rather than shared endpoints are a known
 // later case: they need explicit intersection points before a cycle exists.

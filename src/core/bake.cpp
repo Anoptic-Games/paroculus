@@ -8,20 +8,6 @@ namespace paroculus {
 
 namespace {
 
-// A region's ring in document coordinates, or empty if it does not enclose.
-std::vector<Point> ringOf(const Document &doc, const Pose &pose, const RegionRecord &region) {
-    std::vector<Point> out;
-    const std::optional<std::vector<EntityId>> ring = boundaryRing(doc, region);
-    if(!ring) return out;
-    out.reserve(ring->size());
-    for(EntityId p : *ring) {
-        const std::optional<Point> at = pose.point(p);
-        if(!at) return {};
-        out.push_back(*at);
-    }
-    return out;
-}
-
 const StyleRecord *styleOf(const Document &doc, StyleId id) {
     return id.valid() ? doc.styles().find(id) : nullptr;
 }
@@ -40,6 +26,39 @@ int stepsFor(double sweep) {
     const double turns = std::fabs(sweep) / TWO_PI;
     return std::max(3, static_cast<int>(std::ceil(turns * STEPS_PER_TURN)));
 }
+
+// A region's ring in document coordinates, or empty if it does not enclose.
+//
+// Curved edges are flattened along their sweep rather than across their chord.
+// A bake is the one lossy path in the tool and it is honest about being one, but
+// the loss it is allowed is precision, not area: exporting an arc boundary as
+// its chord would ship a different shape from the one on screen and count it as
+// a success.
+std::vector<Point> ringOf(const Document &doc, const Pose &pose, const RegionRecord &region) {
+    std::vector<Point> out;
+    const std::optional<std::vector<BoundaryStep>> ring = boundaryRing(doc, region);
+    if(!ring) return out;
+    out.reserve(ring->size());
+    for(const BoundaryStep &step : *ring) {
+        if(const std::optional<CurveRun> run = curveRunOf(pose, step)) {
+            const int steps = stepsFor(run->sweep);
+            // The last sample is the next edge's first joint, so it is left to
+            // that edge to contribute — or, for a closed curve, to the ring
+            // closing on itself.
+            for(int i = 0; i < steps; i++) {
+                const double angle = run->startAngle + run->sweep * i / steps;
+                out.push_back(Point{run->centre.x + run->radius * std::cos(angle),
+                                    run->centre.y + run->radius * std::sin(angle)});
+            }
+            continue;
+        }
+        const std::optional<Point> at = pose.point(step.from);
+        if(!at) return {};
+        out.push_back(*at);
+    }
+    return out;
+}
+
 
 }  // namespace
 

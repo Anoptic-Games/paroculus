@@ -150,16 +150,17 @@ bool Topology::coincident(EntityId a, EntityId b) const {
 // test alone admits two disjoint triangles, and connectivity alone admits an
 // open run.
 //
-// Three edges minimum. Two segments between the same pair of vertices satisfy
-// both conditions and walk closed, but the 2-gon they report encloses nothing:
-// straight edges over one pair of endpoints have no area between them. Harmless
-// while closure only notices, wrong the moment make-solid fills what it is
-// handed. Two curved edges *would* enclose a lens, so this bound belongs with
-// the segments-only restriction above and lifts with it.
+// How many edges are enough is enclosesArea's question, not a constant here:
+// three straight ones, or two once a curve is involved. See records.h.
+//
+// Self-closing edges take no part in this walk. A circle has no joints to match
+// against a neighbour, so it can never be an edge of a joint cycle; it bounds a
+// region alone, and closedBoundaryContaining answers for it directly. Filtering
+// it out here rather than refusing the whole set is what lets a circle sitting on
+// a triangle's corner leave the triangle's own loop detectable.
 std::optional<std::vector<EntityId>> findBoundaryCycle(const Document &doc,
                                                        const Topology &topology,
                                                        std::span<const EntityId> edges) {
-    if(edges.size() < 3) return std::nullopt;
 
     // Each edge contributes its two endpoints, collapsed to their coincidence
     // class so that "the same vertex" is topological rather than positional.
@@ -170,18 +171,21 @@ std::optional<std::vector<EntityId>> findBoundaryCycle(const Document &doc,
     std::vector<Edge> parsed;
     parsed.reserve(edges.size());
 
+    bool anyCurved = false;
     for(EntityId id : edges) {
         const EntityRecord *e = doc.entities().find(id);
         if(e == nullptr) return std::nullopt;
-        if(!entityInfo(e->kind).boundaryCapable) return std::nullopt;
-        // v1 boundaries are segments; arcs join them once their macro lands.
-        if(e->kind != EntityKind::Segment) return std::nullopt;
+        const BoundaryEnds ends = boundaryEnds(*e);
+        if(!ends.capable) return std::nullopt;
+        if(ends.selfClosing) continue;  // bounds alone; never part of a joint cycle
 
-        const std::vector<EntityId> runA = topology.coincidentRun(e->points[0]);
-        const std::vector<EntityId> runB = topology.coincidentRun(e->points[1]);
+        const std::vector<EntityId> runA = topology.coincidentRun(ends.from);
+        const std::vector<EntityId> runB = topology.coincidentRun(ends.to);
         if(runA.empty() || runB.empty()) return std::nullopt;
+        if(ends.curved) anyCurved = true;
         parsed.push_back(Edge{id, runA.front(), runB.front()});
     }
+    if(!enclosesArea(parsed.size(), anyCurved)) return std::nullopt;
 
     // Degree check over vertex representatives.
     std::unordered_map<EntityId, std::vector<size_t>> incident;

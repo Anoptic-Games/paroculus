@@ -121,7 +121,7 @@ TEST_CASE("closure is topological, never visual") {
     Triangle t(doc);
     const RegionId region = addOutline(doc, t.edges);
 
-    const std::optional<std::vector<EntityId>> ring =
+    const std::optional<std::vector<BoundaryStep>> ring =
         boundaryRing(doc, *doc.regions().find(region));
     REQUIRE(ring);
     CHECK(ring->size() == 3);
@@ -130,7 +130,7 @@ TEST_CASE("closure is topological, never visual") {
     // Move a corner far away without touching a relation. The coincidence still
     // says the joint is one joint, so the region is still whole — the geometry
     // is simply not solved yet.
-    EntityRecord corner = *doc.entities().find(ring->front());
+    EntityRecord corner = *doc.entities().find(ring->front().from);
     corner.seeds[0] += 1000.0;
     REQUIRE(doc.apply(SetRecord<EntityRecord>{corner}).ok());
     CHECK(regionState(doc, region) == RegionState::Whole);
@@ -178,18 +178,19 @@ TEST_CASE("a joint that closes through a point outside the ring is one joint") {
     // The two definitions of closed, asked side by side. Neither is allowed to
     // be the only one that says yes.
     CHECK(findBoundaryCycle(doc, topology, edges).has_value());
-    const std::optional<std::vector<EntityId>> ring =
+    const std::optional<std::vector<BoundaryStep>> ring =
         boundaryRing(doc, *doc.regions().find(region));
     REQUIRE(ring);
     CHECK(ring->size() == 3);
     CHECK(regionState(doc, region) == RegionState::Whole);
 }
 
-TEST_CASE("two edges enclose nothing") {
+TEST_CASE("two straight edges enclose nothing") {
     // They pass the degree test and walk closed, and the 2-gon they report is
     // empty. Harmless while closure only notices; wrong the moment a fill is
-    // drawn from it. The bound lifts when arcs become boundary-capable, because
-    // two curved edges do enclose a lens.
+    // drawn from it. The bound is about what the edges are rather than how many
+    // there are: two curved edges do enclose a lens, and enclosesArea is the one
+    // place that distinction lives.
     Document doc;
     const EntityId p = addPoint(doc, 0.0, 0.0);
     const EntityId q = addPoint(doc, 10.0, 0.0);

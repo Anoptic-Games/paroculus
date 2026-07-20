@@ -18,6 +18,8 @@
 #include <vector>
 
 #include "core/document.h"
+#include "core/geom.h"
+#include "core/pose.h"
 
 namespace paroculus {
 
@@ -67,9 +69,52 @@ bool isTopLevelRegion(const Document &doc, RegionId id);
 // The top-level regions of one layer, back to front, by (z, id).
 std::vector<RegionId> regionOrder(const Document &doc, LayerId layer);
 
-// The boundary of an outline region as an ordered, closed ring of point IDs —
-// one per edge, each the end that edge is entered by — or nullopt when the
-// stored boundary no longer walks closed.
+// One edge of a boundary, in walk order, with the joints it is traversed
+// between.
+//
+// The traversal and not just the corner, because an arc has to be drawn along
+// its sweep and which way round that runs is a property of the walk rather than
+// of the record: the same arc bounds two different regions depending on which
+// joint the ring enters it by. A ring of bare points was enough while every edge
+// was straight and lost exactly that.
+struct BoundaryStep {
+    EntityId edge;
+    // The joint this edge is entered by and the one it leaves at. Both null for
+    // a self-closing edge, which meets no neighbour.
+    EntityId from;
+    EntityId to;
+    // Whether the ring traverses this edge against its record's own direction.
+    //
+    // Recorded by the walk rather than re-derived, because the walk is the only
+    // place that has already done the coincidence matching. Working it out again
+    // in render and again in the bake is how the two come to disagree about
+    // which way an arc bulges — and the disagreement shows up as an exported
+    // file that does not match the screen.
+    bool reversed = false;
+};
+
+// The angular run a boundary step traverses, for a curved edge, at this pose.
+//
+// Signed sweep: negative when the ring enters the arc at the end its record
+// calls last. A closed curve reports a full turn from angle zero, which is the
+// only run it has.
+//
+// Nullopt for a straight edge, which is the caller's cue to draw a line to the
+// joint the step leaves at. Here rather than in render because the bake needs
+// exactly the same answer at a different sampling density, and a curve baked one
+// way and drawn another is the same two-answers bug the ring walk exists to
+// prevent.
+struct CurveRun {
+    Point centre;
+    double radius = 0.0;
+    double startAngle = 0.0;
+    double sweep = 0.0;
+};
+
+std::optional<CurveRun> curveRunOf(const Pose &pose, const BoundaryStep &step);
+
+// The boundary of an outline region as an ordered, closed ring of edges — or
+// nullopt when the stored boundary no longer walks closed.
 //
 // Here rather than in render because the renderer and the degradation query must
 // agree on what closed means, exactly. A fill drawn from a ring the state query
@@ -81,12 +126,13 @@ std::vector<RegionId> regionOrder(const Document &doc, LayerId layer);
 // document and takes no pose, and a region stays whole through a solve that has
 // not converged rather than flickering broken while the geometry catches up.
 //
-// Three edges minimum: two segments over one pair of vertices pass the degree
-// test and walk closed, and the 2-gon they report encloses nothing. The bound
-// lifts when arcs become boundary-capable, since two curved edges do enclose a
-// lens.
-std::optional<std::vector<EntityId>> boundaryRing(const Document &doc,
-                                                  const RegionRecord &region);
+// Three edges minimum while every one of them is straight, two once a curve is
+// involved, and one for a closed curve that bounds alone. enclosesArea is where
+// that rule lives; this walk and topology's cycle test both read it, because a
+// region the cycle test offers and the ring walk calls broken is the two-answers
+// bug in its purest form.
+std::optional<std::vector<BoundaryStep>> boundaryRing(const Document &doc,
+                                                      const RegionRecord &region);
 
 // Whether a selection names a region.
 //
