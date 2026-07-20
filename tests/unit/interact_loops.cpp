@@ -371,3 +371,170 @@ TEST_CASE("two closed curves in one run offer neither") {
     REQUIRE(pickedOuter);
     CHECK(pickedOuter->front() == outer);
 }
+
+// ---------------------------------------------------------------------------
+// Crossings, now that curves bound
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Two edges alone in a document, so a crossing test has nothing else to find.
+// The seed is the first, which is how the session asks.
+bool crosses(Document &doc, EntityId a, EntityId b) {
+    const Topology topology(doc);
+    const Pose pose(doc);
+    const EntityId seeds[] = {a, b};
+    const std::optional<std::pair<EntityId, EntityId>> found =
+        crossingAmong(doc, topology, pose, seeds);
+    return found.has_value();
+}
+
+// An arc through three points, with its centre marked construction as the macro
+// leaves it. Centre and radius are given directly so the fixture states the
+// geometry rather than deriving it.
+EntityId arcAt(Document &doc, Point centre, double radius, double startDegrees,
+               double endDegrees) {
+    const double toRad = 3.14159265358979323846 / 180.0;
+    const EntityId c = test::addPoint(doc, centre.x, centre.y);
+    EntityRecord construction = *doc.entities().find(c);
+    construction.role = Role::Construction;
+    REQUIRE(doc.apply(SetRecord<EntityRecord>{construction}).ok());
+    const EntityId s = test::addPoint(doc, centre.x + radius * std::cos(startDegrees * toRad),
+                                      centre.y + radius * std::sin(startDegrees * toRad));
+    const EntityId e = test::addPoint(doc, centre.x + radius * std::cos(endDegrees * toRad),
+                                      centre.y + radius * std::sin(endDegrees * toRad));
+    return test::addArc(doc, c, s, e);
+}
+
+}  // namespace
+
+TEST_CASE("an arc crossing a segment is reported") {
+    // The blind spot arcs-as-boundaries opened. An arc that crosses a segment
+    // encloses an area the model cannot name, exactly as two crossing segments
+    // do — and refusing it with the same silence as "these edges enclose
+    // nothing" tells the user the wrong thing about a drawing that plainly
+    // encloses something.
+    Document doc;
+    // A half-circle bulging up over the origin, radius 40.
+    const EntityId dome = arcAt(doc, Point{0.0, 0.0}, 40.0, 0.0, 180.0);
+    REQUIRE(dome.valid());
+    // A horizontal segment slicing through it well above the chord.
+    const EntityId p = test::addPoint(doc, -60.0, 20.0);
+    const EntityId q = test::addPoint(doc, 60.0, 20.0);
+    const EntityId slice = test::addSegment(doc, p, q);
+
+    CHECK(crosses(doc, dome, slice));
+}
+
+TEST_CASE("a segment meeting an arc only at a joint is not a crossing") {
+    // Ends that meet are how a boundary is built. This is the case that must
+    // stay quiet, or every drawn outline with an arc in it reports the deferred
+    // case at itself.
+    Document doc;
+    const EntityId dome = arcAt(doc, Point{0.0, 0.0}, 40.0, 0.0, 180.0);
+    REQUIRE(dome.valid());
+    const EntityRecord *arc = doc.entities().find(dome);
+    REQUIRE(arc != nullptr);
+    // A chord from the arc's end back to its start, sharing both joints.
+    const EntityId chord = test::addSegment(doc, arc->points[2], arc->points[1]);
+
+    CHECK_FALSE(crosses(doc, dome, chord));
+    // And they do close, which is the other half of the same claim.
+    const Topology topology(doc);
+    const std::optional<std::vector<EntityId>> loop =
+        closedBoundaryContaining(doc, topology, chord);
+    REQUIRE(loop);
+    CHECK(loop->size() == 2);
+}
+
+TEST_CASE("a segment tangent to a circle is not a crossing") {
+    // Touching is not crossing, for the same reason two parallel segments are
+    // not: there is no intersection point for the deferred work to build
+    // through.
+    Document doc;
+    const EntityId centre = test::addPoint(doc, 0.0, 0.0);
+    const EntityId circle = test::addCircle(doc, centre, 30.0);
+    REQUIRE(circle.valid());
+    const EntityId p = test::addPoint(doc, -50.0, 30.0);
+    const EntityId q = test::addPoint(doc, 50.0, 30.0);
+    const EntityId tangent = test::addSegment(doc, p, q);
+
+    CHECK_FALSE(crosses(doc, circle, tangent));
+
+    // Move it a hair inward and it does cross, twice.
+    EntityRecord left = *doc.entities().find(p);
+    EntityRecord right = *doc.entities().find(q);
+    left.seeds[1] = 29.0;
+    right.seeds[1] = 29.0;
+    REQUIRE(doc.apply(SetRecord<EntityRecord>{left}).ok());
+    REQUIRE(doc.apply(SetRecord<EntityRecord>{right}).ok());
+    CHECK(crosses(doc, circle, tangent));
+}
+
+TEST_CASE("a segment that stops short of a circle is not a crossing") {
+    // The line through it would cross; the edge does not reach. Interiority is
+    // about the edge, not about the infinite line it lies on.
+    Document doc;
+    const EntityId centre = test::addPoint(doc, 0.0, 0.0);
+    const EntityId circle = test::addCircle(doc, centre, 30.0);
+    const EntityId p = test::addPoint(doc, 50.0, 0.0);
+    const EntityId q = test::addPoint(doc, 80.0, 0.0);
+    const EntityId outside = test::addSegment(doc, p, q);
+    REQUIRE(circle.valid());
+
+    CHECK_FALSE(crosses(doc, circle, outside));
+}
+
+TEST_CASE("two arcs cross only where both sweeps reach") {
+    // Circle-circle intersection finds two points; whether either is a crossing
+    // is a question about the swept parts, not about the circles.
+    Document doc;
+    // Upper half of a circle at the origin, and the upper half of one offset to
+    // the right. Their circles meet above and below the axis; only the upper
+    // meeting is on both sweeps.
+    const EntityId left = arcAt(doc, Point{0.0, 0.0}, 40.0, 0.0, 180.0);
+    const EntityId right = arcAt(doc, Point{50.0, 0.0}, 40.0, 0.0, 180.0);
+    REQUIRE(left.valid());
+    REQUIRE(right.valid());
+    CHECK(crosses(doc, left, right));
+
+    // Now the lower half on the right: the circles still meet in two places and
+    // neither meeting is on both swept parts.
+    Document apart;
+    const EntityId upper = arcAt(apart, Point{0.0, 0.0}, 40.0, 10.0, 170.0);
+    const EntityId lower = arcAt(apart, Point{50.0, 0.0}, 40.0, 190.0, 350.0);
+    REQUIRE(upper.valid());
+    REQUIRE(lower.valid());
+    CHECK_FALSE(crosses(apart, upper, lower));
+}
+
+TEST_CASE("concentric and nested circles do not cross") {
+    Document doc;
+    const EntityId centre = test::addPoint(doc, 0.0, 0.0);
+    const EntityId inner = test::addCircle(doc, centre, 10.0);
+    const EntityId outer = test::addCircle(doc, centre, 40.0);
+    REQUIRE(inner.valid());
+    REQUIRE(outer.valid());
+    CHECK_FALSE(crosses(doc, inner, outer));
+
+    // Nested but not concentric: still no crossing.
+    Document offset;
+    const EntityId c1 = test::addPoint(offset, 0.0, 0.0);
+    const EntityId c2 = test::addPoint(offset, 5.0, 0.0);
+    const EntityId big = test::addCircle(offset, c1, 40.0);
+    const EntityId small = test::addCircle(offset, c2, 10.0);
+    REQUIRE(big.valid());
+    REQUIRE(small.valid());
+    CHECK_FALSE(crosses(offset, big, small));
+}
+
+TEST_CASE("two overlapping circles cross") {
+    Document doc;
+    const EntityId c1 = test::addPoint(doc, 0.0, 0.0);
+    const EntityId c2 = test::addPoint(doc, 30.0, 0.0);
+    const EntityId first = test::addCircle(doc, c1, 25.0);
+    const EntityId second = test::addCircle(doc, c2, 25.0);
+    REQUIRE(first.valid());
+    REQUIRE(second.valid());
+    CHECK(crosses(doc, first, second));
+}

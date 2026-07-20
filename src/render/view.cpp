@@ -189,6 +189,36 @@ bool buildRegionPath(const Pose &pose, const ViewTransform &view, const RegionRe
     return started;
 }
 
+// Strokes a circular run by flattening it in document space.
+//
+// In document space rather than as an angular sweep handed to Skia, because
+// everything else here converts through the view and an arc drawn by angle would
+// have to undo the view's Y flip by hand — a second way of converting is a second
+// way of being wrong about zoom. Shared by the geometry pass and the broken
+// diagnostic, so a degraded curve is drawn exactly where the whole one was.
+void strokeArc(SkCanvas &canvas, const ViewTransform &view, const SkPaint &stroke, Point centre,
+               double radius, double startAngle, double sweep) {
+    auto toPixel = [&](Point at) {
+        const Eigen::Vector2d v = view.toScreen(at);
+        return SkPoint::Make(static_cast<SkScalar>(v.x()), static_cast<SkScalar>(v.y()));
+    };
+    // Enough segments that the flat spots are under a pixel at this zoom,
+    // bounded so a huge arc does not cost a thousand line calls.
+    const double onScreen =
+        (view.toScreen(Point{centre.x + radius, centre.y}) - view.toScreen(centre)).norm();
+    const int steps = std::clamp(static_cast<int>(onScreen * std::abs(sweep) * 0.5), 8, 240);
+    SkPoint previous = toPixel(Point{centre.x + radius * std::cos(startAngle),
+                                     centre.y + radius * std::sin(startAngle)});
+    for(int i = 1; i <= steps; i++) {
+        const double angle = startAngle + sweep * i / steps;
+        const SkPoint next =
+            toPixel(Point{centre.x + radius * std::cos(angle),
+                          centre.y + radius * std::sin(angle)});
+        canvas.drawLine(previous, next, stroke);
+        previous = next;
+    }
+}
+
 // Every edge a region reaches, its operands' included. What the broken
 // diagnostic is drawn from: a composite has no boundary of its own, so showing
 // what a broken one still refers to means walking to the outlines underneath it.
@@ -366,22 +396,44 @@ ViewTransform defaultView(int width, int height) {
     return ViewTransform(view);
 }
 
+// Fits what the drawing occupies, curves included.
+//
+// Defining points alone are not what a drawing occupies: a circle's rim reaches
+// a radius beyond its centre and an arc bulges outside the chord between its
+// ends, so a document that is one filled circle fitted to a single point and
+// framed at whatever the degenerate-extent floor produced. The 1.3 margin hid
+// the arc case in mixed drawings without fixing it, and a circle alone is a
+// complete drawing now that it bounds a region.
+//
+// A curve's bounding square rather than its exact extremes. The marquee needs
+// exactness because there the bound *is* the test — refusing an arc that lies
+// wholly inside the box would be wrong — while a framing only has to contain
+// what it frames, and containing a little extra is what the margin does anyway.
 ViewTransform fitView(const Pose &pose, int width, int height) {
     double minX = 0.0, maxX = 0.0, minY = 0.0, maxY = 0.0;
     bool any = false;
-    for(const EntityRecord &e : pose.document().entities().records()) {
-        const std::optional<Point> p = pose.point(e.id);
-        if(!p) continue;
+    auto include = [&](Point p) {
         if(!any) {
-            minX = maxX = p->x;
-            minY = maxY = p->y;
+            minX = maxX = p.x;
+            minY = maxY = p.y;
             any = true;
+            return;
+        }
+        minX = std::min(minX, p.x);
+        maxX = std::max(maxX, p.x);
+        minY = std::min(minY, p.y);
+        maxY = std::max(maxY, p.y);
+    };
+    for(const EntityRecord &e : pose.document().entities().records()) {
+        if(const std::optional<Point> p = pose.point(e.id)) {
+            include(*p);
             continue;
         }
-        minX = std::min(minX, p->x);
-        maxX = std::max(maxX, p->x);
-        minY = std::min(minY, p->y);
-        maxY = std::max(maxY, p->y);
+        const std::optional<Point> centre = pose.curveCentre(e.id);
+        const std::optional<double> radius = pose.curveRadius(e.id);
+        if(!centre || !radius) continue;
+        include(Point{centre->x - *radius, centre->y - *radius});
+        include(Point{centre->x + *radius, centre->y + *radius});
     }
     // A document that places nothing still needs a sensible view.
     if(!any) return defaultView(width, height);
@@ -560,8 +612,27 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
                 std::vector<EntityId> edges;
                 boundaryEdgesOf(pose.document(), region, edges);
                 for(EntityId edge : edges) {
+                    // Every kind that can bound, not only the straight ones.
+                    // Pose::segment declines anything that is not a segment, so
+                    // asking it alone drew nothing for a curved edge — and a
+                    // circle-bounded fill, whose whole boundary is one curve,
+                    // degraded to no diagnostic whatsoever. That is exactly the
+                    // silent evaporation the state exists to prevent, arriving
+                    // through the query written to prevent it.
                     if(const auto ends = pose.segment(edge)) {
                         canvas.drawLine(toPixel(ends->first), toPixel(ends->second), stroke);
+                        continue;
+                    }
+                    if(const std::optional<Pose::ArcGeometry> g = pose.arc(edge)) {
+                        strokeArc(canvas, view, stroke, g->centre, g->radius, g->startAngle,
+                                  g->sweep);
+                        continue;
+                    }
+                    const std::optional<double> radius = pose.radius(edge);
+                    const std::optional<Point> centre = pose.curveCentre(edge);
+                    if(radius && centre) {
+                        strokeArc(canvas, view, stroke, *centre, *radius, 0.0,
+                                  2.0 * 3.14159265358979323846);
                     }
                 }
                 continue;

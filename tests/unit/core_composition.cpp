@@ -491,3 +491,44 @@ TEST_CASE("a hidden layer is left out of the bake, a locked one is not") {
     CHECK(bake.strokes.size() == 3);
     CHECK(bake.fills.front().layer == locked);
 }
+
+TEST_CASE("the bake flattens a curved boundary along its sweep") {
+    // The loss a bake is allowed is precision, not area. Exporting a disc as the
+    // square through its axis points would ship a different shape from the one on
+    // screen and count it as a success — the one projection whose whole job is to
+    // agree with what was drawn.
+    Document doc;
+    const EntityId centre = addPoint(doc, 0.0, 0.0);
+    const EntityId circle = addCircle(doc, centre, 40.0);
+    REQUIRE(circle.valid());
+    RegionRecord disc;
+    disc.boundary = {circle};
+    REQUIRE(doc.apply(AddRecord<RegionRecord>{disc}).ok());
+
+    const Bake bake = bakeForExport(doc, Pose(doc));
+    REQUIRE(bake.fills.size() == 1);
+    const std::vector<Point> &ring = bake.fills.front().ring;
+    // Many samples, not four corners.
+    CHECK(ring.size() > 32);
+
+    // Every sample is on the rim, and the ring spans the whole circle rather
+    // than an arc of it.
+    double minX = ring.front().x, maxX = ring.front().x;
+    double minY = ring.front().y, maxY = ring.front().y;
+    for(const Point &p : ring) {
+        CHECK(std::hypot(p.x, p.y) == doctest::Approx(40.0).epsilon(1e-6));
+        minX = std::min(minX, p.x);
+        maxX = std::max(maxX, p.x);
+        minY = std::min(minY, p.y);
+        maxY = std::max(maxY, p.y);
+    }
+    CHECK(minX == doctest::Approx(-40.0).epsilon(1e-3));
+    CHECK(maxX == doctest::Approx(40.0).epsilon(1e-3));
+    CHECK(minY == doctest::Approx(-40.0).epsilon(1e-3));
+    CHECK(maxY == doctest::Approx(40.0).epsilon(1e-3));
+
+    // Fixed density, not view-derived: the same document has to bake the same
+    // way from two sessions, and an export has no zoom to be right at.
+    const Bake again = bakeForExport(doc, Pose(doc));
+    CHECK(again.fills.front().ring.size() == ring.size());
+}

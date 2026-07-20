@@ -373,3 +373,92 @@ TEST_CASE("an arc bulges the same way whichever order the boundary stores it") {
         CHECK_FALSE(painted(*pixels, view, Point{0.0, 60.0}));
     }
 }
+
+TEST_CASE("a boolean over a curved region cuts a round hole") {
+    // The composite path evaluates its operands per frame through the same
+    // boundary walk, so a curved operand has to arrive at Skia already
+    // tessellated. A chord-flattened circle would cut a square hole and count
+    // itself a success.
+    Document doc;
+    const EntityId a = addPoint(doc, -60.0, -50.0);
+    const EntityId b = addPoint(doc, 60.0, -50.0);
+    const EntityId c = addPoint(doc, 60.0, 50.0);
+    const EntityId d = addPoint(doc, -60.0, 50.0);
+    const EntityId ab = addSegment(doc, a, b);
+    const EntityId bc = addSegment(doc, b, c);
+    const EntityId cd = addSegment(doc, c, d);
+    const EntityId da = addSegment(doc, d, a);
+
+    RegionRecord plate;
+    plate.boundary = {ab, bc, cd, da};
+    const uint32_t plateId = doc.apply(AddRecord<RegionRecord>{plate}).allocated;
+    REQUIRE(plateId != 0);
+
+    const EntityId centre = addPoint(doc, 0.0, 0.0);
+    const EntityId hole = addCircle(doc, centre, 30.0);
+    REQUIRE(hole.valid());
+    RegionRecord disc;
+    disc.boundary = {hole};
+    const uint32_t discId = doc.apply(AddRecord<RegionRecord>{disc}).allocated;
+    REQUIRE(discId != 0);
+
+    RegionRecord cut;
+    cut.op = CompositeOp::Subtract;
+    cut.operands = {RegionId(plateId), RegionId(discId)};
+    REQUIRE(doc.apply(AddRecord<RegionRecord>{cut}).allocated != 0);
+
+    const ViewTransform view = centredView();
+    const std::vector<uint32_t> pixels = paint(Pose(doc), view);
+
+    // Plate everywhere outside the disc.
+    CHECK(painted(pixels, view, Point{50.0, 0.0}));
+    CHECK(painted(pixels, view, Point{0.0, 45.0}));
+    // Nothing inside the disc. Sampled away from the origin: the circle's centre
+    // is an ordinary point and its vertex dot is an adorner drawn over every
+    // fill, so the one pixel at (0,0) says nothing about the hole.
+    CHECK_FALSE(painted(pixels, view, Point{12.0, 12.0}));
+    CHECK_FALSE(painted(pixels, view, Point{20.0, 0.0}));
+    CHECK_FALSE(painted(pixels, view, Point{0.0, -18.0}));
+    // And the hole is round, not square: a point just inside the disc's
+    // bounding box but outside its rim is still plate. A chord-flattened circle
+    // is a polygon through the axis points, so this corner would be cut away.
+    CHECK(painted(pixels, view, Point{26.0, 26.0}));
+}
+
+TEST_CASE("a broken region bounded by a curve still draws its diagnostic") {
+    // Broken renders as a diagnostic, never as nothing: what the user deleted is
+    // visibly still referred to, and one undo puts it back. The diagnostic asked
+    // Pose::segment alone, which declines every curve — so a region that lost an
+    // edge and kept an arc drew nothing at all, which is the silent evaporation
+    // the state exists to prevent arriving through the code written to prevent it.
+    Document doc;
+    const EntityId left = addPoint(doc, -40.0, 0.0);
+    const EntityId right = addPoint(doc, 40.0, 0.0);
+    const EntityId centre = addPoint(doc, 0.0, 0.0);
+    const EntityId chord = addSegment(doc, left, right);
+    const EntityId dome = addArc(doc, centre, right, left);
+    REQUIRE(dome.valid());
+
+    RegionRecord region;
+    region.boundary = {chord, dome};
+    const uint32_t id = doc.apply(AddRecord<RegionRecord>{region}).allocated;
+    REQUIRE(id != 0);
+    REQUIRE(regionState(doc, RegionId(id)) == RegionState::Whole);
+
+    const ViewTransform view = centredView();
+    REQUIRE(painted(paint(Pose(doc), view), view, Point{0.0, 30.0}));
+
+    // Take the chord. The region keeps the arc, cannot walk closed, and must say
+    // so on screen rather than disappearing.
+    const EntityId doomed[] = {chord};
+    for(const Command &c : deletionStep(doc, doomed)) REQUIRE(doc.apply(c).ok());
+    REQUIRE(regionState(doc, RegionId(id)) == RegionState::Broken);
+
+    const std::vector<uint32_t> pixels = paint(Pose(doc), view);
+    // The fill is gone — a partial fill would show an area the document does not
+    // bound — but the arc it still refers to is stroked in the diagnostic.
+    CHECK_FALSE(painted(pixels, view, Point{0.0, 20.0}));
+    // On the rim, at the top of the dome and away from its ends.
+    CHECK(painted(pixels, view, Point{0.0, 40.0}));
+    CHECK(painted(pixels, view, Point{28.0, 28.0}));
+}

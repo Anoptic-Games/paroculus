@@ -44,32 +44,177 @@ double gapBetween(const Pose &pose, EntityId a, EntityId b) {
     return std::sqrt(dx * dx + dy * dy);
 }
 
-// Where two segments cross, if they cross strictly between their ends.
+// An outline edge reduced to what a crossing test needs.
 //
-// Strictly, because ends that meet are how a boundary is built: a shared or
-// coincident endpoint is the ordinary case and reporting it as a crossing would
-// call every drawn outline the deferred case. Parallel and collinear pairs
-// report nothing — they have no single crossing point to build through, which
-// is the thing the deferred work would need.
-bool segmentsCross(const Pose &pose, EntityId a, EntityId b) {
-    const std::optional<std::pair<Point, Point>> first = pose.segment(a);
-    const std::optional<std::pair<Point, Point>> second = pose.segment(b);
+// Curves and straight edges answer the same two questions — where does this meet
+// that, and is the meeting strictly between my ends — so the test is written
+// once over this rather than as a matrix of kind pairs.
+struct EdgeShape {
+    bool curve = false;
+    // Straight edges.
+    Point from, to;
+    // Curves. `sweep` is a full turn for a circle, and `endless` says so: a
+    // circle has no ends, so no meeting point on it can be the joint where two
+    // edges were meant to meet.
+    Point centre;
+    double radius = 0.0;
+    double startAngle = 0.0;
+    double sweep = 0.0;
+    bool endless = false;
+};
+
+std::optional<EdgeShape> shapeOf(const Document &doc, const Pose &pose, EntityId id) {
+    const EntityRecord *e = doc.entities().find(id);
+    if(e == nullptr) return std::nullopt;
+    EdgeShape out;
+    if(e->kind == EntityKind::Segment) {
+        const std::optional<std::pair<Point, Point>> ends = pose.segment(id);
+        if(!ends) return std::nullopt;
+        out.from = ends->first;
+        out.to = ends->second;
+        return out;
+    }
+    if(e->kind == EntityKind::Circle) {
+        const std::optional<Point> centre = pose.point(e->points[0]);
+        const std::optional<double> radius = pose.radius(id);
+        if(!centre || !radius || *radius <= 0.0) return std::nullopt;
+        out.curve = true;
+        out.centre = *centre;
+        out.radius = *radius;
+        out.sweep = 2.0 * M_PI;
+        out.endless = true;
+        return out;
+    }
+    if(e->kind == EntityKind::Arc) {
+        const std::optional<Pose::ArcGeometry> arc = pose.arc(id);
+        if(!arc || arc->radius <= 0.0) return std::nullopt;
+        out.curve = true;
+        out.centre = arc->centre;
+        out.radius = arc->radius;
+        out.startAngle = arc->startAngle;
+        out.sweep = arc->sweep;
+        return out;
+    }
+    return std::nullopt;
+}
+
+// Open intervals at both ends, on both kinds of edge.
+//
+// Ends that meet are how a boundary is built: a shared or coincident endpoint is
+// the ordinary case, and reporting it as a crossing would call every drawn
+// outline the deferred case. The epsilon keeps a joint the solver has left a
+// hair short of exact from reading as one.
+constexpr double INSIDE = 1e-9;
+
+bool interiorOfSegment(double t) { return t > INSIDE && t < 1.0 - INSIDE; }
+
+// Whether a point on the curve's circle lies strictly inside the swept part.
+bool interiorOfCurve(const EdgeShape &shape, Point at) {
+    if(shape.endless) return true;  // no ends to be at
+    if(shape.sweep == 0.0) return false;
+    const double angle = std::atan2(at.y - shape.centre.y, at.x - shape.centre.x);
+    double delta = std::fmod(angle - shape.startAngle, 2.0 * M_PI);
+    if(delta < 0.0) delta += 2.0 * M_PI;
+    // The sweep runs counter-clockwise and is positive, matching the solver.
+    const double u = delta / shape.sweep;
+    return u > INSIDE && u < 1.0 - INSIDE;
+}
+
+// Parameters along a straight edge where it meets a curve's circle.
+//
+// Tangency reports nothing. A line touching a circle at a single point crosses
+// it no more than two parallel segments cross each other, and the deferred work
+// this diagnostic points at — building through an explicit intersection point —
+// has nothing to build there either.
+void straightMeetsCircle(const EdgeShape &line, const EdgeShape &curve,
+                         std::vector<double> &out) {
+    const double rx = line.to.x - line.from.x;
+    const double ry = line.to.y - line.from.y;
+    const double fx = line.from.x - curve.centre.x;
+    const double fy = line.from.y - curve.centre.y;
+
+    const double a = rx * rx + ry * ry;
+    if(a < 1e-18) return;  // a degenerate edge meets nothing
+    const double b = 2.0 * (fx * rx + fy * ry);
+    const double c = fx * fx + fy * fy - curve.radius * curve.radius;
+
+    const double discriminant = b * b - 4.0 * a * c;
+    // Scaled by the quadratic's own magnitude, so the tangency test means the
+    // same thing on a drawing measured in millimetres and one in metres.
+    const double scale = std::max(1.0, std::fabs(b * b));
+    if(discriminant <= scale * 1e-18) return;
+
+    const double root = std::sqrt(discriminant);
+    out.push_back((-b - root) / (2.0 * a));
+    out.push_back((-b + root) / (2.0 * a));
+}
+
+// Where two circles meet. Tangent and concentric pairs report nothing, for the
+// same reason a tangent line does.
+void circleMeetsCircle(const EdgeShape &a, const EdgeShape &b, std::vector<Point> &out) {
+    const double dx = b.centre.x - a.centre.x;
+    const double dy = b.centre.y - a.centre.y;
+    const double d = std::hypot(dx, dy);
+    if(d < 1e-12) return;  // concentric: no crossing, however the radii compare
+    if(d >= a.radius + b.radius) return;            // apart, or externally tangent
+    if(d <= std::fabs(a.radius - b.radius)) return;  // nested, or internally tangent
+
+    const double t = (a.radius * a.radius - b.radius * b.radius + d * d) / (2.0 * d);
+    const double hSquared = a.radius * a.radius - t * t;
+    if(hSquared <= 0.0) return;
+    const double h = std::sqrt(hSquared);
+
+    const double mx = a.centre.x + t * dx / d;
+    const double my = a.centre.y + t * dy / d;
+    out.push_back(Point{mx + h * dy / d, my - h * dx / d});
+    out.push_back(Point{mx - h * dy / d, my + h * dx / d});
+}
+
+// Where two outline edges cross, if they cross strictly between their ends.
+//
+// Every pairing of straight and curved, because both bound regions now. An
+// arc that crosses a segment encloses an area the model cannot name exactly as
+// two crossing segments do, and saying nothing about it is the silence this
+// diagnostic exists to break.
+bool edgesCross(const Document &doc, const Pose &pose, EntityId a, EntityId b) {
+    const std::optional<EdgeShape> first = shapeOf(doc, pose, a);
+    const std::optional<EdgeShape> second = shapeOf(doc, pose, b);
     if(!first || !second) return false;
 
-    const double px = first->first.x, py = first->first.y;
-    const double rx = first->second.x - px, ry = first->second.y - py;
-    const double qx = second->first.x, qy = second->first.y;
-    const double sx = second->second.x - qx, sy = second->second.y - qy;
+    if(!first->curve && !second->curve) {
+        const double px = first->from.x, py = first->from.y;
+        const double rx = first->to.x - px, ry = first->to.y - py;
+        const double qx = second->from.x, qy = second->from.y;
+        const double sx = second->to.x - qx, sy = second->to.y - qy;
 
-    const double denominator = rx * sy - ry * sx;
-    if(std::fabs(denominator) < 1e-12) return false;  // parallel, or collinear
+        const double denominator = rx * sy - ry * sx;
+        if(std::fabs(denominator) < 1e-12) return false;  // parallel, or collinear
 
-    const double t = ((qx - px) * sy - (qy - py) * sx) / denominator;
-    const double u = ((qx - px) * ry - (qy - py) * rx) / denominator;
-    // Open intervals at both ends. The epsilon keeps a joint that the solver
-    // has left a hair short of exact from reading as a crossing.
-    constexpr double INSIDE = 1e-9;
-    return t > INSIDE && t < 1.0 - INSIDE && u > INSIDE && u < 1.0 - INSIDE;
+        const double t = ((qx - px) * sy - (qy - py) * sx) / denominator;
+        const double u = ((qx - px) * ry - (qy - py) * rx) / denominator;
+        return interiorOfSegment(t) && interiorOfSegment(u);
+    }
+
+    if(first->curve && second->curve) {
+        std::vector<Point> meetings;
+        circleMeetsCircle(*first, *second, meetings);
+        for(const Point &at : meetings) {
+            if(interiorOfCurve(*first, at) && interiorOfCurve(*second, at)) return true;
+        }
+        return false;
+    }
+
+    const EdgeShape &line = first->curve ? *second : *first;
+    const EdgeShape &curve = first->curve ? *first : *second;
+    std::vector<double> parameters;
+    straightMeetsCircle(line, curve, parameters);
+    for(double t : parameters) {
+        if(!interiorOfSegment(t)) continue;
+        const Point at{line.from.x + t * (line.to.x - line.from.x),
+                       line.from.y + t * (line.to.y - line.from.y)};
+        if(interiorOfCurve(curve, at)) return true;
+    }
+    return false;
 }
 
 // The outline edges around `seed`, following coincident joints and near-miss
@@ -195,7 +340,7 @@ std::optional<std::pair<EntityId, EntityId>> crossingAmong(const Document &doc,
     std::sort(edges.begin(), edges.end());
     for(size_t i = 0; i < edges.size(); i++) {
         for(size_t j = i + 1; j < edges.size(); j++) {
-            if(segmentsCross(pose, edges[i], edges[j])) {
+            if(edgesCross(doc, pose, edges[i], edges[j])) {
                 return std::pair<EntityId, EntityId>{edges[i], edges[j]};
             }
         }
@@ -217,7 +362,16 @@ std::optional<HealableLoop> healableLoopContaining(const Document &doc,
 
     const std::vector<EntityId> edges =
         outlineNeighbourhood(doc, topology, pose, seed, tolerance);
-    if(edges.size() < 3) return std::nullopt;
+    // Same bound the closed walk uses, and read from the same place: an arc and
+    // a chord whose ends are a hair apart are two edges that will enclose a
+    // circular segment once the gap is shut, and a hard three here would refuse
+    // to offer the heal that make-solid would then accept.
+    bool anyCurved = false;
+    for(EntityId id : edges) {
+        const EntityRecord *e = doc.entities().find(id);
+        if(e != nullptr && boundaryEnds(*e).curved) anyCurved = true;
+    }
+    if(!enclosesArea(edges.size(), anyCurved)) return std::nullopt;
 
     // Every near miss among the neighbourhood's joints, ID-ordered. Ordered
     // because they become constraint records applied in sequence, and a set

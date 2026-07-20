@@ -484,3 +484,36 @@ TEST_CASE("a provisional framing does not latch") {
     CHECK(corner.x() > W * 0.5);
     CHECK(corner.x() < W);
 }
+
+TEST_CASE("fitView frames a circle by its rim, not by its centre") {
+    // What a drawing occupies is not where its defining points are. A document
+    // that is one filled circle has exactly one point in it — the centre — so a
+    // framing built from points alone fitted to nothing and fell through to the
+    // degenerate-extent floor. A circle alone is a complete drawing now that it
+    // bounds a region.
+    Document circleDoc;
+    const EntityId centre = test::addPoint(circleDoc, 0.0, 0.0);
+    REQUIRE(test::addCircle(circleDoc, centre, 40.0).valid());
+
+    // The same extent, spelled as points, is the framing to match.
+    Document pointDoc;
+    test::addPoint(pointDoc, -40.0, -40.0);
+    test::addPoint(pointDoc, 40.0, -40.0);
+    test::addPoint(pointDoc, 40.0, 40.0);
+    test::addPoint(pointDoc, -40.0, 40.0);
+
+    const ViewTransform fromCircle = fitView(Pose(circleDoc), W, H);
+    const ViewTransform fromPoints = fitView(Pose(pointDoc), W, H);
+
+    for(Point p : {Point{40.0, 0.0}, Point{-40.0, 0.0}, Point{0.0, 40.0}, Point{0.0, -40.0}}) {
+        const Eigen::Vector2d a = fromCircle.toScreen(p);
+        const Eigen::Vector2d b = fromPoints.toScreen(p);
+        CHECK(a.x() == doctest::Approx(b.x()));
+        CHECK(a.y() == doctest::Approx(b.y()));
+        // And the rim lands on screen, which is the whole point of framing it.
+        CHECK(a.x() >= 0.0);
+        CHECK(a.x() <= W);
+        CHECK(a.y() >= 0.0);
+        CHECK(a.y() <= H);
+    }
+}

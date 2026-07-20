@@ -838,8 +838,19 @@ boundary ring that carries the traversal direction rather than bare corners, and
 fill tessellation along the sweep in both render and the bake. Circles came with
 it: a closed curve bounds alone, takes no part in the joint walk, and is answered
 from the seed — which is also what decides, unambiguously, which of two closed
-things a click meant. The remaining deferral is unchanged and is the honest one:
-areas enclosed by edges that *cross* still need explicit intersection points.
+things a click meant. The crossing diagnostic followed, since it was the blind spot the change opened:
+it tested segment pairs only, so an arc crossing a segment fell back to the
+silence the diagnostic exists to break. It now covers every pairing of straight
+and curved, with tangent, concentric and nested cases reporting nothing for the
+reason parallel segments do. Heal-and-fill's own three-edge minimum went through
+`enclosesArea` at the same time — an arc and a chord a hair apart are two edges
+that will enclose once the gap is shut, and a hard three would have refused to
+offer the heal that make-solid then accepts.
+
+The remaining deferral is unchanged and is the honest one: filling an area
+enclosed by edges that cross still needs explicit intersection points. The
+diagnostic now names that case wherever it occurs rather than only among
+segments.
 
 Two things settled differently from the sketch above. Non-uniform scale is a
 permanently dimmed palette row rather than an applicable action that refuses,
