@@ -1,376 +1,412 @@
-# Stage 0–4 review
+# Stage 5–6 review
 
-A full review pass over the codebase as of stage 4 exit, comparing what is
-implemented against PRINCIPLES.md and PLANS.md. Every source file in src/ was
-read, the test suite was audited against the per-stage test lists, and the
-highest-risk claims were verified against the code rather than the comments.
+A full review pass over the action surface and composition stages as of stage 6
+exit, comparing what is implemented against PRINCIPLES.md and PLANS.md. Every
+source file in src/ was read, the test suite was audited against the two
+stages' per-stage test lists, and the highest-risk claims were verified against
+the code rather than the comments — including the solver-semantics claims,
+which were checked against the vendored SolveSpace equations directly.
 Findings are numbered for reference and ordered by how expensive they get if
-stage 5 builds on top of them.
+stage 7 builds on top of them.
 
-The short version: the architecture is real. The layer seams hold, the
-determinism discipline is pervasive and genuine, the seeds thesis is
-implemented coherently, and the semantics suite does what the plan promised.
-The serious problems cluster in two places: number formatting is locale-unsafe
-in both file formats, and the stage 4 inference plumbing is only fully wired
-for the line tool — the circle, arc and rectangle tools break the WYSIWYG
-contract in ways the current tests do not reach.
+The short version: both stages deliver what they promised. The registry is a
+real single surface with a generated catalogue, imposition is movement-free
+with the checks in the right order, booleans are genuinely records over live
+operands, and the lock and hidden semantics match PRINCIPLES to the letter in
+the solve path. The serious problems cluster in three places: the document has
+grown a second definition of "closed" that disagrees with the first, the
+composition actions have order- and lock-shaped holes their tests do not
+reach, and several stage 5 surfaces stop one step short of the flow the plan
+describes — the downgrade is computed but never offered, the preview verdict
+is shown but the ghost pose is thrown away, and a walked conflict set cannot
+actually be deleted.
+
+Status: the correctness section, findings 1 through 8, is closed, along with
+findings 10 and 16, which the fixes reached on their way. Each entry below
+keeps its statement of the problem and records what the fix was; the test gaps
+those findings left are closed with them. Findings 9 and 11 through 15, and the
+remaining smaller notes, are open.
 
 ## What holds
 
 Worth recording so the findings below read in proportion.
 
-- The five-layer split is enforced, not aspirational: link boundaries, PRIVATE
-  Skia/slvs linkage, boundary canaries in CTest. interact is genuinely free of
-  Qt and Skia, which is why the gesture corpus runs headless.
-- The command core is sound. Three command shapes with exact inverses,
-  all-or-nothing composite steps with rollback, referential integrity as a
-  model invariant, deletion expressed as a cascade with counts. The
-  never-reuse-outranks-byte-identity watermark decision is reasoned in the
-  right place and tested.
-- Determinism is treated as a property, not a hope: ID-ordered tables and
-  iteration everywhere, union-by-lowest-index in topology, deterministic
-  tie-breaks in snap ranking, glyph ranking and hit testing, no hash-order
-  dependence in solver translation, a seeded PRNG in the property tests.
-- The seeds thread is coherent end to end: seeds serialize, solved state is
-  never written back on open (and there is a test explaining why), drag commit
-  is an ordinary command step, branch fixtures cover proximity, warm-start
-  sweeps and cold re-solve.
-- The semantics suite is per-entry as PLANS demanded: residual verification
-  with off-constraint seeds, an infeasible variant per entry with blamed-set
-  mapping checked, a redundancy variant per entry through checkCandidate. The
-  three-signal redundancy policy in diagnose.cpp is well reasoned against
-  SolveSpace's substitution behaviour.
-- The taxonomy is one list with real projections, static_asserted against
-  slvs.h constants in solve.cpp. Drag rollback on non-convergence, saturation
-  attribution by suppression counterfactual, and the glyph budget all match
-  their documented rationale.
+- Lock-as-solver-group is implemented exactly as amended: locked parameters
+  join GROUP_BASE inside translate(), derived from the document so no caller
+  can forget, fully frozen constraints are left out of the system, and
+  seedTarget refuses to write a locked parameter. The corpus covers all four
+  properties.
+- The action registry is one table with real projections. The constraint
+  catalogue is generated from CONSTRAINT_KINDS, the strip and palette read the
+  same applicability the model validates with, keyboard resolution lives in
+  resolveKey where tests reach it, and scripts refuse unknown actions at parse
+  rather than dropping them at replay.
+- Composition is compositional. A composite names live operands and is
+  evaluated per frame in buildRegionPath; punch draws kClear inside a saved
+  layer so it carves the layer and never the canvas; lift is a plain record
+  removal and the operands reappear. No destructive boolean exists anywhere in
+  the document model, and the bake is a value-producing projection.
+- Degradation is a shrink computed over the whole doomed set, the
+  whole-selection deletionStep exists for exactly the two-edges-of-one-loop
+  case, regionState() is asked in one place by render and diagnostics alike,
+  and a broken region draws a diagnostic rather than nothing.
+- The imposition path is disciplined: capture from the pose, speculative check
+  through a forked context, refusal (not silent downgrade) on the strip path,
+  promotion re-captures and demotion does not, measure-once records nothing,
+  and the hover-storm byte-identity test pins preview-does-not-mutate.
+- Record → replay → record covers the new surfaces. Every composition action
+  records under its registry name with resolved arguments, and the corpus
+  gesture asserts the round trip through the file.
 
-## Fix before stage 5: correctness
+## Correctness — fixed
 
-1. Persist and script serialization are locale-dependent and will write
-   unreadable files. `number()` in src/core/persist.cpp:30 and
-   src/interact/script.cpp:17 uses `snprintf("%.17g")`, which honours
-   LC_NUMERIC; parsing uses `std::from_chars`, which is locale-fixed to '.'.
-   QGuiApplication calls `setlocale(LC_ALL, "")` on Unix, so the app adopts
-   the user's locale. Verified on this machine: under de_DE.UTF-8,
-   `%.17g` of 1.5 prints "1,5". Consequence: on any comma-decimal system,
-   every save is silently unreadable by the loader, and serialization is not
-   machine-independent — a direct violation of persist.h's stated contract.
-   The tests never see it because the test runner never constructs a
-   QGuiApplication. Fix: `std::to_chars` for doubles in both files (it is
-   locale-independent and shortest-round-trip; the "%.17g is the shortest
-   form" comment is also wrong — 17 significant digits prints 0.1 as
-   0.10000000000000001, so to_chars improves diff legibility too). Same
-   pattern in units.cpp formatLength is display-only and can stay, but note
-   parseLength then rejects the comma the user's locale displays.
+1. The document now has two definitions of "closed" and they disagree.
+   Make-solid asks findBoundaryCycle (src/core/topology.h:117), which walks
+   the full coincidence partition — transitive closure over every Coincident
+   constraint. The fill then renders and degrades through boundaryRing
+   (src/core/composition.cpp:181), whose JointClasses unions only coincidences
+   *both of whose operands are ring endpoints* (composition.cpp:30–35). Two
+   boundary endpoints joined transitively through an external point — a
+   T-junction where a spur's endpoint sits between them, which snap chaining
+   produces whenever the third click lands on the spur's point rather than a
+   corner — are one joint to topology and two to JointClasses. Consequence: a
+   loop the user can fill, and that make-solid accepts, immediately renders in
+   the broken-diagnostic state. This is precisely the two-answers bug that
+   moving the ring walk into core was meant to rule out, and the comment at
+   composition.cpp:23 ("the answer is the same partition restricted to these
+   points") is false — restriction of a transitive closure is not the closure
+   of a restriction.
 
-2. Removing a parameter leaves dangling references. RemoveRecord for
-   ParameterRecord goes straight to applyRemove (src/core/document.cpp:238)
-   with no dependents check, unlike entity removal. A constraint slot
-   referencing the removed parameter then evaluates to nullopt, and
-   translation applies `value_or(0.0)` (src/solve/solve.cpp:249) — the
-   dimension silently drives to zero, the worst kind of silent change. Worse:
-   the document still serializes, but deserialize refuses it, because load
-   validation checks `parameters_.contains` for constraint slots — a state
-   that can be saved and never reloaded. Parameter-to-parameter references
-   have the same hole and load fine (only the cycle check runs on parameters
-   at load), so validation is inconsistent with itself. Style slots are not
-   validated at all. Fix: a dependents check over slots (constraints, styles,
-   parameters) mirroring entity removal, a deletionStep-style cascade or
-   refusal, and load-time validation for parameter and style slot references.
+   Fixed. JointClasses unions every point any Coincident constraint names,
+   interning points as it meets them, and the ring walk asks that partition
+   about its endpoints. It stays a local union-find rather than becoming
+   Topology — the question is smaller, Coincident alone with no ownership edges
+   — but it answers the same as Topology::coincident now, and a test builds the
+   T-junction and asks both definitions side by side.
 
-3. Circle radii are translated from the document, not the solve context. In
-   the Circle case of translate() (src/solve/solve.cpp:165) the radius
-   parameter is seeded from `e->seeds[0]` — the committed document seed —
-   while points are seeded from the context's spans. The context is supposed
-   to be the parameter store ("seeds going in, solved values coming out");
-   this breaks warm-start continuity for every radius across a drag (each
-   frame re-seeds the radius from the committed value), and any speculative
-   context that perturbs a radius is silently ignored. Fix: look the span up
-   by entity, as the readback loop already does.
+2. A group drag moves locked geometry. The carried-translation loop in
+   DragSession::update (src/interact/drag.cpp:214–228) writes
+   origin-plus-delta into every carried point's seed span with no isLocked
+   check. A locked parameter is a known — the solver takes its seed as its
+   value — so writing the seed performs the move, and commit() then journals
+   it. Group geometry on a locked layer together with unlocked geometry, drag
+   the unlocked member: the locked layer's points translate rigidly and the
+   result is committed. seedTarget refuses exactly this write for the grab
+   (drag.cpp:61–63) and the refusal is documented as what makes a lock feel
+   pinned; the carry path bypasses it.
 
-4. Dragging a circle is nonsense masked into inertness. DragSession::begin
-   accepts any entity with own parameters, and update()
-   (src/interact/drag.cpp:73) writes cursor.x/cursor.y into the grabbed
-   entity's span unconditionally — for a circle that assigns radius :=
-   cursor.x. Finding 3 currently hides this by discarding the context's
-   radius, so the observable behaviour is that grabbing a circle's rim does
-   nothing. Fixing 3 alone would expose 4 (radius jumps to the cursor's x
-   coordinate). Either refuse non-point grabs in begin() or implement a real
-   radius drag (radius := |cursor − centre|). At present hit-testing happily
-   returns circles, so users will hit this immediately.
+   Fixed. DragSession::begin drops any carried entity whose component holds a
+   lock, before the context is built and before carriedOrigin_ is filled — a
+   whole component at a time, since skipping the locked spans alone would shear
+   the rest of that component through its own constraints. A carried lock now
+   reads as the same saturation a grabbed one does.
 
-5. Inference subject plumbing is only correct for the line tool. Session's
-   press path declares the placement's auto-committed candidates against
-   `out.placedPoint` / `out.placedSegment` (src/interact/session.cpp:360),
-   and holds first-click snaps for `out.placedStart`. Audit per tool:
-   - CircleTool sets placedPoint to the centre (src/interact/tools.cpp:229),
-     but the second click's inference runs at the rim. Snapping the rim onto
-     an existing point declares Coincident(centre, thatPoint) — the circle
-     teleports so its centre sits on the point the rim touched. The correct
-     declaration for a rim snap is PointOnCircle(target, circle), or nothing.
-   - ArcTool never sets placedStart, so the snaps captured when the user
-     started the arc on an existing endpoint are silently dropped; and the
-     second (end) click overwrites pendingStartSnaps_ in the
-     `commands.empty()` branch (session.cpp:324), so the mechanism can only
-     remember one pending click while the arc gesture has two. Arc endpoints
-     therefore never receive the coincidences the user aimed for.
-   - RectangleTool never sets placedPoint, so the closing corner's endpoint
-     snap is position-corrected but declares nothing — the rectangle merely
-     sits on the vertex instead of being bound to it.
-   - Ghost glyphs render any auto-committing candidate
-     (src/interact/glyphs.cpp:115), including segment-subject candidates that
-     constraintFor will drop because the tool created no segment — so for
-     circle/arc/rect gestures the preview promises relations commit will not
-     deliver. "Preview shows truth" currently holds for lines only.
-   The WYSIWYG test (tests/unit/interact_snap.cpp:233) covers only the line
-   tool, which is why all of this is green. This block is the most expensive
-   finding to defer: stage 5's heal-and-fill and make-solid lean directly on
-   endpoint inference being trustworthy for every tool.
+3. A selected relation cannot be deleted. Constraints are selectable through
+   their glyphs and selectConflicting() makes the conflict set an ordinary
+   selection — but deleteSelection (src/interact/session.cpp:1288) builds its
+   step from selection_.items() alone, and edit.delete's applicability
+   (src/interact/registry.cpp:27) reads the geometry signature, which is empty
+   for a constraint-only selection. So the natural gesture — walk the
+   conflicts, press Delete on the relation that is wrong — is a silent no-op,
+   and the palette dims Delete while the conflict set is selected. PRINCIPLES
+   is explicit that deletion of a relation uses the same selection machinery
+   as geometry, and names it as what makes conflict sets walkable.
 
-6. Record/replay fidelity breaks for key-driven numeric entry.
-   Session::handle(Key) records the key step, then dispatches to
-   numericResolve/numericAdvance/numericCancel, each of which also records
-   its own step (session.cpp:170,183). A live Tab advances once but records
-   two steps ("key name=tab" plus "numeric do=advance"), so replay advances
-   twice and the replayed session diverges from the recorded one. Re-recording
-   a replay appends a third step per Enter/Tab/Esc, so record → replay →
-   record is not the identity — the property CLAUDE.md states and the format
-   exists to guarantee. The identity test (tests/unit/interact_script.cpp:112)
-   only records a drag, and the numeric round-trip test never re-records,
-   which is exactly the gap. Fix: the numeric methods should record only when
-   invoked directly (e.g. an internal non-recording variant used by
-   handle(Key)), or handle(Key) should not double-dispatch to recording
-   methods. Related: a typed space serializes as "type char= " which the
-   parser refuses — the recorder can produce an unparseable file.
+   Fixed. deletionStep gains a constraint span alongside its entity span, and
+   deleteSelection passes both, so a selection reaching geometry and relations
+   is one cascade whose shrinks are computed over the whole doomed set. Delete's
+   applicability reads a new predicate that accepts either, and the counts
+   report the relations because they are ordinary removals in the step. This is
+   also where finding 10's tag shrinks landed; see there.
 
-7. The numeric twin's exactness does not survive the commit click in the real
-   app. numericResolve pins the tool's cursor (the preview shows exactly 45),
-   but the commit press re-runs inference at the pointer's actual position
-   and overwrites it — LineTool::press assigns `cursor_ = cursor`
-   unconditionally — so a plain-Enter resolve is discarded by the very click
-   that commits it, even if the physical mouse never moved (its position is
-   still the pre-Enter one). Shift+Enter appears to work only because the
-   imposed dimension drags the geometry to the value after commit. The tests
-   pass because they click exactly at preview.to (interact_numeric.cpp:87), a
-   move only a script can make. Decide what Enter means and implement it:
-   either Enter commits the placement at the resolved pose, or a resolved
-   parameter must survive until commit and override the press position.
+4. Make-solid and heal-and-fill attach the region to an arbitrary layer and
+   style. regionOver (src/interact/session.cpp:1205–1211) takes
+   layers().records().front() and styles().records().front() — the lowest-ID
+   records, whatever the boundary's geometry says. Draw an outline on the base
+   layer, create a layer through the palette, press F: the fill lands on the
+   named layer while its outline stays on the base, so hiding or locking that
+   layer splits the fill from the outline that defines it, and the z-order it
+   competes in is the wrong layer's. The stage 5 comment above it defers the
+   choice to stage 6; stage 6 landed layers and never came back. The corpus
+   never sees it because every corpus fill happens before any layer exists.
 
-8. In the shell, digits 1–9 cannot begin numeric entry.
-   SketchView::keyPressEvent routes 1–9 to confirm/decline before the
-   open-a-field branch (src/shell/sketchview.cpp:259), so with any offer
-   visible, typing "45" confirms offer 4 and drops the 5; with none, the
-   keystroke does nothing. A field can only be opened by Tab, '0', '.' or
-   '-'. CLAUDE.md's "digits / tab — type a value into the strip" does not
-   match the code. This wants a deliberate policy (e.g. digits type while a
-   tool has a placement in flight, confirm requires a modifier — or the
-   reverse), recorded in the corpus either way.
+   Fixed. regionOver takes the layer of the boundary's first edge — they share
+   one in every reachable case — and no style at all, since a fill nobody styled
+   reads as the outline it belongs to and inheriting the lowest-ID style meant
+   picking up a stroke style that was never about it. A test draws on a named
+   layer and fills.
 
-9. imposePending_ survives Esc. Type a value, Shift+Enter, Esc to abandon the
-   chain, draw a fresh shape: the stale dimension (with the old value and
-   target index) is imposed on the new geometry
-   (session.cpp:366,490). Esc and tool_->escape() must clear it, as they
-   already clear confirmedOffers_ and pendingStartSnaps_.
+5. Which region a subtract subtracts from is decided by creation order, not by
+   the user. composeRegions (src/interact/session.cpp:1490) takes
+   selectedRegions(), which is ID-ordered; render evaluates a composite as
+   operands[0] minus the rest (src/render/view.cpp:137–151). So subtract
+   always cuts the newer region out of the older one, there is no way to
+   express the other reading, and the action takes no argument that could.
+   This is a role ambiguity in exactly the sense PRINCIPLES sends to the
+   surface — length-ratio asks which way round with preview; subtract, where
+   the two readings differ far more visibly, never asks. The corpus happens to
+   build the minuend first and cannot notice.
 
-10. quote() does not escape newlines (src/core/persist.cpp:38). A layer,
-    style, group or parameter name containing '\n' splits its record line;
-    the round trip silently corrupts the name and sheds fields into an
-    unknown-record line rather than failing. Names are arbitrary strings via
-    the command layer, so this is reachable. Escape control characters, and
-    add newline names to the names-survive test.
+   Fixed. composeRegions sorts its operands by occlusion order — z, then ID, the
+   same total order regionOrder uses — so the default cuts the upper region out
+   of the lower one, which is what the picture looks like. region.subtract takes
+   an optional `order` argument for the other reading, recorded the way an
+   imposition records its assignment, and only subtract carries it because it is
+   the only one of the three that can tell. The palette still does not ask;
+   asking is a surface still to build, and the default now correlates with
+   something visible.
 
-11. Construction segments attract parallel/perpendicular. The direction-kind
-    loop in snap() iterates every document segment with no role check
-    (src/interact/snap.cpp:165), while the point-kind loop honours
-    policy.snapToConstruction. An arc's flanks stay quiet, but any
-    construction segment becomes exactly the magnet the policy exists to
-    prevent. One-line fix plus a test mirroring "an arc's centre does not
-    attract".
+6. walkConflicts reports a multi-way conflict as attributed.
+   src/solve/diagnose.cpp:107 sets `attributed = true` unconditionally, while
+   the comment eleven lines above it — and the header contract at
+   diagnose.h:50–57 — say a conflict needing two simultaneous suppressions
+   reports nothing and *leaves attributed false*. As written, a candidate that
+   no single suppression rescues returns an empty set with attributed true,
+   which is the exact "empty walkable set read as nothing conflicts" lie the
+   header warns a surface cannot see through. Today every consumer happens to
+   check both fields together, so the lie is latent; stage 7's compound
+   relations make multi-constraint conflicts routine.
 
-## Divergences from PRINCIPLES and PLANS
+   Fixed. `attributed = !out.empty();`, with a semantics test that builds a
+   conflict no single suppression rescues — two segments each held horizontal
+   and also held parallel to each other, against a perpendicular candidate — and
+   pins the empty-and-unattributed pair.
 
-12. Horizontal and vertical are not axis-referenced. PRINCIPLES fixes them as
-    parallelism to a reference axis with the document frame as default;
-    the taxonomy implements one-operand kinds and defers the reference to
-    stage 7 (src/core/taxonomy.h:129). Acceptable pre-freeze, but the
-    retrofit changes the operand signature, and with it persist, undo
-    records, signatureMatches, and the corpus. Stage 7's rotate-with-retarget
-    is blocked on it. Decide now whether the operand arrives as a nullable
-    reference (null = document frame) so the format change lands once.
+7. The angle residual accepts the supplementary angle and the solver does not.
+   residual() for Angle (src/core/measure.cpp:191–195) returns
+   min(|actual−declared|, |180−actual−declared|), justified by the comment
+   "the solver constrains the direction cosine, so either the angle or its
+   supplement satisfies the declaration". Checked against the vendored solver:
+   the ANGLE equation is dircos − cos(valA) (external/solvespace/src/
+   constrainteq.cpp:891–911), and cos(180−θ) = −cos(θ), so the supplement
+   satisfies nothing unless `other` is set — which the taxonomy cannot set,
+   because Angle carries no alternative. Consequences: the geometric residual
+   is more permissive than the solver, so the semantics suite and the
+   movement-free property would pass a translation bug that drives a segment
+   to the supplement; and the solver's supplementary form is unrepresentable,
+   the same shape as the tangency gap stage 5 fixed by adding `alternative`.
+   Stage 7's rotate, which flips directions wholesale, is where the missing
+   form starts to matter.
 
-13. Double-click depth descent does not exist. Selection::descend is
-    implemented and unit-tested but has no caller; PointerEvent carries no
-    click count and the shell never synthesizes one. Consequently depth_ is
-    always zero in the app and Esc-ascend is equally unreachable. This is
-    stage 3 scope ("double-click depth descent along coincidence runs, Esc
-    ascent") reported as complete. Also, descend() replaces segments with
-    their endpoints rather than runs with their segments as the header
-    comment describes — worth reconciling when it gets wired.
+   Fixed both halves. The residual is |actual−declared| against the form the
+   record names, and Angle and EqualAngle each carry an alternative in the
+   taxonomy — which the solver was already reading as `other`, so the change is
+   the column and nothing else. The alternative reverses the first direction,
+   exactly as the solver's equation does, so the supplement is now a form of the
+   same relation rather than an unrepresentable one. A semantics test checks the
+   residual against the solver in both forms.
 
-14. Multi-selection drag drags one entity. PRINCIPLES: "Multi-selection drags
-    put all selected parameters in the set." DragSession::begin takes a
-    single grabbed id and the dragged set is only that entity
-    (src/interact/drag.cpp:80). SolveOptions.dragged is already a vector, and
-    the click-inside-selection-keeps-it logic in Session::handle is already
-    there waiting; the gap is contained in begin()/update().
+8. The bake silently loses geometry and mis-flattens nested composites.
+   bakeForExport emits strokes only for segments (src/core/bake.cpp:76–89) —
+   circles and arcs, stroked on every screen frame, are simply absent from the
+   export projection, and no counter reports them, which breaks the loss
+   report's own contract ("counting what it destroyed"). The composite walk
+   (bake.cpp:51–71) tags every descendant outline with the *top* composite's
+   op, so Intersect(A, Union(C,D)) bakes as A∩C∩D and Union(A, Intersect(C,D))
+   as A∪C∪D; only subtract survives nesting by algebraic accident. And the
+   walk is a stack that pops operands in reverse, so a subtract group's
+   subtrahends precede its minuend in the paint-in-order list with nothing
+   marking which is which. Stage 8's exporter will consume all three faults as
+   truth.
 
-15. The arc tool has no numeric twin. Its radius and sweep parameters are
-    display-only — no setParameter, no dimensionFor — so typing during an arc
-    gesture does nothing. Stage 4's goal line is "every gesture gains its
-    numeric twin". Also PLANS' numeric-twin test list starts "drag, type,
-    enter"; there is no numeric path for drags of existing geometry at all
-    (Session::type requires an active creation tool). If drag-numeric is
-    deliberately stage 5 (inline dimension editing), amend the plan text;
-    the arc gap is just a hole.
+   Fixed all three. Bake carries a BakedGroup list: one node per composite,
+   naming the group it is itself an operand of, so Intersect(A, Union(C,D))
+   arrives as a tree rather than as a flat intersection. Rings are emitted by
+   recursion in operand order, which is what makes a subtract group's minuend
+   the first of them. Circles and arcs are tessellated into polyline strokes at
+   a fixed angular step — fixed rather than derived from a view, since an export
+   has no zoom to be right at and a document must not bake differently from two
+   sessions. Tests cover the nesting, the subtract order and both curve kinds.
 
-16. checkCandidate has no callers. The creation-time speculative check —
-    stage 2 scope, and PRINCIPLES' first over-constraint moment — is built
-    and tested but wired to nothing: imposed dimensions (Shift+Enter) and
-    auto-committed inferences land unchecked. A contradictory typed dimension
-    commits successfully and only manifests through finding 17's failure
-    mode. The action surface that offers downgrades is stage 5, but stage 4
-    already creates constraints; at minimum the imposition path should
-    consult it.
+## Model holes stage 7 will step into
 
-17. A single failing component un-solves the whole canvas. refresh() solves
-    the entire document as one context and, on any non-OK outcome, discards
-    the settled overlay entirely (src/interact/session.cpp:61) — every
-    healthy component's display falls back to committed seeds. PRINCIPLES:
-    the document stays editable and geometry holds the last feasible
-    solution. The partition exists; refresh() should solve per component and
-    keep the components that solve. This also removes the whole-document
-    solve from the per-edit path, which the scale hypothesis will eventually
-    demand anyway.
+Finding 10 is fixed, as a component of finding 3; the rest are open.
 
-18. Incremental topology maintenance is dead code. Session only ever calls
-    markDirty() and rebuilds; noteAdded() has no callers outside the unit
-    test, so the union-in-place path the design documents (and the stage 1
-    property test pins) never runs in the product. Rebuild-always is correct
-    and currently cheap; either wire noteAdded into the journal path or
-    delete it and its test until scale asks for it — an invariant tested on
-    unreachable code is a false sense of coverage.
+9. Layer and style removal leave dangling references the loader then refuses.
+   RemoveRecord<LayerRecord> and RemoveRecord<StyleRecord>
+   (src/core/document.cpp:338, :331) go straight to applyRemove with no
+   dependents check, unlike entity, region and parameter removal — and no
+   deletionStep overload exists for either. Entities and regions naming the
+   removed layer or style keep the dangling ID, the document still serializes,
+   and deserialize refuses it, because load validation checks layer and style
+   references (document.cpp:86–87 via persist.cpp:764) — a state that can be
+   saved and never reloaded, the same shape as the parameter hole the stage
+   0–4 review closed (its finding 2). No action deletes a layer today, which
+   is why nothing bleeds; the palette will grow one. Fix: HasDependents
+   refusals mirroring entity removal, plus deletionStep overloads — for a
+   layer, reassigning its entities and regions to the base layer before
+   removal is the freeze-shaped answer (only the organization the user deleted
+   is lost); for a style, nulling the references.
 
-19. Undo seed spans are vestigial. UndoRecord.seedsBefore is never written,
-    recordSeedsAfter is never called from src/, and undo()/redo() never read
-    either field. Branch fidelity is in fact carried by seed commits being
-    ordinary SetRecord commands with exact inverses — which works and is
-    tested — so "every undo record carries the seeds of affected components"
-    (PLANS stage 1) is satisfied by a different mechanism than the one built
-    for it. Decide: remove the fields, or wire them. Leaving them
-    half-present invites stage 8's async work to trust them.
+10. Constraint removal ignores the tags that list it, and the model gives
+    three different answers about the resulting state.
+    RemoveRecord<ConstraintRecord> (src/core/document.cpp:302) removes
+    unconditionally; tagState (src/core/composition.cpp:262–264) treats a
+    dangling tag→constraint reference as Broken, i.e. legal-but-degraded;
+    validate(TagRecord) (document.cpp:193–196) refuses it, so the loader
+    refuses the file it came from. Unreachable today only because nothing
+    creates tags. Stage 7's rectangle tool creates one, and its defining
+    constraints are exactly what decline and delete remove — the first
+    declined inference on a rectangle produces a document that saves and will
+    not load.
 
-20. Tangent cannot say which end. SLVS_C_ARC_LINE_TANGENT reads
-    Slvs_Constraint.other to select the arc end; translate() zero-fills it,
-    so tangent always means tangent-at-start and the taxonomy has no way to
-    express the alternative. Stage 5 makes the whole catalogue imposable;
-    imposing tangency on the far end is unrepresentable today. Needs a field
-    on ConstraintRecord (and persist) or a second taxonomy row.
+    Fixed, on the way through finding 3, and the answer kept is the refusal.
+    RemoveRecord<ConstraintRecord> refuses while a tag names it, exactly as an
+    entity removal does; deletionStep over constraints shrinks those tags first;
+    and decline routes through deletionStep rather than emitting a bare removal,
+    since a rectangle's squaring relations are precisely what decline takes. So
+    a dangling tag reference is unreachable rather than variously legal, and
+    validate and the loader go on refusing what no path can now produce.
+    tagState's dangling branches stay as the defensive reading regionState has
+    for a deleted edge. What a tag can still be is too thin to mean its kind,
+    which is the degradation that was always the point.
 
-## Smaller gaps stage 5 will trip over
+11. Equal-angle's pairing ambiguity is never asked. Four segments admit three
+    distinct pairings — angle(A,B) = angle(C,D) is not angle(A,C) =
+    angle(B,D) — but EqualAngle is not orderSensitive in the taxonomy
+    (src/core/taxonomy.h:216), so assignmentsFor (src/interact/impose.cpp:93)
+    stops at the ID-lexicographically first valid permutation and the surface
+    imposes a pairing the user never chose. This is the same question
+    length-ratio got a surface for, on a kind where the wrong reading is
+    harder to see. Fix: mark it orderSensitive and let the existing
+    ambiguous-offer machinery enumerate the distinct pairings (the
+    interchangeable-within-pair and pair-swap symmetries want deduplicating,
+    which assignmentsFor's permutation walk can do by canonicalising each
+    reading before keeping it).
 
-21. Marquee ignores circles and arcs (src/interact/hit.cpp:193) — only
-    points and segments are tested for containment, so a marquee over a
-    circle selects its centre but not the circle. Written in stage 3, never
-    extended for stage 4's entities.
+## Stage 5 surfaces, thinner than the plan
 
-22. Glyph marks skip arc operands. anchorOn() (src/interact/glyphs.cpp:13)
-    handles points, segments and circles but returns nullopt for an arc, so
-    a constraint binding an arc gets no mark on it — the arc macro's own
-    point-on-circle is invisible from the arc side, violating
-    mark-per-operand. Route through curveCentre/curveRadius or the arc
-    midpoint.
+12. The hover preview shows a verdict where the plan promised a ghost. PLANS
+    stage 5 scope: "speculative hover preview of any offered constraint (ghost
+    solve through contexts)"; PRINCIPLES: "the geometry ghosts to where commit
+    would put it, which turns the catalogue into something learnable by
+    looking". ImpositionPreview.pose carries exactly the overlay spans that
+    ghost needs (src/interact/impose.h:119) and no surface consumes them:
+    previewOf (src/shell/sketchview.cpp:529) reduces the preview to a string
+    and the QML shows the string. The mechanism is built and tested; the
+    payoff — seeing the drawing move before committing — is not wired.
 
-23. Circles render without hover or resisting tint (src/render/view.cpp:272
-    picks only selected/construction), unlike segments, arcs and points — an
-    attribution gap once circles resist a drag.
+13. The downgrade is computed and never actually offered.
+    Presentation::downgradeOffered (src/interact/session.h:130) is a bare
+    bool, though its comment claims it "names the kind and strength the offer
+    would invoke"; nothing in the shell or QML reads it, the strip projects
+    only Impose-strength rows (src/interact/surface.cpp:55), so after a
+    refused imposition the user's one path to the reference measurement is
+    knowing to search the palette for "(reference)" by hand. Stage 5's stated
+    change was moving the choice to the user; the choice exists but the offer
+    does not. Related staleness on the numeric path: commitPlacement sets
+    impositionVerdict and conflicting but neither conflictAttributed nor
+    downgradeOffered (src/interact/session.cpp:511–549), so both fields keep
+    whatever the previous imposition left there. Fix: the presentation names
+    the refused kind, stripEntries pushes the reference-strength entry while
+    the offer stands, and commitPlacement resets all four fields together.
 
-24. The rendered grid and the snap grid are two constants. renderDocument
-    hardcodes 20.0 (src/render/view.cpp:176); SnapPolicy.gridStep is the
-    policy. Change the policy and the drawn grid lies about where placement
-    lands. Render should receive the step from the policy via the shell.
+14. Constraint marks ignore layer visibility. visibleGlyphs
+    (src/interact/glyphs.cpp:63) walks every constraint with no isVisible
+    check, so hiding a layer removes its geometry from the canvas, hit
+    testing and the marquee — while its relations' marks stay drawn, floating
+    over empty space, and stay clickable, selecting relations on geometry the
+    user cannot see or pick. Neither reading of the principles survives this
+    halfway state: if hidden geometry cannot be aimed at, its marks should go
+    with it; if no-invisible-constraints outranks that, the choice should be
+    recorded and the marks should say what they are anchored to. As it stands
+    the behaviour is an accident of omission, and the glyph budget spends
+    screen slots on relations the user cannot act on.
 
-25. Shell view state is thinner than stage 3 claims: pan exists as a member
-    but nothing writes it (middle-drag is accepted then ignored), zoom is
-    viewport-centre anchored rather than cursor-anchored, and — more
-    disruptive — syncViewport() re-fits the base framing to the geometry
-    bounding box on every keypress, so confirming an offer with '1' mid-chain
-    visibly reframes the view under the cursor. Scripts survive (viewport
-    steps are recorded) but the feel is wrong and any pixel-calibrated
-    tolerance changes meaning when the view jumps.
+15. "Is this region selected" has two answers. fillColourOf highlights the
+    fill when any one boundary edge is selected (src/render/view.cpp:184–191);
+    selectedRegions() requires every edge, recursively through composites
+    (src/interact/session.cpp:1333–1348), and every region action goes through
+    the latter. Select one edge of a filled square: the fill tints as selected
+    and punch, raise, lower and subtract all refuse. One rule should own the
+    question — the same discipline that moved the ring walk and the glyph
+    fan-out into core — and the actions' rule is the documented one.
 
-26. Deleting an entity that belongs to a group deletes the whole group
-    record (deletionStep emits RemoveRecord<GroupRecord>). Regions and tags
-    are documented as stage 6 degradation deferrals; groups are not
-    mentioned anywhere. A SetRecord shrinking the membership preserves the
-    group and is expressible today.
+## Smaller notes
 
-27. A two-segment loop (two edges joining the same two vertices) satisfies
-    findBoundaryCycle's degree and connectivity tests and reports a closed
-    2-gon. Harmless until make-solid fills it; refuse cycles shorter than 3
-    unless a lens shape is intended.
+16. refresh() leaves a stale readout when the document empties: the dof and
+    status update is guarded by components > 0 (src/interact/session.cpp:185),
+    so deleting the last entity freezes the previous numbers on screen.
 
-## Test gaps against the plan's own lists
+    Fixed. The guard is gone and an empty document reports zero degrees of
+    freedom at status Okay: nothing has no freedom and nothing is wrong with it.
 
-- WYSIWYG is asserted only for the line tool; there are no
-  previewed-equals-committed tests for circle, arc or rectangle placements —
-  precisely where finding 5 lives. The rim-snap test checks the offer is
-  generated, never what confirming it declares.
-- The "inference precision/recall corpus opening set" (stage 4 test list)
-  does not exist under any name; the corpus is stage 3 gestures only.
-- Record→replay→record identity is tested only over a pointer/key drag
-  session; no test re-records a session containing numeric or confirm steps
-  (finding 6's territory).
-- Arc macro invariants cover the through-point and centre exclusion, but I
-  found no test for "degradation on member deletion" (stage 4 list).
-- The persist name-robustness test covers spaces and quotes but not newlines
-  or other control characters (finding 10).
-- Nothing exercises persist under a non-C locale (finding 1). After the
-  to_chars fix, a test can pin the property by asserting no ',' in
-  serialized output for a fractional value, plus a byte-identity fixture.
+17. deleteSelection counts degradations (session.cpp:1298–1307) and no surface
+    shows the count — status() reports shapes and relations only
+    (src/shell/sketchview.cpp:434–439). The broken render carries the policy,
+    but the third number is dead code until something says it.
 
-## Minor notes
+18. applyDragResolve ignores applyStep's result (session.cpp:914–921) and then
+    reads the newest constraint as `imposed` and notes usage; a refused step
+    would attribute the imposition to an unrelated record. endDrag shares the
+    ignored result but has nothing downstream of it.
 
-- document.cpp validate(EntityRecord) canonicalizes unused point slots but
-  not unused seed slots, so a segment with junk in seeds[] is accepted,
-  compares unequal to its own round-trip, and quietly loses the junk through
-  persist. Mirror the points check.
-- The MissingValue comment claims both directions ("a valued constraint with
-  no slot, or vice versa") but only the valueless-with-value half is
-  checkable — constant 0.0 is a legitimate distance. Trim the comment.
-- persist.h says a failed deserialize leaves `out` empty; it actually leaves
-  it untouched (parseScript got this right). Align code or comment.
-- Watermark handling on load uses setNext, which can lower a counter already
-  raised by reserveAbove if a hand-edited file orders records before the
-  watermark line; make it a max.
-- Topology::noteAdded(ConstraintId) marks dirty when operand 0 is unknown but
-  silently skips unknown later operands; unreachable today, inconsistent
-  regardless. Also noteAdded renumbers O(n) per record — a rectangle's 16
-  records would be 16 linear passes if it were ever wired.
-- UndoJournal::undo/redo ignore per-command apply() results; an assert would
-  catch a journal desync (mutation behind the journal's back) at the moment
-  it happens instead of at the next serialize.
-- checkCandidate's conflicting set can include the candidate itself (a null
-  id when the caller left it unset); stage 5's conflict walking should filter
-  or the highlight will contain a ghost.
-- Session::handle(Esc) inside a tool clears the chain but leaves
-  presentation_.snapCandidates until the next move — stale ghosts for a
-  frame or two.
-- rememberSnaps runs even when the placement step was refused, so a failed
-  placement still bumps recency ranking.
-- arena.h array() uses placement array-new, which the standard permits to
-  add a size cookie; fine on Itanium ABI for trivially-destructible types,
-  but a loop of singular placement-new (or ::operator new-style raw
-  construction) removes the assumption.
-- connectedRun's "up" step scans every entity per reached entity — O(n²) per
-  click; fine now, worth an adjacency index when documents grow.
+19. make-solid stays applicable after filling — the loop is still closed, so
+    the offer stays lit and a second F stacks an identical region over the
+    first (nothing refuses a duplicate boundary). Harmless to the model,
+    doubled alpha on screen, and an action that looks like it did nothing.
 
-## Suggested order
+20. The crossing-segments refusal has no message. PLANS stage 5 asks for the
+    loop-with-a-crossing rejection "with the deferred-case message per
+    PRINCIPLES"; healableLoopContaining just returns nullopt
+    (src/interact/loops.cpp:116) and no surface distinguishes "not healable"
+    from "healable but crossing, which is the deferred case". The test pins
+    the refusal, not the message, which does not exist.
 
-Findings 1 and 2 are data-loss class and independent of everything else; fix
-first. Findings 3+4 travel together (fixing 3 exposes 4). Finding 5 is the
-largest single piece of work and gates stage 5's inference-dependent scope
-(heal-and-fill, make-solid); 6–9 are small once decided. 12, 19 and 20 are
-decisions to make on paper before stage 5 amends the plan; 16 and 17 land
-naturally with stage 5's imposition and conflict work but should be named in
-its scope rather than discovered during it.
+21. toggleDriving's promotion never runs checkCandidate (session.cpp:1122), so
+    promoting a reference to driving skips the redundancy flag the imposition
+    path would raise for the identical declaration. Consistency cannot break —
+    the captured value holds at the current pose — but redundancy is where
+    later edits go to die, and the toggle is a quiet way to plant one.
+
+22. validate(RegionRecord) permits a composite naming the same operand twice
+    (document.cpp:167–181 checks cross-composite exclusivity and self-reference
+    but not duplicates), which subtract renders as A−A. No surface can produce
+    it; the command layer accepts it.
+
+23. Esc during a drag does not cancel the drag: handle(Key::Escape)
+    (session.cpp:782–812) falls through to selection ascend while drag_ runs
+    on. Stage 3 territory, but stage 6's group-carry makes long drags more
+    common and a cancel is the expected escape hatch.
+
+24. moveLayer is the one layer mutation that skips refresh()
+    (session.cpp:1470–1479). Nothing derived depends on order today, so it is
+    an inconsistency rather than a bug; the sibling that later grows a
+    dependency will copy the wrong precedent.
+
+## Test gaps
+
+The suite was strong on the paths the stages documented — lock-as-group,
+hidden influence, degradation-and-restore, layer-order raster permutations,
+the composition and flagship record/replay corpus — and thin exactly where the
+findings above lived. The gaps belonging to findings 1 through 8, 10 and 16 are
+closed with them:
+
+- A boundary whose joints close transitively through a spur's endpoint, asked
+  of both definitions of closed at once (finding 1). A fill drawn after a layer
+  exists, checked for its layer and its absence of style (finding 4).
+- A group holding locked and unlocked geometry, dragged, with the locked
+  member's pose and seeds both unmoved (finding 2). Delete on a
+  constraint-only selection, through the glyph that selects it, with the
+  geometry surviving and undo restoring the relation (finding 3).
+- Subtract with the operands raised and lowered past each other, so the reading
+  follows the occlusion order rather than creation order, plus the reversed
+  argument (finding 5). Bake tests for a nested composite's group tree, a
+  subtract's ring order, a circle's closed polyline and an arc's open one
+  (finding 8).
+- A conflict needing two simultaneous suppressions, pinned as empty and
+  unattributed (finding 6). The angle residual against the solver in both
+  forms (finding 7).
+- A tagged constraint removed on its own — refused bare, shrinking through
+  deletionStep — and a cascade taking geometry and a named relation together in
+  one shrink (finding 10).
+
+What is still missing:
+
+- The movement-free property runs on fixed fixtures; PLANS stage 5 asked for
+  it over random solved documents. The angle residual is now checked against
+  the solver directly, which is what would have caught finding 7, but the
+  general property the plan asked for is not there.
+- Round-trip property tests never remove a layer or style after references
+  exist (finding 9) — the save-then-refuse state is reachable through the
+  command layer the property tests drive.

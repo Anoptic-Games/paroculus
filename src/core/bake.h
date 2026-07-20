@@ -26,12 +26,26 @@
 
 namespace paroculus {
 
+inline constexpr size_t NO_BAKE_GROUP = static_cast<size_t>(-1);
+
+// One node of the boolean tree, flattened but not evaluated.
+//
+// A composite's operands may be composites themselves, and Intersect(A,
+// Union(C, D)) is not A∩C∩D — so the nesting has to survive the bake or the
+// exporter resolves a different picture from the one on screen. One group per
+// composite, `parent` naming the group it is itself an operand of, and a root
+// group per top-level region. The tree is the whole of what is carried;
+// resolving it is the polygon boolean that belongs to the exporter.
+struct BakedGroup {
+    CompositeOp op = CompositeOp::Outline;
+    size_t parent = NO_BAKE_GROUP;
+};
+
 // One filled ring, in document coordinates, closed implicitly.
 //
-// `combine` is how this ring meets the ones before it within the same bake
-// group: Outline for a fill in its own right, and the composite's operation for
-// each operand of a composite. Carried rather than resolved because resolving it
-// is the polygon boolean that belongs to the exporter.
+// `group` indexes Bake::groups, and `combine` is that group's operation —
+// Outline for a fill in its own right. Rings appear in operand order within
+// their group, which is what makes a subtract's minuend the first of them.
 struct BakedFill {
     std::vector<Point> ring;
     CompositeOp combine = CompositeOp::Outline;
@@ -41,6 +55,9 @@ struct BakedFill {
     bool punch = false;
 };
 
+// One straight run of a stroke. Curves arrive here already tessellated: an
+// export has no zoom to tessellate against, so the step is fixed and the
+// polyline is what the format receives whatever it is.
 struct BakedStroke {
     Point from;
     Point to;
@@ -57,6 +74,7 @@ struct BakedStroke {
 struct Bake {
     std::vector<BakedFill> fills;
     std::vector<BakedStroke> strokes;
+    std::vector<BakedGroup> groups;
 
     size_t constraintsDropped = 0;
     size_t parametersDropped = 0;

@@ -24,7 +24,13 @@ constexpr ActionParameter IMPOSE_PARAMETERS[] = {{"assignment", false}, {"value"
 
 bool always(const ActionContext &, const Action &) { return true; }
 
-bool haveSelection(const ActionContext &c, const Action &) { return !c.signature.empty(); }
+// Delete applies to anything selected, geometry or relation. The signature is a
+// projection of the geometry alone, so reading it here dimmed Delete for exactly
+// the selection the conflict walk produces — a set of relations and nothing else
+// — and made the gesture the walk exists to enable a silent no-op.
+bool haveDeletable(const ActionContext &c, const Action &) {
+    return !c.signature.empty() || c.selectedConstraints > 0;
+}
 bool canUndo(const ActionContext &c, const Action &) { return c.canUndo; }
 bool canRedo(const ActionContext &c, const Action &) { return c.canRedo; }
 bool haveOffers(const ActionContext &c, const Action &) { return c.offers > 0; }
@@ -154,9 +160,14 @@ bool doMoveLayer(Session &session, const Action &, const ActionArguments &a) {
     return session.moveLayer(session.targetLayer(a.value("layer")), Delta);
 }
 
+// `order` is subtract's alone: 0 cuts the upper operand out of the lower one,
+// which is what the picture looks like, and 1 says the other reading. Union and
+// intersect ignore it because for them there is no question — the same operands
+// in the other order are the same area.
 template <CompositeOp Op>
-bool doCompose(Session &session, const Action &, const ActionArguments &) {
-    return session.composeRegions(Op);
+bool doCompose(Session &session, const Action &, const ActionArguments &a) {
+    const std::optional<double> order = a.value("order");
+    return session.composeRegions(Op, Op == CompositeOp::Subtract && order && *order != 0.0);
 }
 
 bool doLift(Session &session, const Action &, const ActionArguments &) {
@@ -188,6 +199,10 @@ bool doBake(Session &session, const Action &, const ActionArguments &) {
 }
 
 constexpr ActionParameter LAYER_PARAMETERS[] = {{"layer", false}};
+
+// Which way round a subtract reads its operands. Absent is occlusion order,
+// lowest first; 1 is the other reading.
+constexpr ActionParameter REGION_ORDER_PARAMETERS[] = {{"order", false}};
 
 // A layer action applies when there is a layer to act on and acting would
 // change something. An action that says it applies and then declines is a
@@ -275,7 +290,7 @@ const Catalogue &catalogue() {
             {"tool.circle", "Circle", "c", {}, always, activateTool<ToolKind::Circle>},
             {"tool.arc", "Arc", "a", {}, always, activateTool<ToolKind::Arc>},
             {"tool.rectangle", "Rectangle", "r", {}, always, activateTool<ToolKind::Rectangle>},
-            {"edit.delete", "Delete", "del", {}, haveSelection, doDelete},
+            {"edit.delete", "Delete", "del", {}, haveDeletable, doDelete},
             {"edit.undo", "Undo", "z", {}, canUndo, doUndo},
             {"edit.redo", "Redo", "shift+z", {}, canRedo, doRedo},
             // alt, not a bare digit: a bare digit is a digit. See resolveKey.
@@ -324,7 +339,12 @@ const Catalogue &catalogue() {
             {"region.union", "Union", {}, {}, haveTwoRegions, doCompose<CompositeOp::Union>},
             {"region.intersect", "Intersect", {}, {}, haveTwoRegions,
              doCompose<CompositeOp::Intersect>},
-            {"region.subtract", "Subtract", {}, {}, haveTwoRegions,
+            // The one boolean with a question in it: which region is being cut
+            // and which is doing the cutting. Optional because it has a visible
+            // default — the upper out of the lower — and present at all because
+            // a default is not an answer, it is a guess the surface has to be
+            // able to overrule.
+            {"region.subtract", "Subtract", {}, REGION_ORDER_PARAMETERS, haveTwoRegions,
              doCompose<CompositeOp::Subtract>},
             {"region.lift", "Lift out", {}, {}, haveComposite, doLift},
             {"region.punch", "Punch through", {}, {}, haveRegions, doPunch},

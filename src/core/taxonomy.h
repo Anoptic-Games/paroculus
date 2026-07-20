@@ -144,9 +144,12 @@ struct ConstraintKindInfo {
     int32_t solverTypeReferenced;
 
     // How many alternative forms the kind has beyond its default one. Zero for
-    // every kind but tangency, which holds at one end of an arc or the other
-    // and cannot say which from its operands. The solver reads the choice as
-    // Slvs_Constraint.other.
+    // every kind whose operands say everything about it, and one for the three
+    // that leave a choice the operands cannot express: tangency holds at one
+    // end of an arc or the other, and an angle — plain or equal — is either the
+    // angle between the directions as drawn or its supplement. The solver reads
+    // the choice as Slvs_Constraint.other and applies it the same way in all
+    // three, by reversing the first direction or picking the far endpoint.
     uint8_t alternatives;
 
     // Whether swapping two operands the kind accepts in either slot changes
@@ -211,11 +214,18 @@ inline constexpr std::array<ConstraintKindInfo, 22> CONSTRAINT_KINDS = {{
      {OperandKind::Segment, OperandKind::Segment}, 0, Invariance::ScaleInvariant, 100025, 1.0},
     {ConstraintKind::Perpendicular, "perpendicular", 2,
      {OperandKind::Segment, OperandKind::Segment}, 0, Invariance::ScaleInvariant, 100026, 1.0},
+    // Two forms, exactly as tangency has: the angle between the segments as
+    // drawn, or its supplement. The solver reads the choice as
+    // Slvs_Constraint.other and applies it by reversing the first direction, so
+    // without a column to say which the supplementary form is not merely unused
+    // but unsayable — and stage 7's rotate, which reverses directions wholesale,
+    // is where a document needs to be able to say it.
     {ConstraintKind::Angle, "angle", 2,
-     {OperandKind::Segment, OperandKind::Segment}, 1, Invariance::ScaleInvariant, 100024, 1.0},
+     {OperandKind::Segment, OperandKind::Segment}, 1, Invariance::ScaleInvariant, 100024, 1.0,
+     0, 0, 1},
     {ConstraintKind::EqualAngle, "equal-angle", 4,
      {OperandKind::Segment, OperandKind::Segment, OperandKind::Segment, OperandKind::Segment},
-     0, Invariance::ScaleInvariant, 100012, 1.0},
+     0, Invariance::ScaleInvariant, 100012, 1.0, 0, 0, 1},
     {ConstraintKind::PointPointDistance, "distance", 2,
      {OperandKind::Point, OperandKind::Point}, 1, Invariance::Absolute, 100001, 1.0},
     {ConstraintKind::PointLineDistance, "point-line-distance", 2,

@@ -120,13 +120,37 @@ std::optional<DragSession> DragSession::begin(const Document &doc, const Topolog
     if(entityInfo(e->kind).ownParamCount == 0) return std::nullopt;
 
     DragSession session;
+
+    // Carried geometry a lock has to refuse, and it is refused a component at a
+    // time.
+    //
+    // The carry writes seeds directly, outside the solve — that is what carried
+    // means — and a locked parameter's seed is its known value, so writing one
+    // would not ask for a move, it would perform one and commit it. seedTarget
+    // refuses exactly this write for the grab, and the carry has to refuse it
+    // the same way or a locked layer is pinned against the hand and not against
+    // a group. Whole components rather than the locked spans alone: translating
+    // part of a component through its own constraints is the shear the
+    // whole-component rule exists to prevent, so a component holding any lock
+    // stays where it is entirely, and the drag saturates against it.
+    auto componentIsLocked = [&](EntityId member) {
+        const ComponentId id = topology.componentOf(member);
+        if(id == NO_COMPONENT) return isLocked(doc, member);
+        for(EntityId other : topology.membersOf(id)) {
+            if(isLocked(doc, other)) return true;
+        }
+        return false;
+    };
+    std::vector<EntityId> movable;
+    for(EntityId id : carried) {
+        if(id != grabbed && !componentIsLocked(id)) movable.push_back(id);
+    }
+
     // The grabbed component, plus the components of anything carried. Carried
     // geometry is usually unconnected — that is what makes it need carrying —
     // so it has to be in the context to be moved and committed at all.
     std::vector<EntityId> anchors{grabbed};
-    for(EntityId id : carried) {
-        if(id != grabbed) anchors.push_back(id);
-    }
+    for(EntityId id : movable) anchors.push_back(id);
     session.context_ = anchors.size() > 1
                            ? SolveContext::forComponents(doc, topology, anchors)
                            : SolveContext::forComponent(doc, topology, grabbed);
@@ -143,7 +167,7 @@ std::optional<DragSession> DragSession::begin(const Document &doc, const Topolog
     // on top of the solver would fight it.
     for(const SeedSpan &span : session.context_.params()) {
         if(topology.sameComponent(span.entity, grabbed)) continue;
-        const bool withCarried = std::any_of(carried.begin(), carried.end(), [&](EntityId id) {
+        const bool withCarried = std::any_of(movable.begin(), movable.end(), [&](EntityId id) {
             return topology.sameComponent(span.entity, id);
         });
         if(withCarried) session.carriedOrigin_.push_back(span);

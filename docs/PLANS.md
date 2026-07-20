@@ -703,6 +703,36 @@ indicator; lock a layer and feel geometry pin.
 Exit: composition model exercised by corpus; no destructive boolean exists
 anywhere in the document model.
 
+Amended after the stage 5–6 review, docs/REVIEW.md, whose correctness findings
+are all closed. Four of them changed what this stage says it built.
+
+The bake returns a tree, not a flat list of tagged rings. One group per
+composite naming the group it is an operand of, because Intersect(A, Union(C,D))
+is not A∩C∩D and a flat list said it was. Rings arrive in operand order, which
+is the only thing marking a subtract's minuend, and curves arrive tessellated at
+a fixed angular step — circles and arcs were stroked on every screen frame and
+absent from the export with nothing counting them, which broke the loss report's
+own contract. Resolving the tree is still the exporter's, in stage 8.
+
+Which region a subtract subtracts from is decided by occlusion order rather than
+by creation order, and region.subtract takes an argument for the other reading.
+The plan had booleans as records over live operands and said nothing about
+operand order, which left it to whichever region was made first — a role
+ambiguity of exactly the kind PRINCIPLES sends to the surface, on a kind where
+the wrong reading is far more visible than length-ratio's. The default now
+matches what the user is looking at; a surface that asks is still to build.
+
+A fill takes the layer of the outline that defines it. Stage 5 deferred the
+choice here and this stage landed layers without coming back, so every fill went
+to the lowest-ID layer record and could be split from its own geometry by hiding
+a layer.
+
+Relations delete through the same selection machinery geometry does, and a
+constraint removal shrinks the tags built on it exactly as an entity removal
+shrinks the regions bounded by it. That is the model half of stage 7's "tag
+dissolution when defining constraints break", landed early because finding 3 —
+a walked conflict set that could not be deleted — needed the same cascade.
+
 ### Stage 7 — structure operations
 
 Goal: the operations that treat constrained structure as structure —

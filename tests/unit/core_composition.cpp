@@ -11,9 +11,12 @@
 // arrangement round-trips through the file.
 #include <doctest/doctest.h>
 
+#include <cmath>
+
 #include "core/bake.h"
 #include "core/composition.h"
 #include "core/persist.h"
+#include "core/topology.h"
 #include "support/build.h"
 
 using namespace paroculus;
@@ -137,6 +140,49 @@ TEST_CASE("closure is topological, never visual") {
     const ConstraintId first = doc.constraints().records().front().id;
     REQUIRE(doc.apply(RemoveRecord<ConstraintRecord>{first}).ok());
     CHECK(regionState(doc, region) == RegionState::Broken);
+}
+
+TEST_CASE("a joint that closes through a point outside the ring is one joint") {
+    // The T-junction snap chaining produces whenever a click lands on a spur's
+    // endpoint rather than on the corner: the two boundary ends are each
+    // coincident with that spur point and only transitively with each other.
+    //
+    // The document must have one answer about that. findBoundaryCycle walks the
+    // whole coincidence partition and calls it closed, so make-solid accepts it;
+    // a ring walk that united only coincidences between the ring's own endpoints
+    // called it open, and the fill the user had just been given rendered
+    // immediately in the broken state. Restricting a transitive closure is not
+    // the closure of a restriction.
+    Document doc;
+    const EntityId a0 = addPoint(doc, 0.0, 0.0);
+    const EntityId a1 = addPoint(doc, 10.0, 0.0);
+    const EntityId b0 = addPoint(doc, 10.0, 0.0);
+    const EntityId b1 = addPoint(doc, 0.0, 10.0);
+    const EntityId c0 = addPoint(doc, 0.0, 10.0);
+    const EntityId c1 = addPoint(doc, 0.0, 0.0);
+    const std::vector<EntityId> edges = {addSegment(doc, a0, a1), addSegment(doc, b0, b1),
+                                         addSegment(doc, c0, c1)};
+
+    // Two corners join directly; the third joins through a spur's endpoint,
+    // which is on no boundary edge.
+    addConstraint(doc, ConstraintKind::Coincident, {a1, b0});
+    addConstraint(doc, ConstraintKind::Coincident, {b1, c0});
+    const EntityId spur = addPoint(doc, 0.0, 0.0);
+    addSegment(doc, spur, addPoint(doc, -5.0, -5.0));
+    addConstraint(doc, ConstraintKind::Coincident, {c1, spur});
+    addConstraint(doc, ConstraintKind::Coincident, {spur, a0});
+
+    const RegionId region = addOutline(doc, edges);
+    const Topology topology(doc);
+
+    // The two definitions of closed, asked side by side. Neither is allowed to
+    // be the only one that says yes.
+    CHECK(findBoundaryCycle(doc, topology, edges).has_value());
+    const std::optional<std::vector<EntityId>> ring =
+        boundaryRing(doc, *doc.regions().find(region));
+    REQUIRE(ring);
+    CHECK(ring->size() == 3);
+    CHECK(regionState(doc, region) == RegionState::Whole);
 }
 
 TEST_CASE("two edges enclose nothing") {
@@ -317,6 +363,99 @@ TEST_CASE("the bake flattens and reports what it cost") {
     // says so rather than the bake saying nothing.
     CHECK(bake.constraintsDropped == doc.constraints().size());
     CHECK(bake.constraintsDropped > 0);
+}
+
+TEST_CASE("the bake keeps the nesting it flattens") {
+    // Intersect(A, Union(C, D)) is not A∩C∩D. Tagging every descendant ring with
+    // the top composite's operation said it was, and the exporter would have
+    // consumed that as truth — so the tree survives as groups naming the group
+    // they are an operand of, and the rings arrive in operand order.
+    Document doc;
+    Triangle a(doc, 1.0), c(doc, 2.0), d(doc, 3.0);
+    const RegionId ra = addOutline(doc, a.edges);
+    const RegionId rc = addOutline(doc, c.edges);
+    const RegionId rd = addOutline(doc, d.edges);
+
+    RegionRecord inner;
+    inner.op = CompositeOp::Union;
+    inner.operands = {rc, rd};
+    const CommandResult innerResult = doc.apply(AddRecord<RegionRecord>{inner});
+    REQUIRE(innerResult.ok());
+
+    RegionRecord outer;
+    outer.op = CompositeOp::Intersect;
+    outer.operands = {ra, RegionId(innerResult.allocated)};
+    REQUIRE(doc.apply(AddRecord<RegionRecord>{outer}).ok());
+
+    const Bake bake = bakeForExport(doc, Pose(doc));
+    REQUIRE(bake.fills.size() == 3);
+    // A meets the union; C and D meet each other.
+    CHECK(bake.fills[0].combine == CompositeOp::Intersect);
+    CHECK(bake.fills[1].combine == CompositeOp::Union);
+    CHECK(bake.fills[2].combine == CompositeOp::Union);
+    CHECK(bake.fills[1].group == bake.fills[2].group);
+    CHECK(bake.fills[1].group != bake.fills[0].group);
+    // And the union is an operand of the intersect rather than a sibling of A.
+    CHECK(bake.groups[bake.fills[0].group].parent == NO_BAKE_GROUP);
+    CHECK(bake.groups[bake.fills[1].group].parent == bake.fills[0].group);
+}
+
+TEST_CASE("a subtract bakes its minuend first") {
+    // Nothing in the list says which ring is being cut except its position, so
+    // popping operands off a stack in reverse put the subtrahend first and left
+    // the exporter to cut the plate out of the hole.
+    Document doc;
+    Triangle plate(doc, 3.0);
+    Triangle hole(doc, 1.0);
+    const RegionId minuend = addOutline(doc, plate.edges);
+    const RegionId subtrahend = addOutline(doc, hole.edges);
+    RegionRecord composite;
+    composite.op = CompositeOp::Subtract;
+    composite.operands = {minuend, subtrahend};
+    REQUIRE(doc.apply(AddRecord<RegionRecord>{composite}).ok());
+
+    const Bake bake = bakeForExport(doc, Pose(doc));
+    REQUIRE(bake.fills.size() == 2);
+    // The plate is the larger triangle, so its ring reaches further out.
+    auto reach = [](const BakedFill &f) {
+        double out = 0.0;
+        for(const Point &p : f.ring) out = std::max(out, std::hypot(p.x, p.y));
+        return out;
+    };
+    CHECK(reach(bake.fills[0]) > reach(bake.fills[1]));
+}
+
+TEST_CASE("the bake tessellates the curves it cannot draw straight") {
+    // Circles and arcs are stroked on every screen frame and were absent from
+    // the export entirely, with no counter reporting them — a silent loss in the
+    // one projection whose whole contract is to say what it destroyed.
+    Document doc;
+    const EntityId centre = addPoint(doc, 0.0, 0.0);
+    addCircle(doc, centre, 5.0);
+
+    const Bake bake = bakeForExport(doc, Pose(doc));
+    REQUIRE(bake.strokes.size() > 3);
+    for(const BakedStroke &s : bake.strokes) {
+        CHECK(std::hypot(s.from.x, s.from.y) == doctest::Approx(5.0));
+        CHECK(std::hypot(s.to.x, s.to.y) == doctest::Approx(5.0));
+    }
+    // A circle's polyline closes on itself; nothing downstream has to guess.
+    CHECK(bake.strokes.front().from.x == doctest::Approx(bake.strokes.back().to.x));
+    CHECK(bake.strokes.front().from.y == doctest::Approx(bake.strokes.back().to.y));
+
+    // And an arc contributes its sweep and no more: it is open, so the ends
+    // stay apart.
+    Document arcDoc;
+    const EntityId ac = addPoint(arcDoc, 0.0, 0.0);
+    const EntityId as = addPoint(arcDoc, 5.0, 0.0);
+    const EntityId ae = addPoint(arcDoc, 0.0, 5.0);
+    addArc(arcDoc, ac, as, ae);
+    const Bake arcBake = bakeForExport(arcDoc, Pose(arcDoc));
+    REQUIRE(arcBake.strokes.size() > 3);
+    CHECK(arcBake.strokes.front().from.x == doctest::Approx(5.0));
+    CHECK(arcBake.strokes.back().to.y == doctest::Approx(5.0));
+    // A quarter turn, so a quarter of the circle's runs.
+    CHECK(arcBake.strokes.size() < bake.strokes.size());
 }
 
 TEST_CASE("a hidden layer is left out of the bake, a locked one is not") {

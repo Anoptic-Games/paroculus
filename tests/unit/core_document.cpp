@@ -640,6 +640,84 @@ TEST_CASE("deleting a member shrinks its group rather than dissolving it") {
     CHECK(after->members == std::vector<EntityId>{b, c});
 }
 
+TEST_CASE("a relation a tag is built on shrinks the tag rather than dangling") {
+    // The model gave three answers about one state: tagState called a dangling
+    // tag→constraint reference broken-but-legal, validate refused it, and the
+    // loader refused the file it came from — a document that saves and will not
+    // open. Nothing creates tags yet, and stage 7's rectangle does; its defining
+    // relations are exactly what decline and delete remove.
+    Document doc;
+    const EntityId a = addPoint(doc, 0.0, 0.0);
+    const EntityId b = addPoint(doc, 10.0, 0.0);
+    const EntityId edge = addSegment(doc, a, b);
+    const ConstraintId level = addConstraint(doc, ConstraintKind::Horizontal, {edge});
+    const ConstraintId length =
+        addConstraint(doc, ConstraintKind::PointPointDistance, {a, b}, Slot(10.0));
+
+    TagRecord tag;
+    tag.kind = TagKind::Rectangle;
+    tag.entities = {edge};
+    tag.constraints = {level, length};
+    const CommandResult added = doc.apply(AddRecord<TagRecord>{tag});
+    REQUIRE(added.ok());
+    const TagId id(added.allocated);
+
+    // Refused on its own, exactly as an entity removal is, so no path can forget
+    // to shrink.
+    CHECK(doc.apply(RemoveRecord<ConstraintRecord>{level}).error ==
+          CommandError::HasDependents);
+
+    const ConstraintId doomed[] = {level};
+    for(const Command &command : deletionStep(doc, doomed)) REQUIRE(doc.apply(command).ok());
+
+    const TagRecord *after = doc.tags().find(id);
+    REQUIRE(after != nullptr);
+    CHECK(after->constraints == std::vector<ConstraintId>{length});
+    CHECK(after->entities == std::vector<EntityId>{edge});
+    // Broken, because a rectangle is not one relation — and legal, which is what
+    // makes the state one undo restores rather than one the loader refuses.
+    CHECK(doc.validate(*after) == CommandError::None);
+}
+
+TEST_CASE("geometry and relations delete in one cascade") {
+    // A selection reaching both is one gesture, so it is one cascade: a tag
+    // losing a relation to the geometry's own dependents and another to the
+    // user's naming can only be set once, and two passes would each compute
+    // their shrink from the unshrunk record.
+    Document doc;
+    const EntityId a = addPoint(doc, 0.0, 0.0);
+    const EntityId b = addPoint(doc, 10.0, 0.0);
+    const EntityId edge = addSegment(doc, a, b);
+    const ConstraintId level = addConstraint(doc, ConstraintKind::Horizontal, {edge});
+    const ConstraintId length =
+        addConstraint(doc, ConstraintKind::PointPointDistance, {a, b}, Slot(10.0));
+
+    TagRecord tag;
+    tag.kind = TagKind::Rectangle;
+    tag.entities = {edge};
+    tag.constraints = {level, length};
+    const CommandResult added = doc.apply(AddRecord<TagRecord>{tag});
+    REQUIRE(added.ok());
+    const TagId id(added.allocated);
+
+    // Delete the edge and, in the same breath, name a relation that the edge's
+    // own cascade would not have reached.
+    const EntityId geometry[] = {edge};
+    const ConstraintId relations[] = {length};
+    const std::vector<Command> cascade = deletionStep(doc, geometry, relations);
+    size_t shrinks = 0;
+    for(const Command &command : cascade) {
+        if(std::holds_alternative<SetRecord<TagRecord>>(command)) shrinks++;
+    }
+    CHECK(shrinks == 1);
+    for(const Command &command : cascade) REQUIRE(doc.apply(command).ok());
+
+    const TagRecord *after = doc.tags().find(id);
+    REQUIRE(after != nullptr);
+    CHECK(after->constraints.empty());
+    CHECK(after->entities.empty());
+}
+
 TEST_CASE("a group survives losing its last member") {
     // An empty group is a named container the user can still add to. Deciding
     // it has outlived its purpose is their call, and deleting it is an action

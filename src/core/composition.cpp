@@ -1,6 +1,7 @@
 #include "core/composition.h"
 
 #include <algorithm>
+#include <unordered_map>
 
 namespace paroculus {
 
@@ -16,28 +17,35 @@ std::optional<std::pair<EntityId, EntityId>> endsOf(const Document &doc, EntityI
     return std::pair<EntityId, EntityId>{e->points[0], e->points[1]};
 }
 
-// Coincidence classes over one boundary's endpoints and nothing else.
+// Coincidence classes over every point any Coincident constraint names.
 //
-// A local union-find rather than the document's Topology, because the question
-// is small — at most two points per edge — and asking it this way keeps the ring
-// walk usable from render, which may not include topology.h. The answer is the
-// same partition restricted to these points.
+// The whole graph and not the boundary's own endpoints, because restricting a
+// transitive closure is not the closure of a restriction. Two boundary
+// endpoints joined through a point outside the ring — a T-junction, which snap
+// chaining produces whenever a click lands on a spur's endpoint rather than on
+// a corner — are one joint to the coincidence partition and would be two to a
+// union-find that only ever saw the ring. That is the disagreement between
+// findBoundaryCycle and this walk that made a loop make-solid accepts render
+// immediately as broken.
+//
+// A local union-find rather than the document's Topology, because this is a
+// smaller question — Coincident alone, no ownership edges — and asking it this
+// way keeps the ring walk usable from render, which may not include topology.h.
+// It answers the same as Topology::coincident over the points it is asked
+// about, and the coincidence corpus pins that.
 class JointClasses {
 public:
-    JointClasses(const Document &doc, const std::vector<EntityId> &points) : points_(points) {
-        parent_.resize(points_.size());
-        for(size_t i = 0; i < parent_.size(); i++) parent_[i] = i;
+    explicit JointClasses(const Document &doc) {
         for(const ConstraintRecord &c : doc.constraints().records()) {
             if(c.kind != ConstraintKind::Coincident) continue;
-            const std::optional<size_t> a = indexOf(c.operands[0]);
-            const std::optional<size_t> b = indexOf(c.operands[1]);
-            if(a && b) unite(*a, *b);
+            unite(intern(c.operands[0]), intern(c.operands[1]));
         }
     }
 
     // Whether two endpoints are the same joint. A point is trivially itself,
     // which is what makes a shared point and a coincidence-joined pair the same
-    // thing to the walk — as they are to the user.
+    // thing to the walk — as they are to the user. A point no coincidence names
+    // is in no class but its own.
     bool same(EntityId a, EntityId b) {
         if(a == b) return true;
         const std::optional<size_t> x = indexOf(a);
@@ -48,9 +56,18 @@ public:
 
 private:
     std::optional<size_t> indexOf(EntityId id) const {
-        const auto it = std::find(points_.begin(), points_.end(), id);
-        if(it == points_.end()) return std::nullopt;
-        return static_cast<size_t>(it - points_.begin());
+        const auto it = index_.find(id);
+        if(it == index_.end()) return std::nullopt;
+        return it->second;
+    }
+
+    // The dense slot for a point, creating one on first sight. Only lookups
+    // read the map, so nothing here depends on its iteration order; which pairs
+    // are united follows the constraint table's ID order.
+    size_t intern(EntityId id) {
+        const auto [it, fresh] = index_.emplace(id, parent_.size());
+        if(fresh) parent_.push_back(it->second);
+        return it->second;
     }
 
     size_t find(size_t i) {
@@ -63,7 +80,7 @@ private:
 
     void unite(size_t a, size_t b) { parent_[find(a)] = find(b); }
 
-    std::vector<EntityId> points_;
+    std::unordered_map<EntityId, size_t> index_;
     std::vector<size_t> parent_;
 };
 
@@ -185,16 +202,13 @@ std::optional<std::vector<EntityId>> boundaryRing(const Document &doc,
 
     std::vector<std::pair<EntityId, EntityId>> ends;
     ends.reserve(region.boundary.size());
-    std::vector<EntityId> points;
     for(EntityId edge : region.boundary) {
         const std::optional<std::pair<EntityId, EntityId>> e = endsOf(doc, edge);
         if(!e) return std::nullopt;
         ends.push_back(*e);
-        points.push_back(e->first);
-        points.push_back(e->second);
     }
 
-    JointClasses joints(doc, points);
+    JointClasses joints(doc);
 
     // Orient the first edge against the last, so the ring closes rather than
     // starting off in whichever direction the record happened to store.

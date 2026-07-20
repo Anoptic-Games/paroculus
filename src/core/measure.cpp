@@ -42,6 +42,19 @@ double degreesBetween(const Eigen::Vector2d &a, const Eigen::Vector2d &b) {
     return std::acos(std::clamp(cosine, -1.0, 1.0)) * DEGREES;
 }
 
+// The angle a record declares, given which of its two forms it names.
+//
+// The default form is the angle between the directions as drawn; the
+// alternative is the supplement, which the solver produces by reversing the
+// first direction before taking the cosine. Two forms rather than a residual
+// that accepts both: a check that accepts what the solver refuses would pass
+// exactly the bug it exists to catch.
+double angleWithAlternative(const Eigen::Vector2d &a, const Eigen::Vector2d &b,
+                            uint8_t alternative) {
+    const double between = degreesBetween(a, b);
+    return alternative == 0 ? between : 180.0 - between;
+}
+
 // The same, folded into [0, 90]: a direction and its reverse are the same
 // direction as far as parallelism is concerned, so an antiparallel pair is
 // parallel and reads zero rather than 180.
@@ -117,7 +130,15 @@ std::optional<double> measure(const Pose &pose, ConstraintKind kind,
 }
 
 std::optional<double> measure(const Pose &pose, const ConstraintRecord &constraint) {
-    return measure(pose, constraint.kind, constraint.operands);
+    const std::optional<double> raw = measure(pose, constraint.kind, constraint.operands);
+    // A record in the supplementary form declares the supplement, so what it
+    // reads has to be the supplement too — a reference measurement showing one
+    // number while the relation drives the other is a readout of a different
+    // constraint.
+    if(raw && constraint.kind == ConstraintKind::Angle && constraint.alternative != 0) {
+        return 180.0 - *raw;
+    }
+    return raw;
 }
 
 std::optional<double> residual(const Pose &pose, const ConstraintRecord &r) {
@@ -188,11 +209,18 @@ std::optional<double> residual(const Pose &pose, const ConstraintRecord &r) {
             const auto a = directionOf(pose, o[0]);
             const auto b = directionOf(pose, o[1]);
             if(!a || !b) return std::nullopt;
-            // The solver constrains the direction cosine, so either the angle
-            // or its supplement satisfies the declaration.
-            const double actual = degreesBetween(*a, *b);
-            return std::min(std::fabs(actual - *declared),
-                            std::fabs(180.0 - actual - *declared));
+            // One angle, not either of a pair. The solver's equation is
+            // dircos(a, b) − cos(declared), and cos(180 − θ) = −cos(θ), so the
+            // supplement does not satisfy it: accepting it here made the
+            // residual more permissive than the solver, which is the one
+            // direction a geometric check must never be — the movement-free
+            // property and the semantics suite would both pass a translation
+            // that drove a segment to the wrong one of the two.
+            //
+            // The supplementary form is the record's `alternative`, which the
+            // solver reads as Slvs_Constraint.other and applies by reversing the
+            // first direction.
+            return std::fabs(angleWithAlternative(*a, *b, r.alternative) - *declared);
         }
         case ConstraintKind::EqualAngle: {
             const auto a = directionOf(pose, o[0]);
@@ -200,7 +228,10 @@ std::optional<double> residual(const Pose &pose, const ConstraintRecord &r) {
             const auto c = directionOf(pose, o[2]);
             const auto d = directionOf(pose, o[3]);
             if(!a || !b || !c || !d) return std::nullopt;
-            return std::fabs(degreesBetween(*a, *b) - degreesBetween(*c, *d));
+            // `alternative` reverses the first direction here too, so the
+            // supplement of the first angle is what equals the second.
+            return std::fabs(angleWithAlternative(*a, *b, r.alternative) -
+                             degreesBetween(*c, *d));
         }
         case ConstraintKind::PointPointDistance:
         case ConstraintKind::PointLineDistance:

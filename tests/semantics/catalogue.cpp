@@ -16,6 +16,8 @@
 #include <functional>
 #include <set>
 
+#include "core/measure.h"
+#include "core/pose.h"
 #include "core/topology.h"
 #include "solve/diagnose.h"
 #include "solve/solve.h"
@@ -583,6 +585,101 @@ TEST_CASE("a candidate that cannot hold is reported with its conflicting set") {
     for(ConstraintId id : check.conflicting) {
         CHECK(id.valid());
         CHECK(id != candidate.id);
+    }
+}
+
+TEST_CASE("a conflict no single suppression rescues is not attributed") {
+    // The walk suppresses one relation at a time and does not enumerate pairs,
+    // so a conflict needing two suppressions comes back with nothing. Reporting
+    // that as attributed is the "empty walkable set read as nothing conflicts"
+    // lie the header warns a surface cannot see through — and stage 7's compound
+    // relations make multi-constraint conflicts routine.
+    Document doc;
+    const EntityId a0 = addPoint(doc, 0.0, 0.0);
+    const EntityId a1 = addPoint(doc, 10.0, 1.0);
+    const EntityId b0 = addPoint(doc, 0.0, 20.0);
+    const EntityId b1 = addPoint(doc, 10.0, 21.0);
+    const EntityId first = addSegment(doc, a0, a1);
+    const EntityId second = addSegment(doc, b0, b1);
+    addConstraint(doc, ConstraintKind::Horizontal, {first});
+    addConstraint(doc, ConstraintKind::Horizontal, {second});
+    addConstraint(doc, ConstraintKind::Parallel, {first, second});
+    Topology topology(doc);
+
+    // Perpendicular cannot hold: dropping either horizontal leaves the other
+    // plus the parallel still forcing both segments flat, and dropping the
+    // parallel leaves both horizontals doing it directly. No one relation is
+    // the answer.
+    ConstraintRecord candidate;
+    candidate.kind = ConstraintKind::Perpendicular;
+    candidate.operands = {first, second, EntityId(), EntityId()};
+
+    const CandidateCheck check = checkCandidate(doc, topology, candidate);
+    CHECK(check.verdict == CandidateVerdict::Inconsistent);
+    CHECK(check.conflicting.empty());
+    CHECK_FALSE(check.attributed);
+}
+
+TEST_CASE("the angle residual is exactly as strict as the solver") {
+    // The residual accepted the angle or its supplement, justified by the solver
+    // constraining a direction cosine — but cos(180 − θ) = −cos(θ), so the
+    // supplement satisfies nothing unless the record names the other form. A
+    // geometric check more permissive than the solver passes exactly the
+    // translation bug it exists to catch.
+    Document doc;
+    const EntityId o = addPoint(doc, 0.0, 0.0);
+    const EntityId along = addPoint(doc, 10.0, 0.0);
+    // 120 degrees round from the first.
+    const EntityId across = addPoint(doc, -5.0, 5.0 * std::sqrt(3.0));
+    const EntityId first = addSegment(doc, o, along);
+    const EntityId second = addSegment(doc, o, across);
+
+    ConstraintRecord r;
+    r.kind = ConstraintKind::Angle;
+    r.operands = {first, second, EntityId(), EntityId()};
+    r.value = Slot(60.0);
+
+    const Pose pose(doc);
+    // The segments are 120 apart and the record says 60. That is a violation of
+    // sixty degrees, not a satisfied constraint wearing its supplement.
+    REQUIRE(residual(pose, r));
+    CHECK(*residual(pose, r) == doctest::Approx(60.0));
+
+    // The supplementary form says the same thing about the same pair and is
+    // satisfied here — which is what makes it a form rather than a second kind.
+    r.alternative = 1;
+    CHECK(*residual(pose, r) == doctest::Approx(0.0));
+
+    // And the solver reads it the same way round. Both ends of the first segment
+    // are pinned, so the declaration is what places the second.
+    for(uint8_t alternative : {uint8_t(0), uint8_t(1)}) {
+        Document held;
+        const EntityId h0 = addPoint(held, 0.0, 0.0);
+        const EntityId h1 = addPoint(held, 10.0, 0.0);
+        const EntityId h2 = addPoint(held, 3.0, 9.0);
+        const EntityId base = addSegment(held, h0, h1);
+        const EntityId swung = addSegment(held, h0, h2);
+        addConstraint(held, ConstraintKind::Pin, {h0});
+        addConstraint(held, ConstraintKind::Pin, {h1});
+        ConstraintRecord declared;
+        declared.kind = ConstraintKind::Angle;
+        declared.operands = {base, swung, EntityId(), EntityId()};
+        declared.value = Slot(60.0);
+        declared.alternative = alternative;
+        REQUIRE(held.apply(AddRecord<ConstraintRecord>{declared}).ok());
+
+        SolveContext context = SolveContext::forWholeDocument(held);
+        REQUIRE(solve(held, context).ok());
+
+        Pose solved(held);
+        solved.overlay(context.params());
+        const ConstraintRecord &landed = held.constraints().records().back();
+        CAPTURE(int(alternative));
+        // Whichever form it names, the residual it is measured by is zero — and
+        // the two forms are genuinely different geometry.
+        CHECK(*residual(solved, landed) == doctest::Approx(0.0).epsilon(1e-6));
+        const double between = *measure(solved, ConstraintKind::Angle, landed.operands);
+        CHECK(between == doctest::Approx(alternative == 0 ? 60.0 : 120.0).epsilon(1e-6));
     }
 }
 

@@ -242,6 +242,33 @@ ParameterDependents dependentsOf(const Document &doc, ParameterId id);
 std::vector<Command> deletionStep(const Document &doc, EntityId id);
 std::vector<Command> deletionStep(const Document &doc, std::span<const EntityId> ids);
 
+// The tags naming `id` among the relations that define them, in ID order.
+//
+// A tag is the one record that names constraints rather than only geometry, so
+// a relation is depended on in its own right and not merely as a consequence of
+// its operands. Removing one while a tag lists it is refused for the same reason
+// an entity removal is: the loader validates tag references, so the state is one
+// the document could save and never read back.
+std::vector<TagId> tagsOver(const Document &doc, ConstraintId id);
+
+// The ordered command sequence that removes relations the user named directly —
+// a selected glyph, a walked conflict set — shrinking the tags that list them
+// first. Apply it as one undo step.
+//
+// A relation deleted on its own is not a degradation of the geometry it binds:
+// the geometry is untouched and only the declaration goes. What can degrade is a
+// tag built on that declaration, and it shrinks exactly as a region does when it
+// loses an edge — keeping what is left, saying so through tagState, and restored
+// whole by one undo because the shrink is a whole-record set.
+std::vector<Command> deletionStep(const Document &doc, std::span<const ConstraintId> ids);
+
+// Geometry and relations in one cascade, which is what a selection reaching both
+// needs. Every shrink is computed over the whole doomed set — the entities'
+// relations and the named ones together — because a tag or region that would
+// lose members to each of two passes can only be set once.
+std::vector<Command> deletionStep(const Document &doc, std::span<const EntityId> entities,
+                                  std::span<const ConstraintId> constraints);
+
 // The composites naming `id` as an operand, in ID order.
 std::vector<RegionId> compositesOver(const Document &doc, RegionId id);
 

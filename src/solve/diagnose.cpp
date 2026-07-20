@@ -104,7 +104,12 @@ std::vector<ConstraintId> walkConflicts(const Document &doc, const SolveContext 
         options.suppressed.push_back(id);
         if(solve(doc, trial, options).ok()) out.push_back(id);
     }
-    attributed = true;
+    // Attributed means the walk found the disagreement, not that it ran. A
+    // conflict no single suppression rescues needs two at once, and the walk does
+    // not enumerate pairs — so it comes back empty, and saying it attributed an
+    // empty set is the "nothing conflicts" lie the header warns a surface cannot
+    // see through.
+    attributed = !out.empty();
     return out;
 }
 

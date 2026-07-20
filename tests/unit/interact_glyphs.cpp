@@ -359,6 +359,47 @@ TEST_CASE("clicking a mark selects the relation it stands for") {
     CHECK_FALSE(doc.constraints().find(horizontal)->driving);
 }
 
+TEST_CASE("a selected relation deletes like any other selection") {
+    // The gesture the conflict walk exists to enable: read the set, delete the
+    // relation that is wrong. deleteSelection built its step from the entity
+    // items alone and edit.delete read the geometry signature, so Delete on a
+    // constraint-only selection was a silent no-op and the palette dimmed it
+    // exactly while a walked conflict set was selected.
+    Document doc;
+    const EntityId a = paroculus::test::addPoint(doc, -40.0, 0.0);
+    const EntityId b = paroculus::test::addPoint(doc, 40.0, 0.0);
+    const EntityId segment = paroculus::test::addSegment(doc, a, b);
+    const ConstraintId horizontal =
+        paroculus::test::addConstraint(doc, ConstraintKind::Horizontal, {segment});
+
+    UndoJournal journal;
+    Session session(doc, journal);
+    Viewport viewport;
+    viewport.view = glyphView();
+    viewport.width = W;
+    viewport.height = H;
+    session.setViewport(viewport);
+
+    const std::vector<GlyphMark> marks = session.glyphs();
+    const std::vector<Eigen::Vector2d> places = layOutGlyphs(marks, viewport.view);
+    REQUIRE(!places.empty());
+    session.handle(
+        PointerEvent::at(PointerAction::Press, places.front(), viewport.view, Button::Left));
+    REQUIRE(session.selection().contains(horizontal));
+
+    // Offered, and it acts.
+    REQUIRE(invokeAction(session, "edit.delete"));
+    CHECK_FALSE(doc.constraints().contains(horizontal));
+    // The geometry the relation bound is untouched: only the declaration went.
+    CHECK(doc.entities().contains(segment));
+    CHECK(session.presentation().deletedRelations == 1);
+    CHECK(session.presentation().deletedEntities == 0);
+
+    // And it is one undoable step like every other edit.
+    session.handle(Key::Undo);
+    CHECK(doc.constraints().contains(horizontal));
+}
+
 TEST_CASE("a mark does not swallow the press that starts a drag") {
     // Adorners sit above geometry in the priority policy, but a mark sits a few
     // pixels off the vertex it annotates — well inside that vertex's own hit

@@ -360,7 +360,14 @@ public:
     // constrained to each other — the hole stays concentric with the plate
     // because that is an ordinary coincidence between two outlines that happen
     // to be operands. Destructive path booleans exist nowhere in this model.
-    bool composeRegions(CompositeOp op);
+    //
+    // Operands are taken in occlusion order, lowest first, so a subtract cuts
+    // the upper region out of the lower one by default and `reversed` says the
+    // other reading. Which way round is a real question only subtract can ask —
+    // union and intersect mean the same thing either way — and it is answered by
+    // an argument on the action rather than by whichever region happened to be
+    // created first.
+    bool composeRegions(CompositeOp op, bool reversed = false);
 
     // Dismantles the selected composites, restoring their operands to view. A
     // real inverse, because nothing was consumed to make one.

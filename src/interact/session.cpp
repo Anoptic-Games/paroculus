@@ -182,10 +182,13 @@ void Session::refresh() {
     // rather than leaving a stale number on screen. Summed over what solved:
     // a component that did not has no degrees of freedom worth reporting, and
     // the status is what says so.
-    if(components > 0) {
-        presentation_.dof = solvedAnything ? dof : -1;
-        presentation_.status = worst;
-    }
+    //
+    // Unguarded by the component count: an emptied document has nothing to
+    // solve, and freezing the last numbers on screen would report degrees of
+    // freedom for geometry the user just deleted. Nothing has no freedom and
+    // nothing is wrong with it.
+    presentation_.dof = components == 0 ? 0 : (solvedAnything ? dof : -1);
+    presentation_.status = worst;
 
     // Recomputed rather than accumulated: a region is broken because of what it
     // is now, and one that was mended by an undo has to stop saying so.
@@ -454,9 +457,12 @@ void Session::declineInference(size_t index) {
     if(!doc_->constraints().contains(id)) return;
 
     // Its own step, so the decline is itself undoable and the placement it came
-    // from stays intact.
-    if(journal_->applyStep(*doc_, "decline", RemoveRecord<ConstraintRecord>{id}) ==
-       CommandError::None) {
+    // from stays intact. Through deletionStep because a declined relation may be
+    // one a tag was built on — a rectangle's squaring relations are exactly what
+    // decline removes — and the tag shrinks rather than being left naming a
+    // record that is gone.
+    const ConstraintId one[] = {id};
+    if(journal_->applyStep(*doc_, "decline", deletionStep(*doc_, one)) == CommandError::None) {
         presentation_.inferred.erase(presentation_.inferred.begin() +
                                      static_cast<std::ptrdiff_t>(index));
         refresh();
@@ -1199,14 +1205,29 @@ void Session::refreshSelectionOffers() {
     refreshLoopOffers(selection_.items().empty() ? EntityId() : selection_.items().front());
 }
 
-// The region a boundary becomes. Style and layer come from whatever the
-// document already has, because stage 5 fills on one layer with a minimal
-// even-odd rule and choosing among several is stage 6's business.
+// The region a boundary becomes.
+//
+// The layer is the boundary's own, which is the only answer that keeps a fill
+// and the outline defining it on the same layer — so hiding or locking that
+// layer takes both, and the z-order the fill competes in is the one its geometry
+// is drawn on. Taking the oldest layer record instead put every fill on the base
+// layer whatever the user had drawn on, and the corpus could not see it because
+// every corpus fill happened before any layer existed. The first edge's layer
+// when they disagree: nothing stops a boundary crossing layers, and a fill has
+// to be on exactly one.
+//
+// No style. A fill nobody styled reads as the outline it belongs to, which is
+// what render draws for a null style; inheriting the lowest-ID style record
+// meant the fill picked up a stroke style that was never about it.
 static RegionRecord regionOver(const Document &doc, std::vector<EntityId> boundary) {
     RegionRecord r;
     r.boundary = std::move(boundary);
-    if(!doc.styles().records().empty()) r.style = doc.styles().records().front().id;
-    if(!doc.layers().records().empty()) r.layer = doc.layers().records().front().id;
+    for(EntityId edge : r.boundary) {
+        if(const EntityRecord *e = doc.entities().find(edge)) {
+            r.layer = e->layer;
+            break;
+        }
+    }
     return r;
 }
 
@@ -1285,7 +1306,14 @@ void Session::deleteSelection() {
     // entity. Two selected edges of the same filled loop would otherwise
     // produce two shrinks of that region, each dropping a different edge, and
     // one of them would have to win — the wrong answer whichever it is.
-    std::vector<Command> step = deletionStep(*doc_, selection_.items());
+    //
+    // Relations are in that selection on the same terms geometry is. They are
+    // selected through their glyphs and a walked conflict set is an ordinary
+    // selection, so the gesture the conflict walk exists to enable — read the
+    // set, delete the one that is wrong — is Delete on a constraint-only
+    // selection, and it goes through the same cascade rather than a second path.
+    std::vector<Command> step =
+        deletionStep(*doc_, selection_.items(), selection_.constraints());
     if(step.empty()) return;
 
     // Counts, not a confirmation dialog. The user is told what went, after it
@@ -1483,24 +1511,48 @@ bool Session::moveLayer(LayerId layer, int delta) {
 // on being constrainable to each other — a hole staying concentric with its
 // plate is an ordinary coincidence between two outlines that happen to be
 // operands. What the composite adds is one record saying how they combine.
-bool Session::composeRegions(CompositeOp op) {
-    recordAction(std::string("region.") + compositeOpName(op));
+bool Session::composeRegions(CompositeOp op, bool reversed) {
+    // Subtract records which way round it read the selection, because for it
+    // that is a choice and not a consequence. Union and intersect take the
+    // operands in the same order and say nothing, since neither can tell.
+    if(op == CompositeOp::Subtract) {
+        recordAction("region.subtract", {{"order", reversed ? 1.0 : 0.0}});
+    } else {
+        recordAction(std::string("region.") + compositeOpName(op));
+    }
     if(op == CompositeOp::Outline) return false;
 
-    const std::vector<RegionId> operands = selectedRegions();
+    std::vector<RegionId> operands = selectedRegions();
     if(operands.size() < 2) return false;
+
+    // Operand order is what a subtract subtracts from, so it is decided by what
+    // the user can see: the occlusion order, lowest first, so the default cuts
+    // the upper region out of the lower one — the plate under the disc loses the
+    // disc, which is what the picture looks like. ID order answered this before
+    // and correlates with nothing on screen: it always cut the newer out of the
+    // older, and there was no way to say the other thing. `reversed` is that
+    // other way, and it rides on the action like an imposition's assignment
+    // does. Ties break by ID so the reading is total, exactly as regionOrder's do.
+    std::stable_sort(operands.begin(), operands.end(), [&](RegionId a, RegionId b) {
+        const RegionRecord *ra = doc_->regions().find(a);
+        const RegionRecord *rb = doc_->regions().find(b);
+        if(ra == nullptr || rb == nullptr) return a < b;
+        if(ra->z != rb->z) return ra->z < rb->z;
+        return ra->id < rb->id;
+    });
+    if(reversed) std::reverse(operands.begin(), operands.end());
 
     const RegionRecord *first = doc_->regions().find(operands.front());
     if(first == nullptr) return false;
 
     RegionRecord composite;
     composite.op = op;
-    composite.operands = operands;
+    composite.operands = std::move(operands);
     composite.layer = first->layer;
     composite.style = first->style;
     // On top of what it combines, so the composite is what the user sees where
     // the operands used to be.
-    for(RegionId id : operands) {
+    for(RegionId id : composite.operands) {
         if(const RegionRecord *r = doc_->regions().find(id)) {
             composite.z = std::max(composite.z, r->z);
         }

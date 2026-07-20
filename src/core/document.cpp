@@ -300,6 +300,18 @@ CommandResult Document::apply(const Command &command) {
             } else if constexpr(std::is_same_v<C, AddRecord<ConstraintRecord>>) {
                 return applyAdd(constraints_, c.record, constraintCheck);
             } else if constexpr(std::is_same_v<C, RemoveRecord<ConstraintRecord>>) {
+                // A tag names the relations that define it, so a relation is
+                // depended on in its own right. Refusing here rather than
+                // letting the reference dangle is what keeps the model from
+                // giving three answers about the same state: tagState models a
+                // shrunk tag as broken-but-legal, validate refuses a dangling
+                // reference, and the loader refuses the file — a document that
+                // saves and will not open. The constraint overload of
+                // deletionStep() shrinks the tags first and is how every removal
+                // path expresses itself.
+                if(!tagsOver(*this, c.id).empty()) {
+                    return CommandResult{CommandError::HasDependents, 0};
+                }
                 return applyRemove(constraints_, c.id);
             } else if constexpr(std::is_same_v<C, SetRecord<ConstraintRecord>>) {
                 return applySet(constraints_, c.record, constraintCheck);
@@ -537,6 +549,16 @@ Dependents dependentsOf(const Document &doc, EntityId id) {
     return out;
 }
 
+std::vector<TagId> tagsOver(const Document &doc, ConstraintId id) {
+    std::vector<TagId> out;
+    for(const TagRecord &t : doc.tags().records()) {
+        if(std::find(t.constraints.begin(), t.constraints.end(), id) != t.constraints.end()) {
+            out.push_back(t.id);
+        }
+    }
+    return out;
+}
+
 std::vector<RegionId> compositesOver(const Document &doc, RegionId id) {
     std::vector<RegionId> out;
     for(const RegionRecord &r : doc.regions().records()) {
@@ -634,6 +656,15 @@ std::vector<Command> deletionStep(const Document &doc, EntityId id) {
 }
 
 std::vector<Command> deletionStep(const Document &doc, std::span<const EntityId> ids) {
+    return deletionStep(doc, ids, std::span<const ConstraintId>());
+}
+
+std::vector<Command> deletionStep(const Document &doc, std::span<const ConstraintId> ids) {
+    return deletionStep(doc, std::span<const EntityId>(), ids);
+}
+
+std::vector<Command> deletionStep(const Document &doc, std::span<const EntityId> ids,
+                                  std::span<const ConstraintId> relations) {
     std::vector<Command> out;
     std::vector<EntityId> seenEntities;
     std::vector<ConstraintId> seenConstraints;
@@ -661,6 +692,16 @@ std::vector<Command> deletionStep(const Document &doc, std::span<const EntityId>
         doomed.push_back(victim);
     };
     for(EntityId id : ids) collect(id, collect);
+
+    // The relations the user named, alongside the ones the geometry took with
+    // it. Seeded into the same set rather than removed in a pass of their own,
+    // so a tag listing one of each shrinks once — two passes would each compute
+    // a shrink from the unshrunk record and the later would restore what the
+    // earlier dropped.
+    for(ConstraintId id : relations) {
+        if(doc.constraints().find(id) == nullptr) continue;
+        once(seenConstraints, id);
+    }
 
     // Regions and tags shrink, and the shrinks go first.
     //

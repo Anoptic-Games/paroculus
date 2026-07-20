@@ -321,6 +321,135 @@ TEST_CASE("a group drags together") {
     CHECK(after->y != before->y);
 }
 
+TEST_CASE("a group carries what it can move and leaves a lock where it is") {
+    // A carry writes seeds outside the solve, and a locked parameter's seed is
+    // its known value — so a carry that did not check would not ask for a move,
+    // it would perform one and commit it. seedTarget refuses exactly this write
+    // for the grab; the carry has to refuse it too, or a lock is pinned against
+    // the hand and not against a group.
+    Bench bench;
+    const EntityId pinned = addPoint(bench.doc, 0.0, 80.0);
+    Bar bar(bench.doc);
+    const LayerId frozen = bench.newLayer("frozen");
+    bench.putOn(frozen, {pinned});
+    bench.setLayer(frozen, true, true);
+
+    GroupRecord group;
+    group.name = "pair";
+    group.members = {bar.a, pinned};
+    REQUIRE(bench.doc.apply(AddRecord<GroupRecord>{group}).ok());
+    bench.session->refresh();
+
+    const std::optional<Point> before = bench.session->pose().point(pinned);
+    REQUIRE(before);
+    bench.dragTo(Point{-50.0, 0.0}, Point{-50.0, 40.0});
+
+    const std::optional<Point> after = bench.session->pose().point(pinned);
+    REQUIRE(after);
+    CHECK(after->x == before->x);
+    CHECK(after->y == before->y);
+    // And nothing was committed for it either: the seeds are the seeds.
+    CHECK(bench.doc.entities().find(pinned)->seeds[0] == 0.0);
+    CHECK(bench.doc.entities().find(pinned)->seeds[1] == 80.0);
+}
+
+TEST_CASE("a fill lands on the layer of the outline that defines it") {
+    // Taking the lowest-ID layer record put every fill on whatever layer existed
+    // first, so hiding or locking the layer the outline was drawn on split the
+    // fill from the geometry that defines it and the fill competed for z-order
+    // in the wrong layer's stack. The corpus could not see it because every
+    // corpus fill happens before any layer exists.
+    Bench bench;
+    const LayerId drawn = bench.newLayer("drawn", 3);
+    bench.session->setTool(ToolKind::Line);
+    bench.press(Point{-60.0, -40.0});
+    bench.press(Point{60.0, -40.0});
+    bench.press(Point{60.0, 40.0});
+    bench.press(Point{-60.0, 40.0});
+    bench.press(Point{-59.5, -39.5});
+    bench.session->setTool(ToolKind::Select);
+
+    // Everything the square is made of goes to the named layer.
+    std::vector<EntityId> all;
+    for(const EntityRecord &e : bench.doc.entities().records()) all.push_back(e.id);
+    bench.putOn(drawn, all);
+
+    bench.press(Point{0.0, -40.0});
+    REQUIRE(invokeAction(*bench.session, "region.make-solid"));
+    const RegionId region = bench.session->presentation().filled;
+    REQUIRE(region.valid());
+    CHECK(bench.doc.regions().find(region)->layer == drawn);
+    // And no style it never asked for: a fill nobody styled reads as the outline
+    // it belongs to.
+    CHECK_FALSE(bench.doc.regions().find(region)->style.valid());
+    CHECK(regionOrder(bench.doc, drawn) == std::vector<RegionId>{region});
+    CHECK(regionOrder(bench.doc, LayerId()).empty());
+}
+
+TEST_CASE("subtract cuts the upper region out of the lower one") {
+    // Which region a subtract subtracts from is a role ambiguity in exactly the
+    // sense length-ratio gets a surface for, and it was answered by creation
+    // order — which correlates with nothing the user can see. The occlusion
+    // order does, and the action takes an argument for the other reading.
+    Bench bench;
+
+    auto square = [&](double cx, double cy, double half) {
+        bench.session->setTool(ToolKind::Line);
+        bench.press(Point{cx - half, cy - half});
+        bench.press(Point{cx + half, cy - half});
+        bench.press(Point{cx + half, cy + half});
+        bench.press(Point{cx - half, cy + half});
+        bench.press(Point{cx - half + 0.5, cy - half + 0.5});
+        bench.session->setTool(ToolKind::Select);
+        bench.press(Point{cx, cy - half});
+        REQUIRE(invokeAction(*bench.session, "region.make-solid"));
+        return bench.session->presentation().filled;
+    };
+
+    const RegionId plate = square(0.0, 0.0, 60.0);
+    const RegionId disc = square(200.0, 0.0, 20.0);
+    REQUIRE(plate.valid());
+    REQUIRE(disc.valid());
+
+    // The disc sits above the plate, which is what the user is looking at.
+    RegionRecord raised = *bench.doc.regions().find(disc);
+    raised.z = 4;
+    REQUIRE(bench.doc.apply(SetRecord<RegionRecord>{raised}).ok());
+
+    std::vector<EntityId> both = bench.doc.regions().find(plate)->boundary;
+    for(EntityId e : bench.doc.regions().find(disc)->boundary) both.push_back(e);
+    bench.session->select(both);
+    REQUIRE(invokeAction(*bench.session, "region.subtract"));
+
+    const RegionId cut = bench.session->presentation().composed;
+    REQUIRE(cut.valid());
+    CHECK(bench.doc.regions().find(cut)->operands == std::vector<RegionId>{plate, disc});
+
+    // Put the disc underneath instead and the reading follows what is on screen
+    // rather than which region was drawn first.
+    bench.session->select(both);
+    REQUIRE(invokeAction(*bench.session, "region.lift"));
+    RegionRecord lowered = *bench.doc.regions().find(disc);
+    lowered.z = -4;
+    REQUIRE(bench.doc.apply(SetRecord<RegionRecord>{lowered}).ok());
+    bench.session->select(both);
+    REQUIRE(invokeAction(*bench.session, "region.subtract"));
+    const RegionId second = bench.session->presentation().composed;
+    REQUIRE(second.valid());
+    CHECK(bench.doc.regions().find(second)->operands == std::vector<RegionId>{disc, plate});
+
+    // And the other reading is sayable, which is the half a default cannot be.
+    bench.session->select(both);
+    REQUIRE(invokeAction(*bench.session, "region.lift"));
+    bench.session->select(both);
+    ActionArguments reversed;
+    reversed.set("order", 1.0);
+    REQUIRE(invokeAction(*bench.session, "region.subtract", reversed));
+    const RegionId third = bench.session->presentation().composed;
+    REQUIRE(third.valid());
+    CHECK(bench.doc.regions().find(third)->operands == std::vector<RegionId>{plate, disc});
+}
+
 TEST_CASE("deleting an edge of a filled loop degrades the region, and undo restores it") {
     // The flagship deletion story. The fill is not blocked, not silently
     // discarded, and not left showing an area the document no longer bounds.
