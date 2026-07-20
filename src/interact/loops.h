@@ -18,6 +18,7 @@
 #pragma once
 
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "core/document.h"
@@ -85,6 +86,35 @@ struct HealableLoop {
 std::optional<HealableLoop> healableLoopContaining(const Document &doc,
                                                    const Topology &topology, const Pose &pose,
                                                    EntityId seed, double tolerance);
+
+// Two edges among `seeds` and the runs containing them that cross away from
+// their ends, or nullopt when none do.
+//
+// The seeds are a set rather than one, and that is the whole reason this cannot
+// be a run walk. Crossing edges are precisely the ones that are *not* joined
+// through their endpoints, so a pair the user has selected may sit in two
+// components and a walk from either would never reach the other. Runs are
+// followed as well, so a self-crossing outline drawn as one connected chain is
+// found from any edge of it.
+//
+// The deferred case, named rather than merely refused. An area enclosed by
+// crossing segments is enclosed visually and by nothing the model can point at:
+// the crossing is not a joint, so there is no cycle in the coincidence graph and
+// no boundary to attach a region to. Filling it needs explicit intersection
+// points — a construction point carrying two point-on-line constraints — and a
+// cycle built through them, which is later work.
+//
+// Asked only when neither offer stands, and answered so the surface can say
+// which of the two silences this is: "these edges do not enclose anything" and
+// "these edges enclose something this cannot name yet" are different facts, and
+// PLANS asks for the second to be said rather than left as an absence.
+//
+// Ends that merely touch are not a crossing. Coincident endpoints are how a
+// boundary is built, and a run whose edges meet properly is the ordinary case.
+std::optional<std::pair<EntityId, EntityId>> crossingAmong(const Document &doc,
+                                                           const Topology &topology,
+                                                           const Pose &pose,
+                                                           std::span<const EntityId> seeds);
 
 // The commands that shut a healable loop's gaps, as one undo step.
 //

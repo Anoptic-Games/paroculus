@@ -164,6 +164,16 @@ struct Presentation {
     std::vector<LoopGap> healableGaps;
     double healableWidestGap = 0.0;
 
+    // Two edges that cross away from their ends, when neither offer stands.
+    //
+    // The deferred case named. An area enclosed by crossing segments is
+    // enclosed visually and by nothing the model can point at, so it is refused
+    // — but refusing it with the same silence as "these edges enclose nothing"
+    // tells the user the wrong thing about a drawing that plainly encloses
+    // something. Filling it needs explicit intersection points, which is later
+    // work; saying so is not.
+    std::optional<std::pair<EntityId, EntityId>> crossing;
+
     // The region the last make-solid or heal-and-fill attached. Null when none.
     RegionId filled;
 
@@ -540,6 +550,11 @@ private:
     void beginDrag(EntityId grabbed, Point cursor);
     void updateDrag(Point cursor);
     void endDrag();
+
+    // Abandons a drag without committing it, which is what Esc does to one.
+    // Nothing was applied, so there is nothing to undo: the pose lived in the
+    // drag's context and dropping it puts the geometry back.
+    void cancelDrag();
     void deleteSelection();
 
     Document *doc_;

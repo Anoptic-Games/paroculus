@@ -75,6 +75,7 @@ TEST_CASE("a closed outline becomes a solid without touching the outline") {
 
     const size_t entitiesBefore = d.doc.entities().records().size();
     const size_t relationsBefore = d.doc.constraints().records().size();
+    const std::vector<EntityId> offered = d.session->presentation().closedLoop;
 
     REQUIRE(invokeAction(*d.session, "region.make-solid"));
 
@@ -85,8 +86,15 @@ TEST_CASE("a closed outline becomes a solid without touching the outline") {
     CHECK(d.doc.constraints().records().size() == relationsBefore);
 
     const RegionRecord &region = d.doc.regions().records().front();
-    CHECK(region.boundary == d.session->presentation().closedLoop);
+    CHECK(region.boundary == offered);
     CHECK(d.session->presentation().filled == region.id);
+
+    // And the offer is withdrawn. The loop is still closed, so it stayed lit
+    // and a second press stacked an identical region over the first — doubled
+    // alpha on screen, and an action that looks like it did nothing.
+    CHECK(d.session->presentation().closedLoop.empty());
+    CHECK_FALSE(invokeAction(*d.session, "region.make-solid"));
+    CHECK(d.doc.regions().records().size() == 1);
 }
 
 TEST_CASE("the fill follows the outline because it has no geometry of its own") {
@@ -312,4 +320,22 @@ TEST_CASE("an area enclosed by crossing segments is not a loop") {
     // else.
     CHECK(doc.constraints().records().empty());
     CHECK(session.presentation().healableWidestGap == 0.0);
+
+    // Refused, and said. "These edges enclose nothing" and "these edges enclose
+    // something this cannot name yet" are different facts about a drawing, and
+    // the second one plainly encloses something — so the deferred case is named
+    // rather than left as the same silence as the first.
+    REQUIRE(session.presentation().crossing);
+    CHECK(session.presentation().crossing->first == std::min(first, second));
+    CHECK(session.presentation().crossing->second == std::max(first, second));
+}
+
+TEST_CASE("edges that merely meet at their ends are not crossing") {
+    // A boundary is built out of ends that meet, so a crossing test that
+    // counted them would call every drawn outline the deferred case — and the
+    // message would fire on the one drawing it is least true of.
+    Drawing d;
+    d.drawClosedSquare();
+    REQUIRE(d.session->presentation().closedLoop.size() == 4);
+    CHECK_FALSE(d.session->presentation().crossing);
 }

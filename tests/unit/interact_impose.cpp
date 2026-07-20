@@ -9,9 +9,13 @@
 
 #include <memory>
 
+#include <algorithm>
+#include <string>
+
 #include "core/measure.h"
 #include "core/persist.h"
 #include "interact/impose.h"
+#include "solve/solve.h"
 #include "interact/session.h"
 #include "interact/surface.h"
 #include "support/build.h"
@@ -101,6 +105,124 @@ TEST_CASE("a valued imposition captures what is measured and moves nothing") {
         const std::optional<double> gap = residual(f.session->pose(), *r);
         REQUIRE(gap);
         CHECK(*gap < 1e-6);
+    }
+}
+
+TEST_CASE("property: capturing a measurement on a solved document moves nothing") {
+    // The property PLANS stage 5 asked for over random solved documents rather
+    // than over fixed fixtures. What makes imposition movement-free is that the
+    // value recorded is the value measured, and that is a claim about every
+    // valued kind over every reading of every selection — not about the three
+    // the fixtures happen to cover.
+    //
+    // Valued kinds only. A kind with no value to capture has nothing to be
+    // already-true at and may move geometry; the near-parallel snap-shut is
+    // PRINCIPLES' exception that proves this rule, and it has its own test.
+    constexpr double TOLERANCE = 1e-6;
+
+    for(uint64_t seed = 1; seed <= 15; seed++) {
+        CAPTURE(seed);
+        Rng rng(seed * 2654435761u + 1u);
+
+        Document doc;
+        std::vector<EntityId> pickable;
+        std::vector<EntityId> points;
+        for(int i = 0; i < 6; i++) {
+            points.push_back(addPoint(doc, rng.real(-80.0, 80.0), rng.real(-80.0, 80.0)));
+            pickable.push_back(points.back());
+        }
+        std::vector<EntityId> segments;
+        for(int i = 0; i < 4; i++) {
+            const EntityId a = points[rng.below(points.size())];
+            const EntityId b = points[rng.below(points.size())];
+            if(a == b) continue;
+            segments.push_back(addSegment(doc, a, b));
+            pickable.push_back(segments.back());
+        }
+        if(segments.empty()) continue;
+        for(int i = 0; i < 2; i++) {
+            const EntityId centre = points[rng.below(points.size())];
+            pickable.push_back(addCircle(doc, centre, rng.real(5.0, 40.0)));
+        }
+        // A few relations, so the document is a system rather than loose parts
+        // — an unconstrained drawing would make the property vacuous.
+        for(int i = 0; i < 3; i++) {
+            addConstraint(doc, rng.chance(2) ? ConstraintKind::Horizontal
+                                             : ConstraintKind::Vertical,
+                          {segments[rng.below(segments.size())]});
+        }
+
+        // Solved and committed, so the starting pose is one the constraints
+        // actually hold at. That is what "a solved document" means here, and it
+        // is what keeps the property about imposition rather than about the
+        // solve that would otherwise run underneath it.
+        SolveContext context = SolveContext::forWholeDocument(doc);
+        if(!solve(doc, context).ok()) continue;
+        for(const Command &c : context.commitCommands(doc)) doc.apply(c);
+
+        UndoJournal journal;
+        Session session(doc, journal);
+        session.setViewport(imposeViewport());
+        const std::string before = serialize(doc);
+
+        for(const ConstraintKindInfo &info : CONSTRAINT_KINDS) {
+            if(info.valueArity != 1) continue;
+            CAPTURE(std::string(info.name));
+
+            for(int attempt = 0; attempt < 8; attempt++) {
+                std::vector<EntityId> selection;
+                while(selection.size() < info.operandCount) {
+                    const EntityId candidate = pickable[rng.below(pickable.size())];
+                    if(std::find(selection.begin(), selection.end(), candidate) ==
+                       selection.end()) {
+                        selection.push_back(candidate);
+                    }
+                }
+                session.select(selection);
+
+                const std::vector<RoleAssignment> readings =
+                    assignmentsFor(doc, info.kind, selection);
+                for(size_t i = 0; i < readings.size(); i++) {
+                    const std::optional<ImpositionPreview> preview =
+                        session.previewImposition(info.kind, i);
+                    if(!preview) continue;
+
+                    // An angle of zero or a straight line is parallelism, and
+                    // the solver cannot hold it as an angle: its equation is
+                    // dircos − cos(declared), whose derivative vanishes at both
+                    // ends, and it gains the residual up by a thousand there to
+                    // keep the rank test honest. So a captured 0° or 180° moves
+                    // geometry however exactly it was captured. Left out because
+                    // it is a fact about the solver rather than about capture —
+                    // and because Parallel says the same thing without a value,
+                    // which is what a surface should be offering there.
+                    const std::optional<ConstraintRecord> candidate =
+                        candidateFor(session.pose(), info.kind, readings[i], Strength::Impose);
+                    if(candidate && info.kind == ConstraintKind::Angle) {
+                        const double declared = candidate->value.constant();
+                        if(declared < 1.0 || declared > 179.0) continue;
+                    }
+
+                    // Everything else: what it declares is already true, so the
+                    // solver has nothing to do and the drawing does not shift
+                    // under the declaration.
+                    CHECK(preview->motion <= TOLERANCE);
+                    // And the capture agrees with the geometry it came from,
+                    // which is the property underneath the property: a value
+                    // that is not what is measured is what makes a solve move.
+                    if(candidate) {
+                        const std::optional<double> gap = residual(session.pose(), *candidate);
+                        REQUIRE(gap);
+                        CHECK(std::fabs(*gap) <= TOLERANCE);
+                    }
+                }
+            }
+        }
+
+        // And none of it left a trace. Preview-does-not-mutate is pinned by the
+        // hover-storm test on one fixture; here it is a property of every
+        // document the generator produces.
+        CHECK(serialize(doc) == before);
     }
 }
 

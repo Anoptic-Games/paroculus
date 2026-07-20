@@ -451,6 +451,28 @@ TEST_CASE("a region gets its area exactly one way") {
     CHECK(doc.apply(SetRecord<RegionRecord>{loop}).error == CommandError::CyclicParameter);
 }
 
+TEST_CASE("a composite may not name the same operand twice") {
+    // The exclusivity rule violated inside one record rather than across two.
+    // Subtract renders it as A−A, and lifting it back out has two answers. No
+    // surface can produce it, which leaves the command layer as the only thing
+    // that could have.
+    Document doc;
+    const EntityId a = addPoint(doc, 0.0, 0.0);
+    const EntityId b = addPoint(doc, 10.0, 0.0);
+    const EntityId c = addPoint(doc, 10.0, 10.0);
+    RegionRecord outline;
+    outline.boundary = {addSegment(doc, a, b), addSegment(doc, b, c), addSegment(doc, c, a)};
+    const CommandResult added = doc.apply(AddRecord<RegionRecord>{outline});
+    REQUIRE(added.ok());
+    const RegionId only(added.allocated);
+
+    RegionRecord composite;
+    composite.op = CompositeOp::Subtract;
+    composite.operands = {only, only};
+    CHECK(doc.apply(AddRecord<RegionRecord>{composite}).error == CommandError::HasDependents);
+    CHECK(doc.regions().size() == 1);
+}
+
 TEST_CASE("a composite is dismantled, never consumed") {
     // Nothing was taken to make it, so nothing is stranded by taking it apart.
     Document doc;

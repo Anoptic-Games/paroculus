@@ -431,11 +431,23 @@ QString SketchView::status() const {
         text += QStringLiteral("  ·  resisting: %1").arg(p.resisting.size());
     }
     if(p.rippledOffScreen) text += QStringLiteral("  ·  moved off screen");
-    if(p.deletedEntities > 0 || p.deletedRelations > 0) {
+    if(p.deletedEntities > 0 || p.deletedRelations > 0 || p.degraded > 0) {
         // Counts, not a confirmation dialog: the user is told what went.
         text += QStringLiteral("  ·  deleted %1 shapes, %2 relations")
                     .arg(p.deletedEntities)
                     .arg(p.deletedRelations);
+        // Three numbers rather than two, because a deletion no longer only
+        // removes. A region, tag or group that lost a member shrank rather than
+        // died, and it is on screen in its broken state saying so — the count
+        // was computed for exactly this and read by nothing.
+        if(p.degraded > 0) text += QStringLiteral(", degraded %1").arg(p.degraded);
+    }
+    // Which of the two silences this is. An area enclosed by crossing segments
+    // encloses something the model cannot name, and refusing it with the same
+    // absence as "these edges enclose nothing" tells the user the wrong thing
+    // about a drawing that plainly encloses something.
+    if(p.crossing) {
+        text += QStringLiteral("  ·  edges cross: intersection points are needed to fill this");
     }
     return text;
 }

@@ -21,11 +21,12 @@ describes — the downgrade is computed but never offered, the preview verdict
 is shown but the ghost pose is thrown away, and a walked conflict set cannot
 actually be deleted.
 
-Status: findings 1 through 15 are closed — the correctness section, the model
-holes and the stage 5 surfaces — along with finding 16, which the fixes reached
-on their way. Each entry below keeps its statement of the problem and records
-what the fix was; the test gaps those findings left are closed with them. The
-smaller notes 17 through 24 are open.
+Status: every finding is closed, 1 through 24, and so is every test gap. Each
+entry below keeps its statement of the problem and records what the fix was.
+
+Two findings the review did not have are recorded at the end, both surfaced by
+the movement-free property once it ran over random solved documents the way
+PLANS asked — which is what that gap was for, and it paid on the first run.
 
 ## What holds
 
@@ -367,7 +368,7 @@ Worth recording so the findings below read in proportion.
     the broken diagnostic, which is a drawing question with one caller rather
     than a second answer to this one.
 
-## Smaller notes
+## Smaller notes — fixed
 
 16. refresh() leaves a stale readout when the document empties: the dof and
     status update is guarded by components > 0 (src/interact/session.cpp:185),
@@ -381,15 +382,33 @@ Worth recording so the findings below read in proportion.
     (src/shell/sketchview.cpp:434–439). The broken render carries the policy,
     but the third number is dead code until something says it.
 
+    Fixed. status() reports it as a third number when there is one, beside the
+    shapes and relations that went. A region that lost an edge shrank rather
+    than died and is on screen in its broken state saying so; the count was
+    computed for exactly that and read by nothing.
+
 18. applyDragResolve ignores applyStep's result (session.cpp:914–921) and then
     reads the newest constraint as `imposed` and notes usage; a refused step
     would attribute the imposition to an unrelated record. endDrag shares the
     ignored result but has nothing downstream of it.
 
+    Fixed. applyDragResolve keeps the result and only names the imposition when
+    the step landed — the newest constraint is this step's record only if this
+    step added one, and on a refusal it is whatever was there before. endDrag is
+    left as it was: the finding is right that nothing reads its result, and a
+    variable that exists only to be ignored is worse than the ignore.
+
 19. make-solid stays applicable after filling — the loop is still closed, so
     the offer stays lit and a second F stacks an identical region over the
     first (nothing refuses a duplicate boundary). Harmless to the model,
     doubled alpha on screen, and an action that looks like it did nothing.
+
+    Fixed where the offer is made rather than where it is taken:
+    refreshLoopOffers withholds the closed loop when a region already bounds
+    exactly those edges, so the strip entry goes out and the action refuses
+    together. Compared as a set, because two walks of one cycle can start at
+    different edges and run opposite ways round and are the same boundary
+    either way.
 
 20. The crossing-segments refusal has no message. PLANS stage 5 asks for the
     loop-with-a-crossing rejection "with the deferred-case message per
@@ -398,26 +417,96 @@ Worth recording so the findings below read in proportion.
     from "healable but crossing, which is the deferred case". The test pins
     the refusal, not the message, which does not exist.
 
+    Fixed. crossingAmong() names two edges that cross away from their ends,
+    asked only when neither offer stands, and the status line says intersection
+    points are what filling it would need. A set rather than a run walk, because
+    crossing edges are precisely the ones no run joins — a selected pair can sit
+    in two components and a walk from either would never reach the other, which
+    is how the first attempt at this found nothing at all.
+
 21. toggleDriving's promotion never runs checkCandidate (session.cpp:1122), so
     promoting a reference to driving skips the redundancy flag the imposition
     path would raise for the identical declaration. Consistency cannot break —
     the captured value holds at the current pose — but redundancy is where
     later edits go to die, and the toggle is a quiet way to plant one.
 
+    Fixed. Promotion runs checkCandidate against the document without that
+    measurement in it — comparing the candidate to itself would call every
+    promotion redundant — and the verdict reaches the readout. Flagged, never
+    refused: the toggle is the user's to make.
+
 22. validate(RegionRecord) permits a composite naming the same operand twice
     (document.cpp:167–181 checks cross-composite exclusivity and self-reference
     but not duplicates), which subtract renders as A−A. No surface can produce
     it; the command layer accepts it.
+
+    Fixed. validate(RegionRecord) refuses a repeated operand, which is the
+    exclusivity rule it already enforced across composites applied within one.
 
 23. Esc during a drag does not cancel the drag: handle(Key::Escape)
     (session.cpp:782–812) falls through to selection ascend while drag_ runs
     on. Stage 3 territory, but stage 6's group-carry makes long drags more
     common and a cancel is the expected escape hatch.
 
+    Fixed. Esc cancels a drag before it does anything else, and cancelling is
+    dropping the solve context — nothing was applied, so there is nothing to
+    undo and the geometry springs back by the same mechanism that showed it
+    moving. The press flags go with it, or the abandoned gesture would return
+    as a marquee on the next move and act on the release.
+
 24. moveLayer is the one layer mutation that skips refresh()
     (session.cpp:1470–1479). Nothing derived depends on order today, so it is
     an inconsistency rather than a bug; the sibling that later grows a
     dependency will copy the wrong precedent.
+
+    Fixed. It refreshes like its siblings. Nothing derived reads layer order
+    today, so this buys nothing yet — it is here because the one that does not
+    refresh is the precedent the next one copies.
+
+## Found by the property this review asked for
+
+Both of these came out of the first run of the movement-free property over
+random solved documents. Neither is reachable from the fixtures the suite had,
+and both are the shape finding 7 named: a measurement that is not the solver's
+measurement is a bug waiting for a configuration.
+
+25. Point-line distance was captured unsigned and the solver reads it signed.
+    SolveSpace's in-workplane PT_LINE_DISTANCE is cross(a − p, a − b) / |a − b|
+    with no absolute value (external/solvespace/src/constrainteq.cpp:107–123),
+    so a point on the far side of the line reads negative there — while
+    distanceToLine took the magnitude. Capturing +d for a point whose solver
+    distance is −d declares that it should be on the other side, and imposing it
+    drove the point across the line. That is the movement-free promise broken on
+    the one path whose whole purpose is to keep it, and the residual agreed the
+    declaration was satisfied throughout, because it was computed the same wrong
+    way.
+
+    Fixed. distanceToLine is signed and spelled the solver's way round rather
+    than negated afterwards, so the two cannot drift. Point-on-line takes the
+    magnitude, since being on the line is distance zero from either side and a
+    residual free to go negative would read as satisfied at every point on the
+    wrong one.
+
+26. An angle captured for the alternative form captured the wrong form.
+    Landed with finding 7's other half: giving Angle and EqualAngle an
+    alternative made assignmentsFor offer both forms, but candidateFor measured
+    through the kind and operands rather than through the record, so the
+    supplementary reading was stored holding the default reading's value. The
+    record then declared something untrue and the solver moved the drawing to
+    make it so.
+
+    Fixed. candidateFor measures through the record it is building, which is the
+    overload that reads `alternative`. The property catches it directly: the
+    residual of every captured candidate is zero at the pose it was captured
+    from, which is the property underneath the movement-free property.
+
+Known and unfixed, and not a defect in this layer: an angle of 0° or 180° is
+parallelism, and the solver cannot hold it as an angle. Its equation is
+dircos − cos(declared), whose derivative vanishes at both ends, and it gains the
+residual up by a thousand there to keep the rank test honest — so a captured 0°
+or 180° moves geometry however exactly it was captured. The property leaves that
+band out and says why. Parallel says the same thing without a value, which is
+what a surface should be offering there.
 
 ## Test gaps
 
@@ -463,9 +552,16 @@ closed with them:
   (finding 14). A fill sampled under a partial and a whole selection, against
   core's rule (finding 15).
 
-What is still missing:
+- The remaining notes, each where it lives: a repeated composite operand refused
+  at the command layer, a second make-solid refusing rather than stacking, a
+  crossing named and ends that merely meet not named, a promotion flagged
+  redundant, and Esc abandoning a drag without leaving anything to undo or a
+  marquee to catch the release.
+- The movement-free property, over random solved documents, as PLANS stage 5
+  asked. Every valued kind, every reading of every selection, on documents
+  solved and committed first so the starting pose is one the constraints hold
+  at — plus the property underneath it, that every captured candidate's residual
+  is zero at the pose it came from, and that none of it leaves a trace. It found
+  findings 25 and 26 on its first run.
 
-- The movement-free property runs on fixed fixtures; PLANS stage 5 asked for
-  it over random solved documents. The angle residual is now checked against
-  the solver directly, which is what would have caught finding 7, but the
-  general property the plan asked for is not there.
+Nothing is left open.

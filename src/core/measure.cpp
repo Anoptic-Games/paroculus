@@ -63,12 +63,31 @@ double foldedDegrees(const Eigen::Vector2d &a, const Eigen::Vector2d &b) {
     return std::min(d, 180.0 - d);
 }
 
+// How far a point is from a line, signed by which side it falls on.
+//
+// Signed because the solver's is. SolveSpace's in-workplane PT_LINE_DISTANCE is
+// cross(a − p, a − b) / |a − b| with no absolute value, so a point on the far
+// side reads negative there — and an unsigned capture of a negative distance is
+// a declaration that the point should be on the other side. Imposing it moved
+// the point across the line, which is the movement-free promise broken on the
+// path whose whole purpose is to keep it. Same rule as the angle residual: a
+// measurement that is not the solver's measurement is a bug waiting for a
+// configuration.
+//
+// The sign is what makes re-imposing a captured distance a no-op. What a surface
+// displays is its own business; PRINCIPLES has a driving dimension show the
+// value it holds, and the magnitude is one std::fabs away for anything that
+// would rather show that.
 double distanceToLine(const Eigen::Vector2d &p, const Eigen::Vector2d &a,
                       const Eigen::Vector2d &b) {
     const Eigen::Vector2d ab = b - a;
     const double len = ab.norm();
     if(len < DEGENERATE) return (p - a).norm();
-    return std::fabs(ab.x() * (p.y() - a.y()) - ab.y() * (p.x() - a.x())) / len;
+    // Spelled the solver's way round rather than negated afterwards, so the two
+    // cannot drift: d = a − b, w = a − p, and the numerator is cross(w, d).
+    const Eigen::Vector2d d = a - b;
+    const Eigen::Vector2d w = a - p;
+    return (w.x() * d.y() - w.y() * d.x()) / len;
 }
 
 // The axis a horizontal or vertical constraint is measured against. Null names
@@ -166,7 +185,10 @@ std::optional<double> residual(const Pose &pose, const ConstraintRecord &r) {
             const auto p = pointAt(pose, o[0]);
             const auto ends = pose.segment(o[1]);
             if(!p || !ends) return std::nullopt;
-            return distanceToLine(*p, vec(ends->first), vec(ends->second));
+            // Magnitude: on the line is distance zero from either side, and a
+            // residual free to go negative would read as satisfied at every
+            // point on the wrong one.
+            return std::fabs(distanceToLine(*p, vec(ends->first), vec(ends->second)));
         }
         case ConstraintKind::PointOnCircle: {
             const auto p = pointAt(pose, o[0]);

@@ -321,6 +321,69 @@ TEST_CASE("a group drags together") {
     CHECK(after->y != before->y);
 }
 
+TEST_CASE("Esc abandons a drag rather than committing it") {
+    // Nothing was applied, so there is nothing to undo: the in-flight pose lives
+    // in the drag's own solve context and dropping it puts the geometry back.
+    // That is the cheapness of a drag read from the other end.
+    Bench bench;
+    Bar bar(bench.doc);
+    bench.session->refresh();
+    const std::optional<Point> before = bench.session->pose().point(bar.b);
+    REQUIRE(before);
+    const bool couldUndo = bench.session->canUndo();
+
+    bench.press(Point{50.0, 0.0});
+    bench.session->handle(PointerEvent::at(PointerAction::Move, bench.screen(Point{50.0, 60.0}),
+                                           bench.session->viewport().view, Button::Left));
+    REQUIRE(bench.session->presentation().dragging);
+
+    bench.session->handle(Key::Escape);
+    CHECK_FALSE(bench.session->presentation().dragging);
+    const std::optional<Point> after = bench.session->pose().point(bar.b);
+    REQUIRE(after);
+    CHECK(after->x == before->x);
+    CHECK(after->y == before->y);
+    // Nothing to take back, because nothing was applied.
+    CHECK(bench.session->canUndo() == couldUndo);
+
+    // And the abandoned gesture does not come back as a marquee on the way out:
+    // the press flags went with the drag.
+    bench.session->handle(PointerEvent::at(PointerAction::Move, bench.screen(Point{80.0, 80.0}),
+                                           bench.session->viewport().view, Button::Left));
+    CHECK_FALSE(bench.session->presentation().marqueeActive);
+    bench.session->handle(PointerEvent::at(PointerAction::Release,
+                                           bench.screen(Point{80.0, 80.0}),
+                                           bench.session->viewport().view, Button::Left));
+    CHECK(bench.session->canUndo() == couldUndo);
+}
+
+TEST_CASE("promoting a measurement to driving is checked like the imposition it is") {
+    // Consistency cannot break — the value is captured from the pose, so it
+    // holds where the geometry already is — but redundancy can, and redundancy
+    // is where later edits go to die. The imposition path raises that flag for
+    // the identical declaration; a toggle that skipped it was a quiet way to
+    // plant one.
+    Bench bench;
+    Bar bar(bench.doc);
+    // A second distance saying the same thing as the one Bar already imposed,
+    // recorded as a measurement so it drives nothing yet.
+    ConstraintRecord measurement;
+    measurement.kind = ConstraintKind::PointPointDistance;
+    measurement.operands = {bar.a, bar.b, EntityId(), EntityId()};
+    measurement.value = Slot(100.0);
+    measurement.driving = false;
+    const CommandResult added = bench.doc.apply(AddRecord<ConstraintRecord>{measurement});
+    REQUIRE(added.ok());
+    bench.session->refresh();
+
+    bench.session->selectConstraint(ConstraintId(added.allocated));
+    REQUIRE(invokeAction(*bench.session, "relation.toggle-driving"));
+    CHECK(bench.doc.constraints().find(ConstraintId(added.allocated))->driving);
+    // Flagged, not refused: the toggle is the user's to make and a redundant
+    // relation is a warning they are entitled to rather than a fault today.
+    CHECK(bench.session->presentation().impositionVerdict == CandidateVerdict::Redundant);
+}
+
 TEST_CASE("a hidden layer's marks go with its geometry") {
     // Hiding removed the geometry from the canvas, from hit testing and from
     // the marquee, and left its relations' marks drawn — floating over empty

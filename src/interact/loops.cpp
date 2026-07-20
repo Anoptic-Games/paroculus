@@ -39,6 +39,34 @@ double gapBetween(const Pose &pose, EntityId a, EntityId b) {
     return std::sqrt(dx * dx + dy * dy);
 }
 
+// Where two segments cross, if they cross strictly between their ends.
+//
+// Strictly, because ends that meet are how a boundary is built: a shared or
+// coincident endpoint is the ordinary case and reporting it as a crossing would
+// call every drawn outline the deferred case. Parallel and collinear pairs
+// report nothing — they have no single crossing point to build through, which
+// is the thing the deferred work would need.
+bool segmentsCross(const Pose &pose, EntityId a, EntityId b) {
+    const std::optional<std::pair<Point, Point>> first = pose.segment(a);
+    const std::optional<std::pair<Point, Point>> second = pose.segment(b);
+    if(!first || !second) return false;
+
+    const double px = first->first.x, py = first->first.y;
+    const double rx = first->second.x - px, ry = first->second.y - py;
+    const double qx = second->first.x, qy = second->first.y;
+    const double sx = second->second.x - qx, sy = second->second.y - qy;
+
+    const double denominator = rx * sy - ry * sx;
+    if(std::fabs(denominator) < 1e-12) return false;  // parallel, or collinear
+
+    const double t = ((qx - px) * sy - (qy - py) * sx) / denominator;
+    const double u = ((qx - px) * ry - (qy - py) * rx) / denominator;
+    // Open intervals at both ends. The epsilon keeps a joint that the solver
+    // has left a hair short of exact from reading as a crossing.
+    constexpr double INSIDE = 1e-9;
+    return t > INSIDE && t < 1.0 - INSIDE && u > INSIDE && u < 1.0 - INSIDE;
+}
+
 // The outline edges around `seed`, following coincident joints and near-miss
 // ones alike.
 //
@@ -111,6 +139,32 @@ std::optional<std::vector<EntityId>> closedBoundaryContaining(const Document &do
     if(edges.empty()) return std::nullopt;
 
     return findBoundaryCycle(doc, topology, edges);
+}
+
+std::optional<std::pair<EntityId, EntityId>> crossingAmong(const Document &doc,
+                                                           const Topology &topology,
+                                                           const Pose &pose,
+                                                           std::span<const EntityId> seeds) {
+    std::vector<EntityId> edges;
+    for(EntityId seed : seeds) {
+        if(!seed.valid() || doc.entities().find(seed) == nullptr) continue;
+        for(EntityId id : connectedRun(doc, topology, seed)) {
+            if(!isOutlineEdge(doc, id)) continue;
+            if(std::find(edges.begin(), edges.end(), id) == edges.end()) edges.push_back(id);
+        }
+    }
+    // ID-ordered and first-found, so the same drawing always names the same
+    // pair. Which crossing is reported matters as little as the fact that it is
+    // always the same one.
+    std::sort(edges.begin(), edges.end());
+    for(size_t i = 0; i < edges.size(); i++) {
+        for(size_t j = i + 1; j < edges.size(); j++) {
+            if(segmentsCross(pose, edges[i], edges[j])) {
+                return std::pair<EntityId, EntityId>{edges[i], edges[j]};
+            }
+        }
+    }
+    return std::nullopt;
 }
 
 std::optional<HealableLoop> healableLoopContaining(const Document &doc,

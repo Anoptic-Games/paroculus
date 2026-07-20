@@ -164,9 +164,18 @@ CommandError Document::validate(const RegionRecord &r) const {
         }
     } else {
         if(!r.boundary.empty()) return CommandError::WrongSignature;
-        for(RegionId o : r.operands) {
+        for(size_t i = 0; i < r.operands.size(); i++) {
+            const RegionId o = r.operands[i];
             if(o == r.id) return CommandError::CyclicParameter;
             if(!regions_.contains(o)) return CommandError::UnknownOperand;
+            // And named once. A composite naming the same operand twice is the
+            // exclusivity rule below violated within one record rather than
+            // across two: subtract renders it as A−A, lifting it back out has
+            // two answers, and no surface can produce it — so the command layer
+            // is the only thing that could have.
+            for(size_t j = i + 1; j < r.operands.size(); j++) {
+                if(r.operands[j] == o) return CommandError::HasDependents;
+            }
         }
         // An operand belongs to at most one composite. Two composites over one
         // operand would draw it twice and give lift-it-back-out two answers.

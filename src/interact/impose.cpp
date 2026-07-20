@@ -175,8 +175,13 @@ std::optional<ConstraintRecord> candidateFor(const Pose &pose, ConstraintKind ki
     r.driving = strength != Strength::Reference;
 
     if(info.valueArity == 1) {
-        const std::span<const EntityId> operands(assignment.operands.data(), assignment.count);
-        const std::optional<double> value = measure(pose, kind, operands);
+        // Measured through the record rather than through the kind and operands,
+        // so the form the assignment names is the form the value is captured in.
+        // An angle's alternative is the supplement; capturing the default and
+        // storing it on a record that declares the supplement declares something
+        // untrue and the solver moves the drawing to make it so — which is the
+        // exact opposite of what imposition promises.
+        const std::optional<double> value = measure(pose, r);
         // No measurement means no record: a ratio against a zero-length segment
         // is not a relation with a bad value, it is not a relation.
         if(!value) return std::nullopt;

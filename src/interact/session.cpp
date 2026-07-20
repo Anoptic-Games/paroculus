@@ -29,6 +29,17 @@ SolveStatus moreSevere(SolveStatus a, SolveStatus b) {
     return rank(b) > rank(a) ? b : a;
 }
 
+// The same rule over candidate verdicts, for a readout summarising several at
+// once: a warning outranks fine, and a refusal outranks a warning.
+CandidateVerdict moreSevere(CandidateVerdict a, CandidateVerdict b) {
+    auto rank = [](CandidateVerdict v) {
+        if(v == CandidateVerdict::Consistent) return 0;
+        if(v == CandidateVerdict::Redundant) return 1;
+        return 2;
+    };
+    return rank(b) > rank(a) ? b : a;
+}
+
 }  // namespace
 
 Session::Session(Document &doc, UndoJournal &journal)
@@ -805,6 +816,17 @@ void Session::handle(Key key, Modifier modifiers) {
                 applyNumericCancel();
                 return;
             }
+            // A drag in flight is the next thing Esc takes back.
+            //
+            // Cancelling is dropping the context: the drag's pose lives there
+            // and nothing has been committed, so the geometry springs back to
+            // its seeds by the same mechanism that showed it moving. The press
+            // flags go too, or the gesture the user has already abandoned would
+            // become a marquee on the next move and act on the release.
+            if(drag_) {
+                cancelDrag();
+                return;
+            }
             if(tool_) {
                 // Ending the chain abandons the placement, and confirmations
                 // belong to the placement.
@@ -931,11 +953,19 @@ void Session::applyDragResolve(bool impose) {
     presentation_.saturated = false;
     presentation_.resisting.clear();
 
+    // Whether the step landed decides what may be said about it. The
+    // imposition is identified as the newest constraint record, which is only
+    // the record this step added if this step added one — on a refusal the
+    // newest is whatever was there before, and naming it would attribute the
+    // dimension to an unrelated relation and note usage for a kind nobody
+    // imposed.
+    bool landed = true;
     if(!step.empty()) {
-        journal_->applyStep(*doc_, impose ? "drag to value" : "drag", std::move(step));
+        landed = journal_->applyStep(*doc_, impose ? "drag to value" : "drag",
+                                     std::move(step)) == CommandError::None;
     }
     refresh();
-    if(impose && !doc_->constraints().records().empty()) {
+    if(landed && impose && !doc_->constraints().records().empty()) {
         imposed = doc_->constraints().records().back().id;
         doc_->noteUsage(dimension.kind);
     }
@@ -992,6 +1022,27 @@ void Session::updateDrag(Point cursor) {
     // The strip's numbers follow the geometry, so what the user is about to
     // type over is what they are looking at.
     refreshDragPresentation();
+}
+
+// Abandons a drag without committing it.
+//
+// Nothing to undo, because nothing was applied: the in-flight pose lived in the
+// drag's own solve context and dropping it is the whole of the cancel. That is
+// the same property that makes a drag cheap — the document is not touched until
+// release — read from the other end.
+void Session::cancelDrag() {
+    if(!drag_) return;
+    drag_.reset();
+    dragDimensions_.clear();
+    numeric_.cancel();
+    presentation_.dragging = false;
+    presentation_.saturated = false;
+    presentation_.resisting.clear();
+    presentation_.marqueeActive = false;
+    pressActive_ = false;
+    dragStarted_ = false;
+    pressed_ = EntityId();
+    refresh();
 }
 
 void Session::endDrag() {
@@ -1152,6 +1203,7 @@ bool Session::toggleDriving() {
     if(selection_.constraints().empty()) return false;
 
     const Pose current = pose();
+    CandidateVerdict promoted = CandidateVerdict::Consistent;
     std::vector<Command> step;
     for(ConstraintId id : selection_.constraints()) {
         const ConstraintRecord *r = doc_->constraints().find(id);
@@ -1175,12 +1227,33 @@ bool Session::toggleDriving() {
                 flipped.value = Slot(*now);
             }
         }
+
+        // Promotion is an imposition and is checked like one.
+        //
+        // Consistency cannot break — the value was just captured from the pose,
+        // so it holds where the geometry already is — but redundancy can, and
+        // redundancy is where later edits go to die. The imposition path raises
+        // that flag for the identical declaration; a toggle that skipped it was
+        // a quiet way to plant one. Checked against the document without this
+        // measurement in it, since a driven record constrains nothing and
+        // comparing the candidate to itself would call every promotion
+        // redundant.
+        if(flipped.driving) {
+            Document without = *doc_;
+            without.apply(RemoveRecord<ConstraintRecord>{id});
+            Topology withoutTopology(without);
+            const CandidateCheck check = checkCandidate(without, withoutTopology, flipped);
+            promoted = moreSevere(promoted, check.verdict);
+        }
         step.push_back(SetRecord<ConstraintRecord>{flipped});
     }
     if(step.empty()) return false;
     if(journal_->applyStep(*doc_, "toggle driving", std::move(step)) != CommandError::None) {
         return false;
     }
+    // Flagged, never refused: a redundant relation is a warning the user is
+    // entitled to rather than a fault today, and the toggle is theirs to make.
+    presentation_.impositionVerdict = promoted;
     refresh();
     return true;
 }
@@ -1197,16 +1270,47 @@ bool Session::selectConflicting() {
 // Regions
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// Whether some region already bounds exactly these edges.
+//
+// A set comparison rather than a sequence one: two walks of the same cycle can
+// start at different edges and run the other way round, and they are the same
+// boundary either way.
+bool filledBy(const Document &doc, const std::vector<EntityId> &boundary) {
+    for(const RegionRecord &r : doc.regions().records()) {
+        if(r.op != CompositeOp::Outline) continue;
+        if(r.boundary.size() != boundary.size()) continue;
+        bool same = true;
+        for(EntityId edge : boundary) {
+            if(std::find(r.boundary.begin(), r.boundary.end(), edge) == r.boundary.end()) {
+                same = false;
+                break;
+            }
+        }
+        if(same) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
 void Session::refreshLoopOffers(EntityId seed) {
     presentation_.closedLoop.clear();
     presentation_.healableLoop.clear();
     presentation_.healableGaps.clear();
     presentation_.healableWidestGap = 0.0;
+    presentation_.crossing.reset();
     loopSeed_ = seed;
     if(!seed.valid()) return;
 
     if(const auto boundary = closedBoundaryContaining(*doc_, topology_, seed)) {
-        presentation_.closedLoop = *boundary;
+        // Unless it is already filled. The loop stays closed after make-solid,
+        // so the offer stayed lit and a second press stacked an identical region
+        // over the first — doubled alpha on screen, and an action that looks
+        // like it did nothing. Compared as a set, because the ring walk may
+        // enter the same cycle at a different edge.
+        if(!filledBy(*doc_, *boundary)) presentation_.closedLoop = *boundary;
         return;
     }
     // How near is near enough is a property of the hand and the zoom, so the
@@ -1219,7 +1323,22 @@ void Session::refreshLoopOffers(EntityId seed) {
         presentation_.healableLoop = healable->boundary;
         presentation_.healableGaps = healable->gaps;
         presentation_.healableWidestGap = healable->widestGap;
+        return;
     }
+
+    // Neither offer stands, and the two ways that happens are different facts.
+    // An area enclosed by crossing segments is enclosed by nothing the model can
+    // name, and PLANS asks for that to be said rather than left as the same
+    // silence as "these edges enclose nothing at all".
+    //
+    // Asked over the selection as well as the seed, because crossing edges are
+    // exactly the ones no run walk joins: a selected pair can sit in two
+    // components, and starting from either would never reach the other.
+    std::vector<EntityId> among{seed};
+    for(EntityId id : selection_.items()) {
+        if(id != seed) among.push_back(id);
+    }
+    presentation_.crossing = crossingAmong(*doc_, topology_, pose(), among);
 }
 
 void Session::refreshSelectionOffers() {
@@ -1504,8 +1623,15 @@ bool Session::moveLayer(LayerId layer, int delta) {
     if(l == nullptr) return false;
     LayerRecord changed = *l;
     changed.order += delta;
-    return journal_->applyStep(*doc_, "layer order", SetRecord<LayerRecord>{changed}) ==
-           CommandError::None;
+    if(journal_->applyStep(*doc_, "layer order", SetRecord<LayerRecord>{changed}) !=
+       CommandError::None) {
+        return false;
+    }
+    // Nothing derived reads layer order today, so this buys nothing yet. It is
+    // here because every other layer mutation refreshes and the one that does
+    // not is the precedent the next one copies.
+    refresh();
+    return true;
 }
 
 // Union, subtract and intersect over live operands. Nothing is consumed: the

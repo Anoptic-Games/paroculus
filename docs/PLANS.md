@@ -733,6 +733,15 @@ shrinks the regions bounded by it. That is the model half of stage 7's "tag
 dissolution when defining constraints break", landed early because finding 3 —
 a walked conflict set that could not be deleted — needed the same cascade.
 
+The movement-free property now runs over random solved documents, as this plan
+asked for it and as the fixtures could not. It found two measurements that were
+not the solver's — point-line distance captured unsigned where the solver reads
+it signed, and an angle's supplementary form captured holding the default form's
+value — both of which moved geometry on the path whose whole promise is that it
+does not. The rule finding 7 established generalises: a geometric measurement is
+the solver's measurement or it is a bug waiting for a configuration, and the way
+to know is to ask a random document rather than a chosen one.
+
 Stage 5's surfaces caught up with what stage 5 said they were. The hover preview
 ghosts the geometry rather than only reporting a verdict, which is what PLANS
 scoped and PRINCIPLES calls the thing that makes the catalogue learnable by
