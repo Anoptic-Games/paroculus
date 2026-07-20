@@ -733,6 +733,17 @@ shrinks the regions bounded by it. That is the model half of stage 7's "tag
 dissolution when defining constraints break", landed early because finding 3 —
 a walked conflict set that could not be deleted — needed the same cascade.
 
+The review's model holes are closed with it. Layer and style removal refuse
+while anything names them and have deletion steps that empty them first, which
+they lacked entirely; the state they used to leave was a document that
+serialized and would not load. And the taxonomy learned that role ambiguity has
+two shapes, not one. Order sensitivity — does swapping these two change what it
+says — is the right question for length-ratio and the wrong one for equal-angle,
+where swapping never changes anything and the pairing is what nobody asked
+about. `operandGroupSize` says the slots group; the surface enumerates the
+groupings and asks. Stage 7's compound relations are the next kinds likely to
+need it.
+
 ### Stage 7 — structure operations
 
 Goal: the operations that treat constrained structure as structure —

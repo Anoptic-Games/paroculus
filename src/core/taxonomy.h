@@ -164,6 +164,25 @@ struct ConstraintKindInfo {
     // knows there is a question. A kind whose slots take different entity kinds
     // has its roles assigned by type and needs no flag either way.
     bool orderSensitive;
+
+    // How many consecutive slots form one interchangeable group, or zero for a
+    // kind whose slots do not group.
+    //
+    // Order sensitivity is the right question for two slots and the wrong shape
+    // for four. Equal-angle relates angle(A,B) to angle(C,D): swapping within
+    // either pair says nothing new, and swapping the pairs says nothing new
+    // either, because equality is symmetric — but which segments are paired
+    // with which is three different declarations, and the operands cannot say.
+    // That is the same ambiguity length-ratio gets a surface for, on a kind
+    // where the wrong reading is much harder to see, so the surface has to
+    // enumerate the groupings and ask.
+    //
+    // Grouped kinds have all their required slots accepting one operand kind —
+    // otherwise the grouping would be decided by type and there would be
+    // nothing to ask — and the groups are interchangeable with each other, so a
+    // reading is canonical when each group is in ascending ID order and the
+    // groups themselves are.
+    uint8_t operandGroupSize;
 };
 
 // The three strengths every relation the tool can compute exists at.
@@ -223,9 +242,12 @@ inline constexpr std::array<ConstraintKindInfo, 22> CONSTRAINT_KINDS = {{
     {ConstraintKind::Angle, "angle", 2,
      {OperandKind::Segment, OperandKind::Segment}, 1, Invariance::ScaleInvariant, 100024, 1.0,
      0, 0, 1},
+    // Four segments in two pairs, and which pairing was meant is a question the
+    // operands cannot answer — angle(A,B) = angle(C,D) is not angle(A,C) =
+    // angle(B,D). The group size is how the surface knows to ask.
     {ConstraintKind::EqualAngle, "equal-angle", 4,
      {OperandKind::Segment, OperandKind::Segment, OperandKind::Segment, OperandKind::Segment},
-     0, Invariance::ScaleInvariant, 100012, 1.0, 0, 0, 1},
+     0, Invariance::ScaleInvariant, 100012, 1.0, 0, 0, 1, false, 2},
     {ConstraintKind::PointPointDistance, "distance", 2,
      {OperandKind::Point, OperandKind::Point}, 1, Invariance::Absolute, 100001, 1.0},
     {ConstraintKind::PointLineDistance, "point-line-distance", 2,

@@ -49,6 +49,24 @@ bool fillsSlots(const Document &doc, ConstraintKind kind, std::span<const Entity
     return true;
 }
 
+// Whether a reading is the one that stands for its grouping.
+//
+// A grouped kind's slots are interchangeable within each group and the groups
+// are interchangeable with each other, so most orderings of four segments say
+// the same thing as some other ordering. Keeping only the ordering that is
+// ascending within each group and ascending across them leaves exactly one
+// reading per genuinely different pairing — three of them for equal-angle,
+// rather than twenty-four rows saying three things.
+bool canonicalGrouping(std::span<const EntityId> ids, size_t count, size_t group) {
+    for(size_t start = 0; start < count; start += group) {
+        for(size_t i = start + 1; i < start + group; i++) {
+            if(!(ids[i - 1] < ids[i])) return false;
+        }
+        if(start + group < count && !(ids[start] < ids[start + group])) return false;
+    }
+    return true;
+}
+
 RoleAssignment makeAssignment(std::span<const EntityId> ids, uint8_t alternative) {
     RoleAssignment a;
     a.count = ids.size();
@@ -59,12 +77,14 @@ RoleAssignment makeAssignment(std::span<const EntityId> ids, uint8_t alternative
 
 // Every distinct way `selection` fills `kind`'s slots, canonical first.
 //
-// Order sensitivity decides how many survive. A kind that reads one operand
-// against the other — len(A)/len(B) — keeps both readings, because they are
-// different declarations and the surface has to ask which was meant. Every
-// other kind keeps one: a coincidence between A and B is the coincidence
-// between B and A, and offering it twice would be offering the same relation
-// twice under two names.
+// The taxonomy decides how many survive, and it says two different things. A
+// kind that reads one operand against the other — len(A)/len(B) — keeps both
+// readings, because they are different declarations and the surface has to ask
+// which was meant. A kind whose slots group keeps one reading per grouping:
+// equal-angle over four segments is three declarations, not one, and not the
+// twenty-four its permutations would suggest. Every other kind keeps one, since
+// a coincidence between A and B is the coincidence between B and A and offering
+// it twice would be offering the same relation under two names.
 //
 // The kept reading is the ID-lexicographically smallest, so it is a function of
 // the selection rather than of the order it was clicked in.
@@ -82,15 +102,26 @@ std::vector<RoleAssignment> assignmentsFor(const Document &doc, ConstraintKind k
     std::vector<EntityId> ordered(selection.begin(), selection.end());
     std::sort(ordered.begin(), ordered.end());
 
+    // Two reasons to walk past the first valid ordering, and they are different
+    // questions. Order sensitivity is "does swapping these two change what it
+    // says" — true of len(A)/len(B) and almost nothing else. Grouping is "which
+    // of these belong together", which for equal-angle has three answers that a
+    // kind reading its operands in one fixed order can never offer.
+    const bool enumerate = info.orderSensitive || info.operandGroupSize > 0;
+
     std::vector<RoleAssignment> out;
     do {
         if(!fillsSlots(doc, kind, ordered)) continue;
+        if(info.operandGroupSize > 0 &&
+           !canonicalGrouping(ordered, info.operandCount, info.operandGroupSize)) {
+            continue;
+        }
         // Tangency holds at one end of the arc or the other, and the operands
         // cannot say which. Both forms are offered; everything else has one.
         for(uint8_t alt = 0; alt <= info.alternatives; alt++) {
             out.push_back(makeAssignment(ordered, alt));
         }
-        if(!info.orderSensitive) break;
+        if(!enumerate) break;
     } while(std::next_permutation(ordered.begin(), ordered.end()));
 
     return out;

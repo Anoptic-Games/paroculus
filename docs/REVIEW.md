@@ -21,11 +21,12 @@ describes — the downgrade is computed but never offered, the preview verdict
 is shown but the ghost pose is thrown away, and a walked conflict set cannot
 actually be deleted.
 
-Status: the correctness section, findings 1 through 8, is closed, along with
-findings 10 and 16, which the fixes reached on their way. Each entry below
-keeps its statement of the problem and records what the fix was; the test gaps
-those findings left are closed with them. Findings 9 and 11 through 15, and the
-remaining smaller notes, are open.
+Status: the correctness section and the model holes — findings 1 through 11 —
+are closed, along with finding 16, which the fixes reached on their way. Each
+entry below keeps its statement of the problem and records what the fix was;
+the test gaps those findings left are closed with them. Findings 12 through 15,
+the stage 5 surfaces that stop short of the plan, and the remaining smaller
+notes, are open.
 
 ## What holds
 
@@ -218,9 +219,7 @@ Worth recording so the findings below read in proportion.
    has no zoom to be right at and a document must not bake differently from two
    sessions. Tests cover the nesting, the subtract order and both curve kinds.
 
-## Model holes stage 7 will step into
-
-Finding 10 is fixed, as a component of finding 3; the rest are open.
+## Model holes stage 7 will step into — fixed
 
 9. Layer and style removal leave dangling references the loader then refuses.
    RemoveRecord<LayerRecord> and RemoveRecord<StyleRecord>
@@ -232,11 +231,17 @@ Finding 10 is fixed, as a component of finding 3; the rest are open.
    references (document.cpp:86–87 via persist.cpp:764) — a state that can be
    saved and never reloaded, the same shape as the parameter hole the stage
    0–4 review closed (its finding 2). No action deletes a layer today, which
-   is why nothing bleeds; the palette will grow one. Fix: HasDependents
-   refusals mirroring entity removal, plus deletionStep overloads — for a
-   layer, reassigning its entities and regions to the base layer before
-   removal is the freeze-shaped answer (only the organization the user deleted
-   is lost); for a style, nulling the references.
+   is why nothing bleeds; the palette will grow one.
+
+   Fixed. Both removals refuse while anything names them, and both gained a
+   deletionStep: a layer's entities and regions move to the base layer, a
+   style's references are nulled. Freeze-shaped, like the parameter case —
+   nothing moves and nothing else is removed, so all that is lost is the
+   organization the user deleted. `AttachmentDependents` is one struct for both,
+   because it is one relationship: a layer and a style hang off a record rather
+   than being something the record is built from, which is exactly why
+   reassignment is the right answer where geometry gets a cascade. No action
+   deletes either yet; when the palette grows one it will find the hole closed.
 
 10. Constraint removal ignores the tags that list it, and the model gives
     three different answers about the resulting state.
@@ -268,11 +273,20 @@ Finding 10 is fixed, as a component of finding 3; the rest are open.
     stops at the ID-lexicographically first valid permutation and the surface
     imposes a pairing the user never chose. This is the same question
     length-ratio got a surface for, on a kind where the wrong reading is
-    harder to see. Fix: mark it orderSensitive and let the existing
-    ambiguous-offer machinery enumerate the distinct pairings (the
-    interchangeable-within-pair and pair-swap symmetries want deduplicating,
-    which assignmentsFor's permutation walk can do by canonicalising each
-    reading before keeping it).
+    harder to see.
+
+    Fixed, though not by marking it orderSensitive — that column asks "does
+    swapping these two change what it says", and for equal-angle the answer is
+    no in every direction: within either pair, and across the pairs, because
+    equality is symmetric. What is ambiguous is the grouping, not the order. So
+    the taxonomy gained `operandGroupSize`, saying how many consecutive slots
+    form one interchangeable group, and assignmentsFor enumerates permutations
+    for that reason as well as for order sensitivity, keeping only the reading
+    that is ascending within each group and across them. Four segments give
+    three pairings rather than one, or twenty-four. The well-formedness check
+    requires a grouping to divide the required slots into at least two whole
+    groups of one operand kind — a grouping decided by type is not a question
+    the surface can ask.
 
 ## Stage 5 surfaces, thinner than the plan
 
@@ -400,6 +414,14 @@ closed with them:
 - A tagged constraint removed on its own — refused bare, shrinking through
   deletionStep — and a cascade taking geometry and a named relation together in
   one shrink (finding 10).
+- A layer and a style each removed while in use: the bare removal refused, the
+  step emptying them, and the result round-tripping through the file, which is
+  the save-then-refuse state stated directly. The undo property's random script
+  now makes layers and styles, hangs geometry off them and removes them again,
+  so the branch-fidelity walk covers the reassignment too (finding 9).
+- Four segments offered to equal-angle, asserted as three pairings in their two
+  forms, each capturing a different value, with the offer reporting itself
+  ambiguous (finding 11).
 
 What is still missing:
 
@@ -407,6 +429,3 @@ What is still missing:
   it over random solved documents. The angle residual is now checked against
   the solver directly, which is what would have caught finding 7, but the
   general property the plan asked for is not there.
-- Round-trip property tests never remove a layer or style after references
-  exist (finding 9) — the save-then-refuse state is reachable through the
-  command layer the property tests drive.

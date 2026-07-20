@@ -197,6 +197,78 @@ TEST_CASE("length ratio asks which way round") {
     CHECK(ra->value.constant() * rb->value.constant() == doctest::Approx(1.0));
 }
 
+TEST_CASE("equal angle asks which segments are paired") {
+    // Four segments admit three pairings and they are three different
+    // declarations: angle(A,B) = angle(C,D) is not angle(A,C) = angle(B,D). The
+    // kind read its operands in whatever order the IDs happened to sort into and
+    // imposed a pairing nobody chose — the same question length-ratio gets a
+    // surface for, on a kind where the wrong reading is much harder to see.
+    Document doc;
+    UndoJournal journal;
+    std::vector<EntityId> segments;
+    // Four deliberately unequal directions, so no two pairings agree by
+    // accident and the values a capture records tell them apart.
+    const double angles[4] = {0.0, 25.0, 70.0, 130.0};
+    for(double degrees : angles) {
+        const double radians = degrees * M_PI / 180.0;
+        const EntityId from = addPoint(doc, 0.0, 0.0);
+        const EntityId to = addPoint(doc, 50.0 * std::cos(radians), 50.0 * std::sin(radians));
+        segments.push_back(addSegment(doc, from, to));
+    }
+
+    Session session(doc, journal);
+    session.setViewport(imposeViewport());
+    session.select(segments);
+
+    const std::vector<RoleAssignment> assignments =
+        assignmentsFor(doc, ConstraintKind::EqualAngle, segments);
+    // Three pairings, each in its two forms — the angle as drawn and its
+    // supplement — and not the twenty-four the permutations would suggest.
+    REQUIRE(assignments.size() == 6);
+
+    // Every reading names all four segments once, and no two readings pair the
+    // same way.
+    std::vector<std::pair<EntityId, EntityId>> pairings;
+    for(const RoleAssignment &a : assignments) {
+        REQUIRE(a.count == 4);
+        std::vector<EntityId> named(a.operands.begin(), a.operands.begin() + 4);
+        std::sort(named.begin(), named.end());
+        std::vector<EntityId> sorted = segments;
+        std::sort(sorted.begin(), sorted.end());
+        CHECK(named == sorted);
+        if(a.alternative == 0) pairings.emplace_back(a.operands[0], a.operands[1]);
+    }
+    REQUIRE(pairings.size() == 3);
+    for(size_t i = 0; i < pairings.size(); i++) {
+        for(size_t j = i + 1; j < pairings.size(); j++) CHECK(pairings[i] != pairings[j]);
+    }
+
+    // And the readings are genuinely different declarations: each captures the
+    // angle its own pairing is at, so no two record the same value.
+    std::vector<double> captured;
+    for(const RoleAssignment &a : assignments) {
+        if(a.alternative != 0) continue;
+        const auto r = candidateFor(session.pose(), ConstraintKind::EqualAngle, a,
+                                    Strength::Impose);
+        REQUIRE(r);
+        captured.push_back(*measure(session.pose(), ConstraintKind::Angle,
+                                    std::span<const EntityId>(r->operands.data(), 2)));
+    }
+    REQUIRE(captured.size() == 3);
+    CHECK(captured[0] != doctest::Approx(captured[1]));
+    CHECK(captured[1] != doctest::Approx(captured[2]));
+    CHECK(captured[0] != doctest::Approx(captured[2]));
+
+    // The surface says the question exists, so it can ask it.
+    const std::vector<RelationOffer> offers = session.relationOffers();
+    const RelationOffer *equalAngle = nullptr;
+    for(const RelationOffer &o : offers) {
+        if(o.kind == ConstraintKind::EqualAngle) equalAngle = &o;
+    }
+    REQUIRE(equalAngle != nullptr);
+    CHECK(equalAngle->ambiguous());
+}
+
 TEST_CASE("an out-of-range reading is refused rather than clamped") {
     // A script written against a different selection has asked for something
     // that is not there. Imposing the other reading instead would declare the

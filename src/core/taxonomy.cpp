@@ -56,6 +56,19 @@ constexpr bool constraintTableIsWellFormed() {
             }
             if(!interchangeable) return false;
         }
+        // A grouping has to divide the required slots into at least two whole
+        // groups, all accepting one operand kind. Groups decided by type are
+        // not a question the surface can ask, and a partial group would leave
+        // slots belonging to nothing.
+        if(c.operandGroupSize > 0) {
+            if(c.operandGroupSize < 2) return false;
+            if(c.operandCount % c.operandGroupSize != 0) return false;
+            if(c.operandCount / c.operandGroupSize < 2) return false;
+            if(c.optionalOperands != 0) return false;
+            for(size_t i = 1; i < c.operandCount; i++) {
+                if(c.operands[i] != c.operands[0]) return false;
+            }
+        }
     }
     return true;
 }

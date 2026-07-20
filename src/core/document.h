@@ -269,6 +269,39 @@ std::vector<Command> deletionStep(const Document &doc, std::span<const Constrain
 std::vector<Command> deletionStep(const Document &doc, std::span<const EntityId> entities,
                                   std::span<const ConstraintId> constraints);
 
+// What a layer or a style is attached to: entities and regions naming it, in ID
+// order.
+//
+// One shape for both because it is one relationship. A layer and a style are
+// organization hanging off a record rather than something the record is built
+// from — nothing about what an entity means changes when either goes — which is
+// why the deletion answer for both is reassignment rather than a cascade.
+struct AttachmentDependents {
+    std::vector<EntityId> entities;
+    std::vector<RegionId> regions;
+
+    bool empty() const { return entities.empty() && regions.empty(); }
+    size_t count() const { return entities.size() + regions.size(); }
+};
+
+AttachmentDependents dependentsOf(const Document &doc, LayerId id);
+AttachmentDependents dependentsOf(const Document &doc, StyleId id);
+
+// The ordered command sequence that removes a layer or a style without leaving a
+// reference dangling. Apply it as one undo step.
+//
+// Freeze-shaped, like the parameter case and for the same reason: what the user
+// deleted was the organization, so only the organization is lost. A layer's
+// entities and regions move to the base layer, which every document has without
+// anyone creating one; a style's references are nulled and the geometry falls
+// back to the default look. Nothing moves and nothing else is removed.
+//
+// Refusing the bare removal is what makes this the only way to express one — and
+// it has to be refused, because the loader validates layer and style references,
+// so a dangling one is a document that saves and will not open.
+std::vector<Command> deletionStep(const Document &doc, LayerId id);
+std::vector<Command> deletionStep(const Document &doc, StyleId id);
+
 // The composites naming `id` as an operand, in ID order.
 std::vector<RegionId> compositesOver(const Document &doc, RegionId id);
 

@@ -18,7 +18,7 @@ std::vector<Command> randomStep(const Document &doc, Rng &rng) {
     const auto &entities = doc.entities().records();
     const auto &constraints = doc.constraints().records();
 
-    const uint32_t choice = rng.below(10);
+    const uint32_t choice = rng.below(12);
 
     if(choice < 4 || entities.empty()) {
         EntityRecord p;
@@ -63,6 +63,48 @@ std::vector<Command> randomStep(const Document &doc, Rng &rng) {
 
     if(choice < 9 && !constraints.empty()) {
         step.push_back(RemoveRecord<ConstraintRecord>{constraints[rng.below(constraints.size())].id});
+        return step;
+    }
+
+    // Organization: layers and styles, made and then hung off geometry. Without
+    // this the property never reaches a document where a layer is in use, which
+    // is the only state its removal is interesting in.
+    std::vector<LayerId> layers;
+    for(const LayerRecord &l : doc.layers().records()) layers.push_back(l.id);
+    std::vector<StyleId> styles;
+    for(const StyleRecord &s : doc.styles().records()) styles.push_back(s.id);
+
+    if(choice == 9) {
+        if(layers.empty()) {
+            LayerRecord l;
+            l.name = "layer";
+            l.order = static_cast<int32_t>(rng.below(5));
+            step.push_back(AddRecord<LayerRecord>{l});
+            return step;
+        }
+        if(styles.empty()) {
+            StyleRecord s;
+            s.name = "style";
+            s.strokeWidth = Slot(rng.real(0.5, 4.0));
+            step.push_back(AddRecord<StyleRecord>{s});
+            return step;
+        }
+        EntityRecord attached = *doc.entities().find(
+            entities[rng.below(entities.size())].id);
+        attached.layer = layers[rng.below(layers.size())];
+        attached.style = styles[rng.below(styles.size())];
+        step.push_back(SetRecord<EntityRecord>{std::move(attached)});
+        return step;
+    }
+
+    // And removing one, which is the path that used to leave every entity on it
+    // naming a record that is gone — a document that saves and will not load.
+    // Expressed as a step, like every other removal that could dangle.
+    if(choice == 10) {
+        if(!layers.empty() && rng.chance(2)) {
+            return deletionStep(doc, layers[rng.below(layers.size())]);
+        }
+        if(!styles.empty()) return deletionStep(doc, styles[rng.below(styles.size())]);
         return step;
     }
 

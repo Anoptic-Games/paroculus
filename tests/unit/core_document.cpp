@@ -588,6 +588,85 @@ TEST_CASE("layers and styles are organization, not semantics") {
     CHECK(doc.apply(AddRecord<EntityRecord>{orphan}).error == CommandError::UnknownOperand);
 }
 
+TEST_CASE("a layer still in use is emptied before it goes, never left dangling") {
+    // Load validation checks layer references, so an entity left naming a layer
+    // that is gone is a document that serializes and will not deserialize —
+    // saved once and unopenable after. Nothing deletes a layer today; the
+    // palette will grow one, and it will find the hole already closed.
+    Document doc;
+    LayerRecord layer;
+    layer.name = "guides";
+    const auto added = doc.apply(AddRecord<LayerRecord>{layer});
+    REQUIRE(added.ok());
+    const LayerId lid(added.allocated);
+
+    const EntityId a = addPoint(doc, 0.0, 0.0);
+    const EntityId b = addPoint(doc, 10.0, 0.0);
+    const EntityId edge = addSegment(doc, a, b);
+    for(EntityId id : {a, b, edge}) {
+        EntityRecord r = *doc.entities().find(id);
+        r.layer = lid;
+        REQUIRE(doc.apply(SetRecord<EntityRecord>{r}).ok());
+    }
+    RegionRecord region;
+    region.boundary = {edge};
+    region.layer = lid;
+    const auto regionAdded = doc.apply(AddRecord<RegionRecord>{region});
+    REQUIRE(regionAdded.ok());
+    const RegionId rid(regionAdded.allocated);
+
+    CHECK(dependentsOf(doc, lid).count() == 4);
+    CHECK(doc.apply(RemoveRecord<LayerRecord>{lid}).error == CommandError::HasDependents);
+
+    // The freeze-shaped answer: only the organization the user deleted is lost.
+    // Everything moves to the base layer, which every document has without
+    // anyone creating one, so the refusal never reaches the user as a refusal.
+    for(const Command &command : deletionStep(doc, lid)) REQUIRE(doc.apply(command).ok());
+    CHECK_FALSE(doc.layers().contains(lid));
+    CHECK(doc.entities().find(edge)->layer == LayerId());
+    CHECK(doc.regions().find(rid)->layer == LayerId());
+    CHECK(doc.entities().size() == 3);
+    CHECK(doc.regions().size() == 1);
+
+    // And the state it leaves is one the loader accepts, which is the whole
+    // point: the failure this closes was a file that wrote cleanly and refused
+    // to come back.
+    Document reloaded;
+    REQUIRE(deserialize(serialize(doc), reloaded).ok);
+    CHECK(sameRecords(doc, reloaded));
+}
+
+TEST_CASE("a style still in use is unhooked before it goes") {
+    // Same hole, same shape, and the same answer: the references are nulled and
+    // the geometry falls back to the default look. Nothing else about the
+    // records changes, because a style is hung off a record rather than
+    // something the record is built from.
+    Document doc;
+    StyleRecord style;
+    style.name = "ink";
+    style.strokeWidth = Slot(3.0);
+    const auto added = doc.apply(AddRecord<StyleRecord>{style});
+    REQUIRE(added.ok());
+    const StyleId sid(added.allocated);
+
+    const EntityId a = addPoint(doc, 0.0, 0.0);
+    EntityRecord styled = *doc.entities().find(a);
+    styled.style = sid;
+    REQUIRE(doc.apply(SetRecord<EntityRecord>{styled}).ok());
+
+    CHECK(dependentsOf(doc, sid).count() == 1);
+    CHECK(doc.apply(RemoveRecord<StyleRecord>{sid}).error == CommandError::HasDependents);
+
+    for(const Command &command : deletionStep(doc, sid)) REQUIRE(doc.apply(command).ok());
+    CHECK_FALSE(doc.styles().contains(sid));
+    CHECK_FALSE(doc.entities().find(a)->style.valid());
+    CHECK(doc.entities().find(a)->seeds[0] == 0.0);
+
+    Document reloaded;
+    REQUIRE(deserialize(serialize(doc), reloaded).ok);
+    CHECK(sameRecords(doc, reloaded));
+}
+
 TEST_CASE("construction is a role, not a type") {
     // A guide is an ordinary line with a render role, which is why every guide
     // capability falls out of not having a guide type.

@@ -341,6 +341,14 @@ CommandResult Document::apply(const Command &command) {
             } else if constexpr(std::is_same_v<C, AddRecord<StyleRecord>>) {
                 return applyAdd(styles_, c.record, styleCheck);
             } else if constexpr(std::is_same_v<C, RemoveRecord<StyleRecord>>) {
+                // The same refusal as everywhere else a reference could dangle.
+                // Load validation checks style references, so a record left
+                // naming a style that is gone is a document that serializes and
+                // will not deserialize. The style overload of deletionStep()
+                // nulls the references first.
+                if(!dependentsOf(*this, c.id).empty()) {
+                    return CommandResult{CommandError::HasDependents, 0};
+                }
                 return applyRemove(styles_, c.id);
             } else if constexpr(std::is_same_v<C, SetRecord<StyleRecord>>) {
                 return applySet(styles_, c.record, styleCheck);
@@ -348,6 +356,13 @@ CommandResult Document::apply(const Command &command) {
             } else if constexpr(std::is_same_v<C, AddRecord<LayerRecord>>) {
                 return applyAdd(layers_, c.record, alwaysValid);
             } else if constexpr(std::is_same_v<C, RemoveRecord<LayerRecord>>) {
+                // And the same for a layer. The base layer is what its
+                // occupants move to, which is why this refusal never reaches
+                // the user as "cannot delete: in use" — there is always
+                // somewhere to put them.
+                if(!dependentsOf(*this, c.id).empty()) {
+                    return CommandResult{CommandError::HasDependents, 0};
+                }
                 return applyRemove(layers_, c.id);
             } else if constexpr(std::is_same_v<C, SetRecord<LayerRecord>>) {
                 return applySet(layers_, c.record, alwaysValid);
@@ -546,6 +561,67 @@ Dependents dependentsOf(const Document &doc, EntityId id) {
             }
         }
     }
+    return out;
+}
+
+namespace {
+
+// Both attachments walk the same two tables, so the walk is written once and
+// told which field to read.
+template <typename Id, typename Field>
+AttachmentDependents attachmentsOf(const Document &doc, Id id, Field field) {
+    AttachmentDependents out;
+    if(!id.valid()) return out;  // the base layer and the null style are not records
+    for(const EntityRecord &e : doc.entities().records()) {
+        if(field(e) == id) out.entities.push_back(e.id);
+    }
+    for(const RegionRecord &r : doc.regions().records()) {
+        if(field(r) == id) out.regions.push_back(r.id);
+    }
+    return out;
+}
+
+// And so does the reassignment, which is the same edit either way: null the
+// field and leave every other byte of the record alone.
+template <typename Id, typename Field>
+std::vector<Command> detachStep(const Document &doc, Id id, Field field) {
+    std::vector<Command> out;
+    const AttachmentDependents deps = attachmentsOf(doc, id, field);
+    for(EntityId e : deps.entities) {
+        EntityRecord r = *doc.entities().find(e);
+        field(r) = Id();
+        out.push_back(SetRecord<EntityRecord>{std::move(r)});
+    }
+    for(RegionId g : deps.regions) {
+        RegionRecord r = *doc.regions().find(g);
+        field(r) = Id();
+        out.push_back(SetRecord<RegionRecord>{std::move(r)});
+    }
+    return out;
+}
+
+constexpr auto layerField = [](auto &r) -> auto & { return r.layer; };
+constexpr auto styleField = [](auto &r) -> auto & { return r.style; };
+
+}  // namespace
+
+AttachmentDependents dependentsOf(const Document &doc, LayerId id) {
+    return attachmentsOf(doc, id, layerField);
+}
+
+AttachmentDependents dependentsOf(const Document &doc, StyleId id) {
+    return attachmentsOf(doc, id, styleField);
+}
+
+std::vector<Command> deletionStep(const Document &doc, LayerId id) {
+    std::vector<Command> out = detachStep(doc, id, layerField);
+    out.push_back(RemoveRecord<LayerRecord>{id});
+    return out;
+}
+
+std::vector<Command> deletionStep(const Document &doc, StyleId id) {
+    std::vector<Command> out = detachStep(doc, id, styleField);
+    out.push_back(RemoveRecord<StyleRecord>{id});
     return out;
 }
 
