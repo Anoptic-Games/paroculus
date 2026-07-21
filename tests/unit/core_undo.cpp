@@ -187,6 +187,58 @@ TEST_CASE("a composite gesture is one undo step") {
     CHECK(journal.depth() == 0);
 }
 
+TEST_CASE("many adds to one table in one step invert just in time, at every prefix") {
+    // The composite gesture above pairs adds across two tables. Two-plus adds to
+    // the SAME table within one step is the case the property corpus never
+    // reaches: each inverse is computed against the document the previous add
+    // already mutated, so the second must name the id the allocator will hand
+    // the second — accounting for the first's allocation rather than colliding
+    // with it. Checked at every prefix, because a bug that cancels out over the
+    // whole run still corrupts the middle.
+    Document doc;
+    UndoJournal journal;
+
+    std::vector<Document> history;
+    history.push_back(doc);
+
+    // Four steps, each adding two or three points at once. Null ids throughout,
+    // so every inverse is a just-in-time allocation prediction.
+    for(int stepIndex = 0; stepIndex < 4; stepIndex++) {
+        const int adds = 2 + (stepIndex % 2);  // 2, 3, 2, 3
+        std::vector<Command> step;
+        for(int j = 0; j < adds; j++) {
+            EntityRecord p;
+            p.kind = EntityKind::Point;
+            p.seeds = {static_cast<double>(stepIndex), static_cast<double>(j)};
+            step.push_back(AddRecord<EntityRecord>{p});
+        }
+        const size_t before = doc.entities().size();
+        REQUIRE(journal.applyStep(doc, "adds", std::move(step)) == CommandError::None);
+        REQUIRE(doc.entities().size() == before + static_cast<size_t>(adds));
+        history.push_back(doc);
+    }
+
+    // The ids landed distinct and monotonic: no inverse predicted an id a later
+    // add in the same step also took.
+    const auto &recs = doc.entities().records();
+    for(size_t i = 1; i < recs.size(); i++) CHECK(recs[i - 1].id < recs[i].id);
+
+    // All the way back, checking each prefix. sameRecords rather than ==: undo
+    // restores every record exactly but never rewinds a watermark.
+    for(size_t i = history.size(); i-- > 1;) {
+        REQUIRE(journal.undo(doc));
+        CHECK(sameRecords(doc, history[i - 1]));
+    }
+    CHECK_FALSE(journal.canUndo());
+
+    // And all the way forward, re-landing the identical records at each prefix
+    // because every add was pinned to the id it first took.
+    for(size_t i = 1; i < history.size(); i++) {
+        REQUIRE(journal.redo(doc));
+        CHECK(sameRecords(doc, history[i]));
+    }
+}
+
 TEST_CASE("a step that fails partway rolls back entirely") {
     // A half-applied gesture is not a state the user can reason about or undo
     // out of.

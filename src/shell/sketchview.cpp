@@ -164,19 +164,11 @@ PointerEvent SketchView::translate(const QPointF &position, Qt::MouseButtons but
 PointerEvent SketchView::translate(const QPointF &position, Qt::MouseButtons buttons,
                                    Qt::KeyboardModifiers modifiers, PointerAction action,
                                    int clicks) const {
-    Button button = Button::None;
-    if(buttons & Qt::LeftButton) button = Button::Left;
-    else if(buttons & Qt::MiddleButton) button = Button::Middle;
-    else if(buttons & Qt::RightButton) button = Button::Right;
-
-    Modifier mods = Modifier::None;
-    if(modifiers & Qt::ShiftModifier) mods |= Modifier::Shift;
-    if(modifiers & Qt::ControlModifier) mods |= Modifier::Control;
-    if(modifiers & Qt::AltModifier) mods |= Modifier::Alt;
-
-    // Both spaces filled from one conversion, so they can never disagree.
-    return PointerEvent::at(action, Eigen::Vector2d(position.x(), position.y()),
-                            session_->viewport().view, button, mods, clicks);
+    // The view in force now is the only thing this reads from SketchView; the
+    // rest is a pure remap, split into shelltest::translatePointer so a test can
+    // reach it without a live session.
+    return shelltest::translatePointer(position, buttons, modifiers,
+                                       session_->viewport().view, action, clicks);
 }
 
 void SketchView::mousePressEvent(QMouseEvent *event) {
@@ -278,7 +270,7 @@ void SketchView::wheelEvent(QWheelEvent *event) {
 // state machine rather than the catalogue. Everything else is resolved by
 // registry.h, so what a keystroke means is decided somewhere a headless test
 // can read it rather than inside a Qt event handler.
-namespace {
+namespace shelltest {
 
 // The digit engraved on a key's face, 1..9, or 0 for anything else. Read from
 // the physical key, never from text() or key(): registry.h defines `digit` as
@@ -313,7 +305,30 @@ paroculus::KeyStroke strokeOf(const QKeyEvent *event) {
     return stroke;
 }
 
-}  // namespace
+// Qt pointer state to an abstract PointerEvent. Buttons and modifiers map
+// straight across; the document position is filled through `view`, which is all
+// SketchView::translate reads from its own state. Split out so the mapping is
+// reachable without a live view — the translation tests build no SketchView.
+paroculus::PointerEvent translatePointer(const QPointF &position, Qt::MouseButtons buttons,
+                                         Qt::KeyboardModifiers modifiers,
+                                         const paroculus::ViewTransform &view,
+                                         PointerAction action, int clicks) {
+    Button button = Button::None;
+    if(buttons & Qt::LeftButton) button = Button::Left;
+    else if(buttons & Qt::MiddleButton) button = Button::Middle;
+    else if(buttons & Qt::RightButton) button = Button::Right;
+
+    Modifier mods = Modifier::None;
+    if(modifiers & Qt::ShiftModifier) mods |= Modifier::Shift;
+    if(modifiers & Qt::ControlModifier) mods |= Modifier::Control;
+    if(modifiers & Qt::AltModifier) mods |= Modifier::Alt;
+
+    // Both spaces filled from one conversion, so they can never disagree.
+    return PointerEvent::at(action, Eigen::Vector2d(position.x(), position.y()),
+                            view, button, mods, clicks);
+}
+
+}  // namespace shelltest
 
 void SketchView::keyPressEvent(QKeyEvent *event) {
     const bool typing = session_->presentation().numericActive;
@@ -338,7 +353,7 @@ void SketchView::keyPressEvent(QKeyEvent *event) {
 
         default: {
             const paroculus::KeyBinding binding =
-                paroculus::resolveKey(paroculus::contextOf(*session_), strokeOf(event));
+                paroculus::resolveKey(paroculus::contextOf(*session_), shelltest::strokeOf(event));
             switch(binding.kind) {
                 case paroculus::KeyBinding::Kind::Text:
                     session_->type(binding.character);

@@ -473,3 +473,135 @@ TEST_CASE("a hand-written action step survives replay as what it did") {
     replay(secondSession, rerecorded);
     CHECK(secondSession.tool() == ToolKind::Circle);
 }
+
+namespace {
+
+// A session whose recording carries the guarded edit keys. Finding 8's fix made
+// Delete, Undo and Redo end whatever gesture is in flight before they act, and
+// nothing round-tripped a recording that contained such a keystroke. This drives
+// a drag with Undo pressed mid-drag, a selection deleted with Delete pressed
+// mid-drag, and Delete pressed while a creation tool's placement is in flight —
+// then draws a fresh segment to show the tool survived the guard.
+//
+// Every tool click sits on a grid line (multiples of the 20-unit step), because
+// the snap policy is deliberately not recorded: the grid is enabled by default,
+// so a placement snapped one way at record time and the other at replay would
+// break the document identity for a reason that has nothing to do with the
+// guards. Grid-aligned coordinates snap to themselves either way.
+Recording recordGuarded() {
+    Document doc;
+    UndoJournal journal;
+    Session session(doc, journal);
+
+    Recording out;
+    out.start = doc;
+
+    ScriptRecorder recorder;
+    session.setRecorder(&recorder);
+    session.setViewport(testViewport());
+
+    const Viewport &v = session.viewport();
+    auto move = [&](Point p) {
+        session.handle(PointerEvent::at(PointerAction::Move, v.view.toScreen(p), v.view));
+    };
+    auto press = [&](Point p) {
+        move(p);
+        session.handle(
+            PointerEvent::at(PointerAction::Press, v.view.toScreen(p), v.view, Button::Left));
+    };
+    auto release = [&](Point p) {
+        session.handle(
+            PointerEvent::at(PointerAction::Release, v.view.toScreen(p), v.view, Button::Left));
+    };
+    // A press then a move past the drag threshold, stopping short of releasing —
+    // so a gesture is left in flight for the next key to guard against.
+    auto pressDrag = [&](Point at, Point to) {
+        press(at);
+        move(to);
+    };
+
+    // A segment chain, off-axis so nothing auto-commits: A-B then B-C.
+    session.setTool(ToolKind::Line);
+    press(Point{-120.0, -20.0});  // opens the chain
+    press(Point{-40.0, 20.0});    // commits A-B
+    press(Point{40.0, -20.0});    // commits B-C
+
+    // Start a drag on B and press Undo mid-drag. The guard rolls the drag back
+    // and only then undoes B-C.
+    session.setTool(ToolKind::Select);
+    pressDrag(Point{-40.0, 20.0}, Point{40.0, 20.0});
+    session.handle(Key::Undo);
+
+    // Continue: an empty-space click clears the run the undo left partly deleted,
+    // so the next press re-selects the survivors cleanly rather than dragging a
+    // stale set.
+    press(Point{200.0, 200.0});
+    release(Point{200.0, 200.0});
+
+    // Pressing A selects the surviving run, the move begins a drag, and Delete
+    // mid-drag rolls it back and takes the selection with it.
+    pressDrag(Point{-120.0, -20.0}, Point{-40.0, -20.0});
+    session.handle(Key::Delete);
+
+    // Delete while a creation tool's placement is in flight: the anchor resets
+    // and nothing is selected, so nothing is removed — the tool-reset arm of the
+    // same guard.
+    session.setTool(ToolKind::Line);
+    press(Point{-100.0, 60.0});  // opens a placement
+    session.handle(Key::Delete);
+
+    // And the tool still draws: a fresh segment commits after the guard, so the
+    // final document is one segment rather than a stuck placement.
+    press(Point{-100.0, 60.0});
+    press(Point{20.0, 80.0});
+
+    out.script.document = out.start;
+    out.script.steps = recorder.steps();
+    out.ended = doc;
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("a recording with guarded edit keys replays to the document it recorded") {
+    // The gap finding 8 left open: no test round-tripped a recording containing a
+    // Delete, Undo or Redo pressed during a gesture, so the guard that ends the
+    // gesture first was never exercised through the format.
+    const Recording r = recordGuarded();
+
+    GestureScript parsed;
+    REQUIRE(parseScript(serializeScript(r.script), parsed).ok);
+
+    Document doc = parsed.document;
+    UndoJournal journal;
+    Session session(doc, journal);
+    replay(session, parsed);
+
+    CHECK(serialize(doc) == serialize(r.ended));
+}
+
+TEST_CASE("re-recording a guarded-key replay reproduces the script and its document") {
+    // Record -> replay -> record over the guard paths: a mid-drag Undo, a
+    // selection deleted mid-drag, and a Delete while a placement is in flight.
+    // Both the two scripts and the two documents they land on must be
+    // byte-identical — the identity the format exists to guarantee, now over the
+    // keys that end a gesture before they edit.
+    const Recording r = recordGuarded();
+    const std::string text = serializeScript(r.script);
+
+    GestureScript parsed;
+    REQUIRE(parseScript(text, parsed).ok);
+
+    Document doc = parsed.document;
+    UndoJournal journal;
+    Session session(doc, journal);
+    ScriptRecorder again;
+    session.setRecorder(&again);
+    replay(session, parsed);
+
+    GestureScript second;
+    second.document = parsed.document;
+    second.steps = again.steps();
+    CHECK(serializeScript(second) == text);
+    CHECK(serialize(doc) == serialize(r.ended));
+}

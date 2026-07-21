@@ -9,6 +9,7 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <unordered_set>
 
 #include "core/composition.h"
 #include "core/compound.h"
@@ -16,6 +17,7 @@
 #include "core/measure.h"
 #include "core/persist.h"
 #include "core/pose.h"
+#include "core/tags.h"
 #include "core/topology.h"
 #include "core/transform.h"
 #include "solve/solve.h"
@@ -994,4 +996,456 @@ TEST_CASE("a transform refuses on a frame-referenced relation") {
     const TransformStep scaled = scaleStep(doc, selection, scale);
     CHECK(scaled.error == TransformError::FrameReferenced);
     CHECK(scaled.commands.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Test-gap closures: circles, higher-order records, and the two properties
+// PLANS asks for as properties rather than examples.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("rotate and scale of a circle") {
+    // A circle is a centre point plus a one-parameter radius, and the two travel
+    // by different rules: rotation is a position map that leaves lengths alone,
+    // uniform scale is the length factor the radius rides. rewritten() in
+    // transform.cpp is the one place that says so, and scaleStep's slot handling
+    // is what keeps a driven radius holding across the rescale.
+    const Point centrePos{20.0, 10.0};
+    const double r = 8.0;
+
+    SUBCASE("rotation moves the centre and leaves the radius seed exactly alone") {
+        Document doc;
+        const EntityId centre = addPoint(doc, centrePos.x, centrePos.y);
+        const EntityId circle = addCircle(doc, centre, r);
+        const std::vector<EntityId> selection{centre, circle};
+
+        RotateOptions options;
+        options.centre = Point{5.0, -3.0};  // arbitrary, not the circle centre
+        options.angle = 0.9;
+        const TransformStep step = rotateStep(doc, selection, options);
+        REQUIRE(step.ok());
+        // Only the centre is written: a rotation leaves the radius unchanged, so
+        // rewritten() returns nullopt for the circle and emits no command.
+        CHECK(step.moved == 1);
+        REQUIRE(applyAll(doc, step.commands));
+
+        const double cs = std::cos(options.angle), sn = std::sin(options.angle);
+        const double dx = centrePos.x - options.centre.x;
+        const double dy = centrePos.y - options.centre.y;
+        const EntityRecord *cen = doc.entities().find(centre);
+        REQUIRE(cen != nullptr);
+        CHECK(cen->seeds[0] ==
+              doctest::Approx(options.centre.x + cs * dx - sn * dy).epsilon(1e-12));
+        CHECK(cen->seeds[1] ==
+              doctest::Approx(options.centre.y + sn * dx + cs * dy).epsilon(1e-12));
+        // Exactly, not approximately: no command ever touched the radius seed.
+        CHECK(doc.entities().find(circle)->seeds[0] == r);
+    }
+
+    SUBCASE("uniform scale multiplies the radius seed by the factor exactly") {
+        Document doc;
+        const EntityId centre = addPoint(doc, centrePos.x, centrePos.y);
+        const EntityId circle = addCircle(doc, centre, r);
+        const std::vector<EntityId> selection{centre, circle};
+
+        ScaleOptions options;
+        options.centre = Point{0.0, 0.0};
+        options.factor = 2.0;
+        const TransformStep step = scaleStep(doc, selection, options);
+        REQUIRE(step.ok());
+        // Centre and radius both written this time — the radius is a length.
+        CHECK(step.moved == 2);
+        REQUIRE(applyAll(doc, step.commands));
+        CHECK(doc.entities().find(circle)->seeds[0] == r * options.factor);
+    }
+
+    SUBCASE("scale-the-values co-scales a driving Radius so the re-solve is the identity") {
+        Document doc;
+        const EntityId centre = addPoint(doc, centrePos.x, centrePos.y);
+        const EntityId circle = addCircle(doc, centre, r);
+        const ConstraintId radius =
+            addConstraint(doc, ConstraintKind::Radius, {circle}, Slot(r));
+        const std::vector<EntityId> selection{centre, circle};
+
+        // Radius is Invariance::Absolute with valueArity 1, so it is the one
+        // relation scale-the-values rewrites in this cluster.
+        CHECK(absoluteValuedIn(doc, transformClosure(doc, selection)).size() == 1);
+
+        ScaleOptions options;
+        options.centre = Point{0.0, 0.0};
+        options.factor = 2.0;
+        options.values = ValueAnswer::ScaleTheValues;
+        const TransformStep step = scaleStep(doc, selection, options);
+        REQUIRE(step.ok());
+        CHECK(step.rescaled == 1);
+        CHECK(step.straddling == 0);
+        REQUIRE(applyAll(doc, step.commands));
+
+        // scaledSlot folds a constant, so the slot is a plain constant equal to
+        // the scaled seed: the circle holds its own radius where it stands, and
+        // there is nothing left for the re-solve to do.
+        const ConstraintRecord *c = doc.constraints().find(radius);
+        REQUIRE(c != nullptr);
+        CHECK(c->value.isConstant());
+        CHECK(c->value.constant() == r * options.factor);
+        CHECK(doc.entities().find(circle)->seeds[0] == r * options.factor);
+        CHECK(worstResidual(doc) < 1e-9);
+        CHECK(resolveDrift(doc) < 1e-9);
+    }
+
+    SUBCASE("let-them-resist keeps the slot and the solve pulls the radius back") {
+        Document doc;
+        const EntityId centre = addPoint(doc, centrePos.x, centrePos.y);
+        const EntityId circle = addCircle(doc, centre, r);
+        const ConstraintId radius =
+            addConstraint(doc, ConstraintKind::Radius, {circle}, Slot(r));
+        const std::vector<EntityId> selection{centre, circle};
+
+        ScaleOptions options;
+        options.centre = Point{0.0, 0.0};
+        options.factor = 2.0;
+        options.values = ValueAnswer::LetThemResist;
+        const TransformStep step = scaleStep(doc, selection, options);
+        REQUIRE(step.ok());
+        CHECK(step.rescaled == 0);
+        REQUIRE(applyAll(doc, step.commands));
+
+        // The seed grew but the slot did not, so the drawing disagrees with its
+        // own dimension until the solver acts.
+        CHECK(doc.constraints().find(radius)->value.constant() == r);
+        CHECK(doc.entities().find(circle)->seeds[0] == r * options.factor);
+        CHECK(worstResidual(doc) > 1.0);
+
+        // And the solve pulls the radius back to the driven value: the resistance
+        // is the drawing catching up to a dimension that refused to scale.
+        SolveContext context = SolveContext::forWholeDocument(doc);
+        SolveOptions solveOptions;
+        solveOptions.diagnoseFailures = false;
+        REQUIRE(solve(doc, context, solveOptions).ok());
+        Pose pose(doc);
+        pose.overlay(context.params());
+        CHECK(*pose.curveRadius(circle) == doctest::Approx(r));
+    }
+}
+
+namespace {
+
+// A whole rectangle tag built exactly as the rectangle tool's macro builds one:
+// four edges each with their own endpoints, joined corner to corner by
+// coincidence, and squared against the document frame by two horizontals and two
+// verticals. Whole so rectangleFrame answers, and axis-referenced so a rotation
+// with retarget has something to carry.
+struct TaggedRectangle {
+    Document doc;
+    TagId tag;
+    std::vector<EntityId> selection;  // the four edges
+};
+
+TaggedRectangle taggedRectangle() {
+    TaggedRectangle t;
+    const Point corners[4] = {{0.0, 0.0}, {60.0, 0.0}, {60.0, 40.0}, {0.0, 40.0}};
+    EntityId ends[4][2];
+    EntityId edges[4];
+    for(int i = 0; i < 4; i++) {
+        const Point a = corners[i];
+        const Point b = corners[(i + 1) % 4];
+        ends[i][0] = addPoint(t.doc, a.x, a.y);
+        ends[i][1] = addPoint(t.doc, b.x, b.y);
+        edges[i] = addSegment(t.doc, ends[i][0], ends[i][1]);
+    }
+
+    std::vector<ConstraintId> squaring;
+    for(int i = 0; i < 4; i++) {
+        squaring.push_back(addConstraint(t.doc, ConstraintKind::Coincident,
+                                         {ends[i][1], ends[(i + 1) % 4][0]}));
+    }
+    for(int i = 0; i < 4; i++) {
+        squaring.push_back(addConstraint(
+            t.doc, (i % 2 == 0) ? ConstraintKind::Horizontal : ConstraintKind::Vertical,
+            {edges[i]}));
+    }
+
+    TagRecord tag;
+    tag.kind = TagKind::Rectangle;
+    tag.entities = {edges[0], edges[1], edges[2], edges[3]};
+    tag.constraints = squaring;
+    t.tag = TagId(t.doc.apply(AddRecord<TagRecord>{tag}).allocated);
+    t.selection = {edges[0], edges[1], edges[2], edges[3]};
+    return t;
+}
+
+}  // namespace
+
+TEST_CASE("a transform carries higher-order records without editing them") {
+    SUBCASE("a rotated tagged rectangle stays whole and rectangleFrame keeps answering") {
+        TaggedRectangle t = taggedRectangle();
+        REQUIRE(worstResidual(t.doc) < 1e-9);  // square where it was drawn
+
+        // A rectangle offers its frame before the rotation.
+        REQUIRE(rectangleFrame(t.doc, t.tag).has_value());
+
+        RotateOptions options;
+        options.centre = Point{15.0, 5.0};
+        options.angle = 0.5;
+        options.axes = AxisAnswer::RetargetToClusterFrame;
+        const TransformStep step = rotateStep(t.doc, t.selection, options);
+        REQUIRE(step.ok());
+        // Two horizontals and two verticals, all retargeted to the one frame.
+        CHECK(step.retargeted == 4);
+        REQUIRE(step.frame.valid());
+        REQUIRE(applyAll(t.doc, step.commands));
+
+        // The tag record is untouched by a seed rewrite, so it is still whole.
+        const TagRecord *tag = t.doc.tags().find(t.tag);
+        REQUIRE(tag != nullptr);
+        CHECK(tagState(t.doc, *tag) == TagState::Whole);
+
+        // And rectangleFrame keeps answering: width and height are read from the
+        // relations that square it, which still declare horizontal and vertical —
+        // now against the cluster frame — so a rotation cannot make it stop.
+        const std::optional<RectangleFrame> frame = rectangleFrame(t.doc, t.tag);
+        REQUIRE(frame.has_value());
+        CHECK(frame->widthEdge.valid());
+        CHECK(frame->heightEdge.valid());
+
+        // The retarget is a genuine isometry: the shape holds against its tilted
+        // frame. The looser tolerance is the axis residual's arc cosine, as the
+        // retarget subcase above explains.
+        CHECK(worstResidual(t.doc) < 1e-5);
+    }
+
+    SUBCASE("a rotated filled outline leaves its region record untouched") {
+        // A transform is a seed rewrite and names no region, so a fill over the
+        // rotated outline is byte-identical afterwards and still walks — the fill
+        // has no geometry of its own to fall out of step.
+        Triangle t = rigidTriangle();
+        RegionRecord region;
+        region.boundary = {t.ab, t.bc, t.ca};
+        const RegionId id(t.doc.apply(AddRecord<RegionRecord>{region}).allocated);
+        REQUIRE(id.valid());
+        REQUIRE(regionState(t.doc, id) == RegionState::Whole);
+        const RegionRecord before = *t.doc.regions().find(id);
+
+        RotateOptions options;
+        options.centre = Point{-6.0, 9.0};
+        options.angle = 1.1;
+        const TransformStep step = rotateStep(t.doc, t.all, options);
+        REQUIRE(step.ok());
+        REQUIRE(applyAll(t.doc, step.commands));
+
+        // Untouched: the record compares equal to what it was, which is the
+        // strongest form of "no region command was in the step".
+        CHECK(*t.doc.regions().find(id) == before);
+        CHECK(regionState(t.doc, id) == RegionState::Whole);
+        CHECK(boundaryRing(t.doc, *t.doc.regions().find(id)).has_value());
+
+        // Still whole after the re-solve, which the rigid cluster makes an
+        // identity — the ring never depended on where the geometry settled.
+        CHECK(resolveDrift(t.doc) < 1e-9);
+        CHECK(boundaryRing(t.doc, *t.doc.regions().find(id)).has_value());
+    }
+}
+
+namespace {
+
+// A minimally-rigid random cluster: n points in convex position — a jittered
+// ring, so no two coincide and no fan triangle degenerates — fan-triangulated
+// from point 0 with a point-point distance on each of the 2n-3 edges set to the
+// exact seed distance.
+//
+// Every relation is a distance, which is rigid-motion invariant, so the cluster
+// is satisfied exactly at its seeds and stays so under any rotation. 2n-3
+// independent distances is minimally rigid, so the solve reports a clean dof of
+// 3 rather than flagging redundancy. Degeneracy is excluded by construction (the
+// jitter stays inside each point's angular sector), never by a tolerance.
+struct RigidCluster {
+    Document doc;
+    std::vector<EntityId> points;
+    std::vector<EntityId> all;  // points and edges: the transform/copy selection
+};
+
+RigidCluster randomRigidCluster(Rng &rng) {
+    constexpr double kPi = 3.14159265358979323846;
+    RigidCluster cluster;
+    const size_t n = 4 + rng.below(3);  // 4..6 points
+
+    std::vector<Point> pos;
+    const double slice = 2.0 * kPi / static_cast<double>(n);
+    for(size_t i = 0; i < n; i++) {
+        // Each point owns one angular sector; the jitter never leaves it, so the
+        // ring stays in convex order and no two points can land together.
+        const double angle = slice * (static_cast<double>(i) + rng.real(0.2, 0.8));
+        const double radius = rng.real(70.0, 130.0);
+        pos.push_back(Point{radius * std::cos(angle), radius * std::sin(angle)});
+    }
+
+    for(const Point &p : pos) cluster.points.push_back(addPoint(cluster.doc, p.x, p.y));
+    cluster.all = cluster.points;
+
+    auto edge = [&](size_t i, size_t j) {
+        cluster.all.push_back(addSegment(cluster.doc, cluster.points[i], cluster.points[j]));
+        const double d = std::hypot(pos[j].x - pos[i].x, pos[j].y - pos[i].y);
+        addConstraint(cluster.doc, ConstraintKind::PointPointDistance,
+                      {cluster.points[i], cluster.points[j]}, Slot(d));
+    };
+    // A fan from vertex 0 plus the polygon boundary between consecutive vertices:
+    // (n-1) + (n-2) = 2n-3 edges, one triangulation of the convex polygon.
+    for(size_t i = 1; i < n; i++) edge(0, i);
+    for(size_t i = 1; i + 1 < n; i++) edge(i, i + 1);
+    return cluster;
+}
+
+}  // namespace
+
+TEST_CASE("rotating a random rigid cluster is an isometry (property)") {
+    // PLANS calls isometry a property; the fixed-fixture case above is one point
+    // of it. Fifty seeded clusters of random shape, each rotated about a random
+    // centre by a random angle, exercise the claim that a seed rewrite of a
+    // rigid-motion-invariant cluster leaves every internal residual at zero
+    // before anything re-solves — so the re-solve is the identity, not a settling.
+    Rng rng(0x9E3779B97F4A7C15ULL);
+    for(int iter = 0; iter < 50; iter++) {
+        CAPTURE(iter);
+        RigidCluster cluster = randomRigidCluster(rng);
+        REQUIRE(worstResidual(cluster.doc) < 1e-9);  // satisfied at its own seeds
+
+        RotateOptions options;
+        options.centre = Point{rng.real(-150.0, 150.0), rng.real(-150.0, 150.0)};
+        options.angle = rng.real(-3.0, 3.0);
+        const TransformStep step = rotateStep(cluster.doc, cluster.all, options);
+        REQUIRE(step.ok());
+        // A distance-built cluster carries no axis relation, so nothing is
+        // retargeted and no frame is created.
+        CHECK(step.retargeted == 0);
+        CHECK(!step.frame.valid());
+        REQUIRE(applyAll(cluster.doc, step.commands));
+
+        // The whole claim, before anything re-solved, and then the identity.
+        CHECK(worstResidual(cluster.doc) < 1e-9);
+        CHECK(resolveDrift(cluster.doc) < 1e-9);
+    }
+}
+
+TEST_CASE("copy of a random constrained cluster is a kind-preserving bijection (property)") {
+    // Copy isomorphism as a property rather than a fixture: fifty seeded clusters,
+    // each copied by a random offset, must come back a kind-preserving bijection
+    // onto fresh IDs with every internal relation intact and nothing dropped.
+    Rng rng(0xD1B54A32D192ED03ULL);
+    for(int iter = 0; iter < 50; iter++) {
+        CAPTURE(iter);
+        RigidCluster cluster = randomRigidCluster(rng);
+        const size_t entitiesBefore = cluster.doc.entities().size();
+        const size_t constraintsBefore = cluster.doc.constraints().size();
+
+        const double dx = rng.real(-300.0, 300.0);
+        const double dy = rng.real(-300.0, 300.0);
+        const CopyStep copy = copyStep(cluster.doc, cluster.all, dx, dy);
+        REQUIRE(!copy.empty());
+
+        // Every relation is an internal distance: nothing straddles the boundary
+        // and nothing is frame-referenced, so the multisets are equal and the drop
+        // counts — which is what a straddle or frame reference would show up as —
+        // are zero.
+        CHECK(copy.droppedConstraints == 0);
+        CHECK(copy.droppedRegions == 0);
+        CHECK(copy.droppedTags == 0);
+        CHECK(copy.entities.size() == entitiesBefore);
+        CHECK(copy.constraints.size() == constraintsBefore);
+
+        // Fresh IDs, disjoint from every original and from each other. An image ID
+        // is absent from the document until the step is applied, which is the
+        // strongest statement of "above the watermark and colliding with nothing".
+        std::unordered_set<EntityId> entityImages;
+        for(const auto &[from, to] : copy.entities) {
+            CHECK(from != to);
+            CHECK(cluster.doc.entities().find(to) == nullptr);
+            CHECK(entityImages.insert(to).second);
+        }
+        std::unordered_set<ConstraintId> constraintImages;
+        for(const auto &[from, to] : copy.constraints) {
+            CHECK(from != to);
+            CHECK(cluster.doc.constraints().find(to) == nullptr);
+            CHECK(constraintImages.insert(to).second);
+        }
+
+        REQUIRE(applyAll(cluster.doc, copy.commands));
+
+        // Kind-preserving both ways, every point image at the offset, and every
+        // relation rebound to the image of what it named.
+        for(const auto &[from, to] : copy.entities) {
+            const EntityRecord *original = cluster.doc.entities().find(from);
+            const EntityRecord *image = cluster.doc.entities().find(to);
+            REQUIRE(original != nullptr);
+            REQUIRE(image != nullptr);
+            CHECK(original->kind == image->kind);
+            CHECK(original->role == image->role);
+            if(image->kind == EntityKind::Point) {
+                CHECK(image->seeds[0] == doctest::Approx(original->seeds[0] + dx));
+                CHECK(image->seeds[1] == doctest::Approx(original->seeds[1] + dy));
+            }
+        }
+        for(const auto &[from, to] : copy.constraints) {
+            const ConstraintRecord *original = cluster.doc.constraints().find(from);
+            const ConstraintRecord *image = cluster.doc.constraints().find(to);
+            REQUIRE(original != nullptr);
+            REQUIRE(image != nullptr);
+            CHECK(original->kind == image->kind);
+            CHECK(original->value == image->value);
+            for(size_t i = 0; i < boundOperandCount(*original); i++) {
+                CHECK(image->operands[i] == copy.entities.at(original->operands[i]));
+            }
+        }
+
+        // The whole document — original and copy — is satisfied where it stands,
+        // so the copy holds at its offset placement with nothing to re-solve.
+        CHECK(worstResidual(cluster.doc) < 1e-9);
+        CHECK(resolveDrift(cluster.doc) < 1e-9);
+    }
+}
+
+TEST_CASE("distribute over coincident interior points is a degeneracy the guard misses") {
+    // distributeStep's only degeneracy guard checks the span ENDS — the first and
+    // last points along the run. Two coincident points in the INTERIOR pass it, so
+    // the step applies and emits a zero-length gap segment with an equal-gap
+    // relation over it. That gap has no direction, so its length derivative is
+    // 0/0: the resulting component cannot be solved. This pins that behaviour
+    // rather than leaving it silent, and names the guard's current scope.
+    Document doc;
+    const EntityId a = addPoint(doc, 0.0, 0.0);   // span start
+    const EntityId b = addPoint(doc, 15.0, 0.0);  // interior
+    const EntityId c = addPoint(doc, 15.0, 0.0);  // interior, coincident with b
+    const EntityId d = addPoint(doc, 30.0, 0.0);  // span end
+    const std::vector<EntityId> selection{a, b, c, d};
+
+    const CompoundStep step = distributeStep(doc, selection);
+    // Applies: the guard rejects only a zero-length SPAN, and a and d are apart.
+    REQUIRE(step.ok());
+    CHECK(step.entities.size() == 4);     // span plus three gaps
+    CHECK(step.constraints.size() == 4);  // two collinear, two equal-gap
+    REQUIRE(applyAll(doc, step.commands));
+
+    // One gap joins the two coincident interior points and so has zero length.
+    bool zeroGap = false;
+    for(EntityId id : step.entities) {
+        const EntityRecord *e = doc.entities().find(id);
+        REQUIRE(e != nullptr);
+        if(e->kind != EntityKind::Segment) continue;
+        const EntityRecord *p0 = doc.entities().find(e->points[0]);
+        const EntityRecord *p1 = doc.entities().find(e->points[1]);
+        if(p0 != nullptr && p1 != nullptr && p0->seeds[0] == p1->seeds[0] &&
+           p0->seeds[1] == p1->seeds[1]) {
+            zeroGap = true;
+        }
+    }
+    CHECK(zeroGap);
+
+    // Solving cannot converge: the zero-length gap's length derivative is 0/0, so
+    // the Jacobian carries a NaN and Newton bails. The two didn't-converge return
+    // paths in the vendored solver map to exactly these two statuses.
+    SolveContext context = SolveContext::forWholeDocument(doc);
+    SolveOptions options;
+    options.diagnoseFailures = false;
+    const SolveOutcome outcome = solve(doc, context, options);
+    CHECK_FALSE(outcome.ok());
+    CHECK((outcome.status == SolveStatus::DidNotConverge ||
+           outcome.status == SolveStatus::Inconsistent));
 }

@@ -1012,6 +1012,25 @@ here: true parallel solving behind a thread-safe solver, frame-time benchmarking
 and the deep-nested-composite and external-path-notation corners of the SVG
 converter, each counted or documented rather than left silent.
 
+Amended after the stage 0-8 review, docs/REVIEW.md, whose Disposition section
+is the status of record. The fixes changed five things the stages above claim.
+Mirror drops the null-reference axis relations a reflection cannot preserve,
+counted through CompoundStep to the surface, and flips a tangency's end with
+the arc's endpoint swap — stage 7's "satisfying every constraint the original
+did" was false for both. The origin-referenced symmetric kinds carry a
+frame-referenced taxonomy mark: copies drop them with a count and transforms
+refuse them whole, because a frame that is not an operand can be neither
+retargeted nor rewritten, so the two-answers framing above does not reach
+them. The frozen-constraint omission is parameter-granular over each kind's
+equation footprint, closing the lock-split circle stage 6's entity-granular
+rule left open. deletionStep gained the overload taking entities, constraints
+and regions together, which the narrower ones delegate to. And the loader
+refuses malformed values it once coerced, with the version gate comparing
+unsigned. Beside the model changes, the gates the stage described are now
+enforced rather than merely built: the arena-bytes check runs in CTest, five
+canaries cover all four seams, and the sandbox carries and requires a
+comma-decimal locale.
+
 ### Track R — renderer (parallel, entry after stage 6)
 
 The QQuickPaintedItem CPU path is a known shortcut. This track swaps it

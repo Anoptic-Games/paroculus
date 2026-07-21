@@ -356,6 +356,84 @@ TEST_CASE("a placement can snap onto an arc's rim") {
     CHECK(offered);
 }
 
+TEST_CASE("an arc opened on a vertex binds its coincidence to the start, bulge reversed or not") {
+    // tools.cpp flags this itself (~line 441): an arc opens twice before it
+    // commits, its held snaps zip against out.opened, and out.opened is ordered
+    // by g->reversed. An arc STARTED on an existing vertex, whose bulge is then
+    // flipped to the other side before the closing click, must still bind its
+    // opening coincidence to the endpoint that lands on that vertex — the first
+    // click's point — not to the far end. The claim is geometric, not an index:
+    // after solve the constrained arc endpoint sits on the pre-existing vertex.
+    auto run = [](double bulgeY) {
+        INFO("bulge y=", bulgeY);
+        Sketch s(ToolKind::Line);
+        // A vertex for the arc to open on, plus a second segment endpoint far
+        // from where the arc's other clicks land, so the opening click is the
+        // only snap in play. Drawn off-axis so nothing auto-commits.
+        s.click(Point{-50.0, 0.0});
+        s.click(Point{-90.0, -60.0});
+        REQUIRE(s.count(EntityKind::Segment) == 1);
+        REQUIRE(s.count(ConstraintKind::Coincident) == 0);
+
+        // The existing vertex the arc will open on.
+        EntityId vertex;
+        for(const EntityRecord &e : s.doc.entities().records()) {
+            if(e.kind != EntityKind::Point) continue;
+            const std::optional<Point> p = s.session->pose().point(e.id);
+            if(p && std::hypot(p->x + 50.0, p->y) < 1e-9) vertex = e.id;
+        }
+        REQUIRE(vertex.valid());
+
+        s.session->setTool(ToolKind::Arc);
+        s.click(Point{-50.0, 0.0});   // opens on the vertex: queues a coincidence
+        s.click(Point{50.0, 0.0});    // the far end, in empty space
+        s.click(Point{0.0, bulgeY});  // the bulge, which sets the reversed flag
+
+        REQUIRE(s.count(EntityKind::Arc) == 1);
+        // Exactly the opening coincidence: the arc macro declares none of its own
+        // and the far click met nothing to snap to.
+        REQUIRE(s.count(ConstraintKind::Coincident) == 1);
+
+        const EntityRecord *arc = s.first(EntityKind::Arc);
+        REQUIRE(arc != nullptr);
+        // points[0] is the construction centre; [1] and [2] are the endpoints.
+        const EntityId endA = arc->points[1];
+        const EntityId endB = arc->points[2];
+
+        const ConstraintRecord *join = nullptr;
+        for(const ConstraintRecord &c : s.doc.constraints().records()) {
+            if(c.kind == ConstraintKind::Coincident) join = &c;
+        }
+        REQUIRE(join != nullptr);
+        REQUIRE((join->operands[0] == vertex || join->operands[1] == vertex));
+        const EntityId bound =
+            join->operands[0] == vertex ? join->operands[1] : join->operands[0];
+        // It binds an arc endpoint, never the construction centre.
+        CHECK((bound == endA || bound == endB));
+
+        // The geometric claim: the bound endpoint sits on the vertex, and the
+        // vertex has not been dragged off toward the far end. A binding to the
+        // wrong end would pull one to meet the other and fail both checks.
+        const Pose pose = s.session->pose();
+        const std::optional<Point> boundPos = pose.point(bound);
+        const std::optional<Point> vertexPos = pose.point(vertex);
+        REQUIRE(boundPos.has_value());
+        REQUIRE(vertexPos.has_value());
+        CHECK(std::hypot(boundPos->x + 50.0, boundPos->y) < 1e-6);
+        CHECK(std::hypot(vertexPos->x + 50.0, vertexPos->y) < 1e-6);
+
+        // And the other endpoint is the far one, so the arc kept its span and it
+        // is specifically the near end that carries the coincidence.
+        const EntityId other = (bound == endA) ? endB : endA;
+        const std::optional<Point> otherPos = pose.point(other);
+        REQUIRE(otherPos.has_value());
+        CHECK(std::hypot(otherPos->x - 50.0, otherPos->y) < 1e-6);
+    };
+
+    SUBCASE("bulge up reverses the sweep") { run(50.0); }
+    SUBCASE("bulge down keeps it forward") { run(-50.0); }
+}
+
 TEST_CASE("every shape tool survives a script round-trip") {
     Document doc;
     UndoJournal journal;

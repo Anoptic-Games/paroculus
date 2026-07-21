@@ -88,10 +88,25 @@ footprint is exact for circles and radius-only arc kinds but over-inclusive
 for an arc under point-on-circle and tangency — non-regressive, the entity
 granularity it replaced was equally coarse.
 
-One reconciliation for CLAUDE.md when it is next edited: "every relation in
-the catalogue is translation-invariant" is no longer the whole story — the
-frame-referenced kinds are the counterexample, now handled by refusal in
-transforms and drop-and-count in copy.
+A test-gap wave followed the fix pass and closed the list below except where a
+gap is structural: randomized isometry and copy-bijection properties, circle
+rotate and scale with slot co-scaling, transforms of tagged and filled
+records, the alternative column and reference axes in the fuzz churn,
+interleaved unknown records, the additive-field contract, async hidden
+influence, the conflict-walk budget branch, the arc double-open binding under
+reversal, record-replay-record over the guarded edit keys, same-table
+multi-add undo, and — via a new Qt-linked paroculus-shell-tests target under
+offscreen QPA — the shell's keystroke and pointer translation. Two suspicions
+resolved on the way: the arc reversal binding is correct and now pinned, and
+distribute's degeneracy guard genuinely misses coincident interior points —
+the zero-length gap fails its whole component with no diagnostic, now
+characterized in a test and open as a small guard fix. The double refresh on
+mid-gesture edits, the stale-outcome window on an unchanged async key, and
+the remaining suspicions stand as before.
+
+The CLAUDE.md reconciliation this section used to ask for is done: the
+translation-invariance claim now names the frame-referenced exception, and
+CLAUDE.md, PLANS and PRINCIPLES all describe the post-fix state.
 
 ## Structure operations
 

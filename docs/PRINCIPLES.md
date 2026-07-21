@@ -375,6 +375,16 @@ because values are slots) or let-them-resist. Non-uniform scale of
 constrained geometry is refused honestly (it does not commute with almost any
 constraint); it remains available as a bake at export.
 
+A third case surfaced in practice and is narrower than both questions: the
+origin-referenced symmetric forms (symmetric-horizontal, symmetric-vertical)
+mean symmetry about the document frame through no operand, so neither answer
+applies — there is no slot to rewrite and no operand to retarget. Transforms
+refuse a selection carrying one, and copies drop the relation with a count,
+because the frame sits outside every copied set. The about-line form, whose
+axis is an ordinary operand, stays fully relational and travels like
+everything else; the taxonomy marks the frame-referenced pair so no walk has
+to know the kinds by name.
+
 ## The action surface
 
 Actions are data. One registry holds every action: its applicability

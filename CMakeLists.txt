@@ -346,6 +346,42 @@ if(PAROCULUS_TESTS)
         PAROCULUS_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus")
     add_test(NAME unit COMMAND paroculus-tests)
 
+    # The shell's QEvent-to-interact translation, on its own Qt-linked runner.
+    # paroculus-tests links no Qt by design — that headlessness is what makes the
+    # gesture corpus runnable — so the translation seam in sketchview.cpp went
+    # untested (REVIEW.md finding 12). This target compiles that seam and pins
+    # the pure helpers exposed for it in sketchview.h. scriptplay.cpp comes along
+    # because sketchview.cpp's constructor references pendingScript; it is
+    # otherwise an app source rather than a library, so it is not on any layer
+    # target to link. Qt components match the paroculus target's for the same
+    # reason: compiling the whole TU pulls QQuickPaintedItem in.
+    qt_add_executable(paroculus-shell-tests
+        tests/shell/translation.cpp
+        src/shell/sketchview.cpp
+        src/shell/sketchview.h
+        src/app/scriptplay.cpp
+        src/app/scriptplay.h
+    )
+    target_link_libraries(paroculus-shell-tests PRIVATE
+        doctest::doctest
+        Qt6::Core Qt6::Gui Qt6::Quick Qt6::Qml
+        paroculus-interact
+        paroculus-render
+        paroculus-solve
+    )
+    # The layer-qualified includes ("shell/...", "core/...") and the QML_ELEMENT
+    # header lookup want both the src root and the shell directory reachable
+    # directly, exactly as the paroculus target arranges.
+    target_include_directories(paroculus-shell-tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/shell")
+    # Offscreen QPA for the same reason the selftest needs it: QKeyEvent's device
+    # default and QGuiApplication both resolve through a platform plugin, and the
+    # sandbox has no display server. The checkPhase already exports QT_PLUGIN_PATH.
+    add_test(NAME shell-translation COMMAND paroculus-shell-tests)
+    set_tests_properties(shell-translation PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
     # Offscreen QPA: the selftest constructs a QGuiApplication, so it needs a
     # platform plugin, but the sandbox has no display server.
     add_test(NAME selftest COMMAND paroculus --selftest)

@@ -24,8 +24,15 @@
 #include "core/undo.h"
 #include "interact/script.h"
 #include "core/composition.h"
+#include "interact/registry.h"
 #include "interact/session.h"
 #include "render/view.h"
+
+// Only reference/pointer parameters of the exposed translation helpers below
+// name these, so forward declarations keep the surface minimal. sketchview.h is
+// Qt-heavy and shell-only, so naming Qt types here crosses no seam.
+class QKeyEvent;
+class QPointF;
 
 class SketchView : public QQuickPaintedItem {
     Q_OBJECT
@@ -184,3 +191,28 @@ private:
 
     QImage surface_;  // retained so Skia is not handed a fresh buffer each frame
 };
+
+// The shell's QEvent-to-interact translation, exposed for tests/shell/
+// translation.cpp. These are pure — they read no SketchView state — and were an
+// anonymous namespace in the .cpp with zero coverage, because the main test
+// runner links no Qt (REVIEW.md finding 12). Production keyPressEvent and the
+// pointer handlers call them; the tests pin them directly.
+namespace shelltest {
+
+// The digit engraved on a key's face, 1..9, or 0. Read from the physical scan
+// code, not text() or key(), so shift and layout cannot disturb it.
+int engravedDigit(const QKeyEvent *event);
+
+// One abstract keystroke from a Qt key event: its character, its engraved
+// digit, and the modifier set.
+paroculus::KeyStroke strokeOf(const QKeyEvent *event);
+
+// Qt pointer state to an abstract PointerEvent. Buttons and modifiers are a
+// pure remap; the document position is filled through the view handed in, which
+// is the only thing SketchView::translate reads from its own state.
+paroculus::PointerEvent translatePointer(const QPointF &position, Qt::MouseButtons buttons,
+                                         Qt::KeyboardModifiers modifiers,
+                                         const paroculus::ViewTransform &view,
+                                         paroculus::PointerAction action, int clicks);
+
+}  // namespace shelltest

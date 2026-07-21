@@ -270,6 +270,102 @@ TEST_CASE("unknown record kinds survive a round trip") {
     CHECK(serialize(again) == written);
 }
 
+TEST_CASE("unknown records interleaved among known ones survive and normalize to the tail") {
+    // Every other unknown-record test appends at the file's tail; a newer writer
+    // is under no such obligation, so a reader has to collect unknown kinds
+    // wherever they fall — before the first record, between two records — and, on
+    // save, re-emit them last in arrival order, which is the normalization
+    // serialize() documents. Without that a re-save would interleave junk back
+    // through the known sections and never reach a fixed point.
+    Document doc;
+    const EntityId a = addPoint(doc, 0.0, 0.0);
+    const EntityId b = addPoint(doc, 10.0, 0.0);
+    const EntityId seg = addSegment(doc, a, b);
+    REQUIRE(addConstraint(doc, ConstraintKind::Horizontal, {seg}).valid());
+    const std::string base = serialize(doc);
+
+    // Break into lines, keeping the writer's record order. serialize() ends
+    // every line with a newline, so no partial tail can appear here.
+    std::vector<std::string> lines;
+    for(size_t start = 0; start < base.size();) {
+        const size_t nl = base.find('\n', start);
+        REQUIRE(nl != std::string::npos);
+        lines.push_back(base.substr(start, nl - start));
+        start = nl + 1;
+    }
+    // lines[0] header, lines[1] watermark, lines[2..] the records.
+    REQUIRE(lines.size() >= 5);
+
+    const std::string u0 = "keyframe 1 track=7 at=0.5 value=12";
+    const std::string u1 = "constellation 4 shape=spiral";
+    const std::string u2 = "mesh 9 verts=42 faces=80";
+
+    // Spliced so none is at the tail and no two are adjacent: one before the
+    // first record, two more between later records.
+    std::string spliced;
+    for(size_t i = 0; i < lines.size(); i++) {
+        if(i == 2) spliced += u0 + "\n";  // before the first record
+        spliced += lines[i] + "\n";
+        if(i == 2) spliced += u1 + "\n";  // between the first and second records
+        if(i == 3) spliced += u2 + "\n";  // between the second and third
+    }
+
+    Document loaded;
+    const LoadResult result = deserialize(spliced, loaded);
+    REQUIRE_MESSAGE(result.ok, result.error, " at line ", result.line);
+
+    // Verbatim and in arrival order, regardless of where in the file they fell.
+    REQUIRE(loaded.unknownRecords().size() == 3);
+    CHECK(loaded.unknownRecords()[0] == u0);
+    CHECK(loaded.unknownRecords()[1] == u1);
+    CHECK(loaded.unknownRecords()[2] == u2);
+
+    // On save the three sit at the tail, after every known section and in the
+    // same relative order — which is exactly the original bytes with the three
+    // lines appended. This one equality is the whole normalization: tail, order
+    // and an untouched known section together.
+    const std::string written = serialize(loaded);
+    CHECK(written == base + u0 + "\n" + u1 + "\n" + u2 + "\n");
+
+    // And a second cycle is the identity: an interleaved unknown does not keep
+    // shuffling on every save.
+    Document again;
+    REQUIRE(deserialize(written, again).ok);
+    CHECK(serialize(again) == written);
+    CHECK(again.unknownRecords().size() == 3);
+}
+
+TEST_CASE("an unknown field on a known record is skipped on load and shed on save") {
+    // FORMAT.md's migration policy, pinned as the contract it is rather than a
+    // wish it were otherwise: "a reader skips fields it does not recognise but
+    // preserves only whole unknown *kinds*, so an old reader drops the field on
+    // the next save." Only a whole unknown *record kind* rides through verbatim;
+    // a new optional *field* on a known kind is read past and lost. A field
+    // addition that must survive old readers is therefore a version bump, not
+    // this path — this test is what would break if that policy were quietly
+    // changed to preserve stray fields.
+    Document doc;
+    addPoint(doc, 1.5, -2.5);
+    const std::string base = serialize(doc);
+
+    const size_t at = base.find("entity ");
+    REQUIRE(at != std::string::npos);
+    const size_t eol = base.find('\n', at);
+    REQUIRE(eol != std::string::npos);
+    // A field no version-0 reader defines, spliced onto the entity line.
+    const std::string tampered = base.substr(0, eol) + " newflag=1" + base.substr(eol);
+
+    Document loaded;
+    const LoadResult result = deserialize(tampered, loaded);
+    REQUIRE_MESSAGE(result.ok, result.error, " at line ", result.line);
+    CHECK(loaded == doc);  // the field changed nothing the reader understands
+
+    // Shed on the next save: the token is gone and the bytes are the original.
+    const std::string written = serialize(loaded);
+    CHECK(written.find("newflag") == std::string::npos);
+    CHECK(written == base);
+}
+
 TEST_CASE("a newer format version is refused rather than half-read") {
     Document loaded;
     const LoadResult result = deserialize("paroculus 99\n", loaded);
@@ -628,13 +724,18 @@ TEST_CASE("property: round-tripping reaches a fixed point on random documents") 
 }
 
 // A random valid mutation drawn from the whole record vocabulary, so the fuzz
-// below exercises curves, radii, reference constraints and deletions rather
-// than the points-segments-distances the property above stays inside.
+// below exercises curves, radii, reference measurements, tangency's alternative
+// column, the nullable reference axis and deletions rather than the
+// points-segments-distances the property above stays inside. Arcs are tracked
+// here — not merely created and discarded — because tangency needs one, and
+// tangency is the only carrier of the alternative column the churn otherwise
+// never populates.
 namespace {
 
 void fuzzStep(Document &doc, Rng &rng, std::vector<EntityId> &points,
-              std::vector<EntityId> &segments, std::vector<EntityId> &circles) {
-    switch(rng.below(9)) {
+              std::vector<EntityId> &segments, std::vector<EntityId> &circles,
+              std::vector<EntityId> &arcs) {
+    switch(rng.below(10)) {
         case 0:
         case 1: {
             const EntityId p = addPoint(doc, rng.real(-1e3, 1e3), rng.real(-1e3, 1e3));
@@ -659,14 +760,29 @@ void fuzzStep(Document &doc, Rng &rng, std::vector<EntityId> &points,
         }
         case 4: {
             if(points.size() < 3) break;
-            addArc(doc, points[rng.below(points.size())], points[rng.below(points.size())],
-                   points[rng.below(points.size())]);
+            const EntityId a = addArc(doc, points[rng.below(points.size())],
+                                      points[rng.below(points.size())],
+                                      points[rng.below(points.size())]);
+            if(a.valid()) arcs.push_back(a);
             break;
         }
         case 5: {
             if(segments.empty()) break;
-            addConstraint(doc, rng.chance(2) ? ConstraintKind::Horizontal : ConstraintKind::Vertical,
-                          {segments[rng.below(segments.size())]});
+            const ConstraintKind kind =
+                rng.chance(2) ? ConstraintKind::Horizontal : ConstraintKind::Vertical;
+            const EntityId subject = segments[rng.below(segments.size())];
+            // Half the time, name a second segment as the nullable reference
+            // axis, so the optional-operand form joins the churn rather than the
+            // frame form alone. A distinct segment, since a segment referenced
+            // against itself is not a relation the command layer would take.
+            if(segments.size() >= 2 && rng.chance(2)) {
+                const EntityId axis = segments[rng.below(segments.size())];
+                if(axis != subject) {
+                    addConstraint(doc, kind, {subject, axis});
+                    break;
+                }
+            }
+            addConstraint(doc, kind, {subject});
             break;
         }
         case 6: {
@@ -691,6 +807,20 @@ void fuzzStep(Document &doc, Rng &rng, std::vector<EntityId> &points,
             doc.apply(AddRecord<ConstraintRecord>{c});
             break;
         }
+        case 8: {
+            // Tangency wants an arc and a segment, and carries the choice of
+            // which end of the arc it holds at — the one column the loose churn
+            // otherwise never populates. Both alternatives are generated, so the
+            // byte fixed point is proven over alt=0 and alt=1 at volume.
+            if(arcs.empty() || segments.empty()) break;
+            ConstraintRecord c;
+            c.kind = ConstraintKind::Tangent;
+            c.operands[0] = arcs[rng.below(arcs.size())];
+            c.operands[1] = segments[rng.below(segments.size())];
+            c.alternative = static_cast<uint8_t>(rng.below(2));
+            doc.apply(AddRecord<ConstraintRecord>{c});
+            break;
+        }
         default: {
             if(points.empty()) break;
             for(const Command &cmd : deletionStep(doc, points[rng.below(points.size())])) {
@@ -699,10 +829,12 @@ void fuzzStep(Document &doc, Rng &rng, std::vector<EntityId> &points,
             points.clear();
             segments.clear();
             circles.clear();
+            arcs.clear();
             for(const EntityRecord &e : doc.entities().records()) {
                 if(e.kind == EntityKind::Point) points.push_back(e.id);
                 if(e.kind == EntityKind::Segment) segments.push_back(e.id);
                 if(e.kind == EntityKind::Circle) circles.push_back(e.id);
+                if(e.kind == EntityKind::Arc) arcs.push_back(e.id);
             }
             break;
         }
@@ -717,19 +849,28 @@ TEST_CASE("fuzz: broad random documents reach a byte fixed point after one cycle
     // serialize is the identity from the first cycle on. Seeded from the rich
     // fixture half the time, so regions, tags, groups, styles and composites ride
     // through the same churn the loose geometry does.
+    // The widened vocabulary is meant to be reached, not merely reachable, so
+    // these confirm the two columns the churn was extended to populate actually
+    // ride through the round trip — both tangent alternatives and the nullable
+    // reference axis — over the whole corpus rather than in any single seed.
+    bool sawDefaultTangent = false;    // tangent with alt=0
+    bool sawAlternateTangent = false;  // tangent with alt=1
+    bool sawReferencedAxis = false;    // horizontal/vertical naming a reference
+
     for(uint64_t seed = 1; seed <= 80; seed++) {
         Rng rng(seed * 6364136223846793005ull + 1442695040888963407ull);
         Document doc = (seed % 2 == 0) ? richDocument() : Document();
 
-        std::vector<EntityId> points, segments, circles;
+        std::vector<EntityId> points, segments, circles, arcs;
         for(const EntityRecord &e : doc.entities().records()) {
             if(e.kind == EntityKind::Point) points.push_back(e.id);
             if(e.kind == EntityKind::Segment) segments.push_back(e.id);
             if(e.kind == EntityKind::Circle) circles.push_back(e.id);
+            if(e.kind == EntityKind::Arc) arcs.push_back(e.id);
         }
 
         const int steps = 20 + static_cast<int>(rng.below(40));
-        for(int i = 0; i < steps; i++) fuzzStep(doc, rng, points, segments, circles);
+        for(int i = 0; i < steps; i++) fuzzStep(doc, rng, points, segments, circles, arcs);
 
         const std::string once = serialize(doc);
         Document loaded;
@@ -745,7 +886,24 @@ TEST_CASE("fuzz: broad random documents reach a byte fixed point after one cycle
         Document again;
         REQUIRE(deserialize(twice, again).ok);
         CHECK_MESSAGE(serialize(again) == twice, "seed ", seed);
+
+        // Tally the widened columns off the loaded document, so the round trip
+        // is what these read rather than the freshly built one.
+        for(const ConstraintRecord &c : loaded.constraints().records()) {
+            if(c.kind == ConstraintKind::Tangent && c.alternative == 1) sawAlternateTangent = true;
+            if(c.kind == ConstraintKind::Tangent && c.alternative == 0) sawDefaultTangent = true;
+            if((c.kind == ConstraintKind::Horizontal || c.kind == ConstraintKind::Vertical) &&
+               c.operands[1].valid()) {
+                sawReferencedAxis = true;
+            }
+        }
     }
+
+    // If any of these were false the fixed-point property above would be passing
+    // over a column nothing populated — the exact gap this widening closes.
+    CHECK(sawDefaultTangent);
+    CHECK(sawAlternateTangent);
+    CHECK(sawReferencedAxis);
 }
 
 TEST_CASE("forward-compat: a future-versioned file sheds nothing through open and save") {

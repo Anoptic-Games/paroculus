@@ -312,3 +312,82 @@ TEST_CASE("async: a solve of a since-edited document is dropped at the epoch tag
     CHECK(std::hypot(pa->x, pa->y) == doctest::Approx(0.0).epsilon(1e-6));
     CHECK(std::hypot(pa->x - 50.0, pa->y) > 1.0);
 }
+
+TEST_CASE("async: a hidden operand that moved a visible one is named when it lands") {
+    // The async twin of interact_composition's "hidden still constrains, and says
+    // so when it moved something visible". applyAsyncResults notes the hidden
+    // influence of a moved off-thread component by the same narrow rule the
+    // synchronous branch applies, so a relation binding an invisible operand and a
+    // visible one — where the visible one moved through a worker's solve — is named
+    // exactly as the sync path names it. Nothing exercised that before this.
+    //
+    // The influence is an event that fires when the result lands, not a decoration
+    // the hidden layer wears: refresh clears it and the off-thread solve, held in
+    // the hook, has not repopulated it, so it is empty until the pump.
+    Document doc;
+    const EntityId a = addPoint(doc, -50.0, 0.0);
+    const EntityId b = addPoint(doc, 50.0, 0.0);
+    addSegment(doc, a, b);  // present for fidelity; the distance binds the points
+    addConstraint(doc, ConstraintKind::PointPointDistance, {a, b}, Slot(100.0));
+
+    // a is hidden; b and the segment stay on the visible base layer. Hiding leaves
+    // the relation untouched — that is the whole difference from deleting — so the
+    // distance still moves a when b moves.
+    LayerRecord hidden;
+    hidden.name = "hidden";
+    hidden.visible = false;
+    const LayerId hiddenLayer(doc.apply(AddRecord<LayerRecord>{hidden}).allocated);
+    REQUIRE(hiddenLayer.valid());
+    EntityRecord ar = *doc.entities().find(a);
+    ar.layer = hiddenLayer;
+    REQUIRE(doc.apply(SetRecord<EntityRecord>{ar}).ok());
+
+    UndoJournal journal;
+    Session session(doc, journal);  // ctor refresh is synchronous; nothing moves yet
+
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool go = false;
+
+    session.enableAsyncSolving(/*sizeThreshold=*/0, /*workers=*/2);  // the one component goes async
+    session.setAsyncSolveHook([&](uint64_t) {
+        std::unique_lock<std::mutex> lock(mtx);
+        cv.wait(lock, [&] { return go; });
+    });
+
+    // Move the visible end so the solve must move the hidden one to hold the
+    // distance. This is the same geometry the sync test drives, so the worker's
+    // solve moves b off its seed and the hidden a is the operand that let it.
+    EntityRecord br = *doc.entities().find(b);
+    br.seeds[0] = 200.0;
+    REQUIRE(doc.apply(SetRecord<EntityRecord>{br}).ok());
+    session.refresh();  // submits the component; the worker blocks in the hook
+    REQUIRE(session.asyncBusy());
+
+    // Held: refresh cleared the indication and the off-thread solve has not landed.
+    CHECK(session.presentation().hiddenInfluences.empty());
+
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        go = true;
+    }
+    cv.notify_all();
+
+    bool named = false;
+    for(int spin = 0; spin < 500000 && !named; spin++) {
+        session.pumpAsync();
+        if(!session.presentation().hiddenInfluences.empty()) named = true;
+        else std::this_thread::yield();
+    }
+    REQUIRE(named);
+
+    // Named exactly as the sync path names it: the hidden operand, and only it.
+    CHECK(session.presentation().hiddenInfluences == std::vector<EntityId>{a});
+
+    // And the relation actually held — the influence is real, not spurious.
+    const std::optional<Point> pa = session.pose().point(a);
+    const std::optional<Point> pb = session.pose().point(b);
+    REQUIRE(pa);
+    REQUIRE(pb);
+    CHECK(std::abs(std::hypot(pa->x - pb->x, pa->y - pb->y) - 100.0) < 1e-6);
+}

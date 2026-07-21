@@ -620,6 +620,72 @@ TEST_CASE("a conflict no single suppression rescues is not attributed") {
     CHECK_FALSE(check.attributed);
 }
 
+TEST_CASE("a conflict in a component past the walk's budget is not attributed") {
+    // The counterfactual walk is bounded: it costs one solve per driving relation
+    // in the components the candidate touches (relationsIn), so a component past
+    // conflictWalkLimit reports the conflict as unattributable — attributed false
+    // with an empty set — rather than turning one imposition into a thousand solves.
+    // Exceeding the bound skips the walk, so `conflicting` is left as the solver's
+    // own blamed set, which for this conflict is empty. Empty here means "could not
+    // attribute", not "nothing conflicts", and no test reached that branch before.
+    //
+    // The conflict is the proven pin-vs-distance one: two pinned points ten apart
+    // and a driving distance of 999 that cannot hold. The solver blames only the
+    // candidate — see "a candidate that cannot hold" above — so with the walk
+    // skipped the reported set stays empty.
+    //
+    // a's component is padded with points coincident to it, each an extra driving
+    // relation the walk would have to solve; b's component holds only its pin. The
+    // union the candidate merges therefore carries padding + 2 driving relations,
+    // and the padding is sized off the live bound so the test tracks it.
+    auto build = [](Document &doc, size_t padding) -> std::pair<EntityId, EntityId> {
+        const EntityId a = addPoint(doc, 0.0, 0.0);
+        const EntityId b = addPoint(doc, 10.0, 0.0);
+        addConstraint(doc, ConstraintKind::Pin, {a});
+        addConstraint(doc, ConstraintKind::Pin, {b});
+        for(size_t i = 0; i < padding; i++) {
+            const EntityId p = addPoint(doc, 0.0, 0.0);
+            addConstraint(doc, ConstraintKind::Coincident, {a, p});
+        }
+        return {a, b};
+    };
+
+    const size_t limit = DiagnoseOptions{}.conflictWalkLimit;  // 96 as read today
+    ConstraintRecord candidate;
+    candidate.kind = ConstraintKind::PointPointDistance;
+    candidate.value = Slot(999.0);
+
+    // Over budget: limit + 5 coincidences + 2 pins = limit + 7 driving relations,
+    // so relationsIn exceeds the bound and the walk is skipped.
+    {
+        Document doc;
+        const auto [a, b] = build(doc, limit + 5);
+        Topology topology(doc);
+        candidate.operands = {a, b, EntityId(), EntityId()};
+
+        const CandidateCheck check = checkCandidate(doc, topology, candidate);
+        CHECK(check.verdict == CandidateVerdict::Inconsistent);
+        CHECK_FALSE(check.attributed);
+        CHECK(check.conflicting.empty());
+    }
+
+    // The control: the same conflict in a small component still attributes. The
+    // only difference is size, so this isolates the bound as the cause of the
+    // silence above. Suppressing either pin lets the candidate hold, so the walk
+    // finds both — attributed true with a non-empty set.
+    {
+        Document doc;
+        const auto [a, b] = build(doc, 3);  // 3 + 2 = 5 relations, well under
+        Topology topology(doc);
+        candidate.operands = {a, b, EntityId(), EntityId()};
+
+        const CandidateCheck check = checkCandidate(doc, topology, candidate);
+        CHECK(check.verdict == CandidateVerdict::Inconsistent);
+        CHECK(check.attributed);
+        CHECK_FALSE(check.conflicting.empty());
+    }
+}
+
 TEST_CASE("the angle residual is exactly as strict as the solver") {
     // The residual accepted the angle or its supplement, justified by the solver
     // constraining a direction cosine — but cos(180 − θ) = −cos(θ), so the
