@@ -39,6 +39,12 @@ inline constexpr size_t NO_BAKE_GROUP = static_cast<size_t>(-1);
 struct BakedGroup {
     CompositeOp op = CompositeOp::Outline;
     size_t parent = NO_BAKE_GROUP;
+    // Creation order across fills and groups alike, which is operand order. A
+    // group's operands are its direct fills and its direct subgroups interleaved,
+    // split across two lists that index independently; `seq` is the one key that
+    // reunites them, so an exporter can tell a subtract's minuend (operand zero)
+    // from its subtrahends even when one operand is a nested composite.
+    size_t seq = 0;
 };
 
 // One filled ring, in document coordinates, closed implicitly.
@@ -50,6 +56,7 @@ struct BakedFill {
     std::vector<Point> ring;
     CompositeOp combine = CompositeOp::Outline;
     size_t group = 0;  // operands of one composite share a group
+    size_t seq = 0;    // creation order, shared with BakedGroup — operand order
     LayerId layer;
     uint32_t colour = 0u;
     bool punch = false;

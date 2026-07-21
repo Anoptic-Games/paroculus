@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <!-- A mix of the supported subset and things the trace deliberately skips. -->
+  <rect x="10" y="10" width="30" height="20"/>
+  <line x1="0" y1="0" x2="50" y2="50"/>
+  <circle cx="70" cy="70" r="15"/>
+  <polygon points="80,10 95,10 95,25"/>
+  <path d="M5,90 L20,95 L35,90 Z"/>
+  <ellipse cx="50" cy="50" rx="10" ry="5"/>
+  <text x="0" y="0">not geometry</text>
+  <path d="M0,0 C10,10 20,0 30,0"/>
+</svg>

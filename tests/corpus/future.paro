@@ -1,0 +1,13 @@
+paroculus 0
+watermark entity=6 constraint=3 region=1 tag=1 style=1 layer=1 group=1 parameter=1
+entity 1 kind=point role=normal layer=0 points=- seeds=0,0
+entity 2 kind=point role=normal layer=0 points=- seeds=120,0
+entity 3 kind=point role=normal layer=0 points=- seeds=60,90
+entity 4 kind=segment role=normal layer=0 points=1,2 seeds=-
+entity 5 kind=segment role=normal layer=0 points=2,3 seeds=-
+constraint 1 kind=horizontal driving=1 operands=4
+constraint 2 kind=distance driving=1 operands=1,2 value=120
+keyframe 1 track=7 at=0.5 value=12
+animation 1 name="spin about origin" duration=2.5 easing=cubic
+constellation 4 shape=spiral turns=3
+mesh 9 verts=42 faces=80

@@ -605,6 +605,15 @@ LoadResult deserialize(std::string_view text, Document &out) {
             }
             if(const auto v = field(f, "seeds")) {
                 if(*v != "-") {
+                    // As many seeds as the kind owns and no more, mirroring the
+                    // point-count check above: a hand-edited over-long list would
+                    // otherwise be silently truncated rather than refused, which
+                    // FORMAT.md says the seed field never is.
+                    size_t provided = 1;
+                    for(char c : *v) provided += (c == ',');
+                    if(provided > info.ownParamCount) {
+                        return fail("entity seed count does not match its kind", lineNumber);
+                    }
                     size_t pos = 0, index = 0;
                     while(pos <= v->size() && index < info.ownParamCount) {
                         const size_t comma = v->find(',', pos);

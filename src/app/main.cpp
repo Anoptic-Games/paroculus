@@ -4,22 +4,87 @@
 //   paroculus --selftest       solve + render headless, verify, exit 0 on success
 //   paroculus --script FILE    replay a recorded session in the window
 //   paroculus --record FILE    write everything this session does to a script
+//   paroculus --export FILE    bake the demo to SVG and exit (headless)
+//   paroculus --import FILE     trace geometry out of an SVG to stdout and exit
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 
 #include "app/scriptplay.h"
 #include "app/selftest.h"
+#include "core/persist.h"
+#include "core/pose.h"
+#include "core/svg.h"
+#include "solve/context.h"
+#include "solve/demosketch.h"
+#include "solve/solve.h"
+
+namespace {
+
+// Bakes the demo document to SVG. Headless — no window, no Qt — so it is the
+// small end-to-end demo the exit criterion asks be recorded, and a file a user
+// can open in an external viewer to check the bake against the screen.
+int runExport(const char *path) {
+    paroculus::Document doc = paroculus::demoDocument(1.0);
+    paroculus::SolveContext context = paroculus::SolveContext::forWholeDocument(doc);
+    paroculus::solve(doc, context);
+    paroculus::Pose pose(doc);
+    pose.overlay(context.params());
+
+    std::ofstream out(path);
+    if(!out) {
+        std::fprintf(stderr, "cannot write %s\n", path);
+        return 2;
+    }
+    out << paroculus::writeSvg(doc, pose);
+    std::printf("exported demo to %s\n", path);
+    return 0;
+}
+
+// Traces an SVG back to unconstrained geometry and prints the document. The other
+// half of the round-trip demo: an export re-imported is a paroculus document
+// again, geometry free and inference deferred.
+int runImport(const char *path) {
+    std::ifstream in(path);
+    if(!in) {
+        std::fprintf(stderr, "cannot open %s\n", path);
+        return 2;
+    }
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    const paroculus::SvgImport result = paroculus::readSvg(buffer.str());
+    std::fprintf(stderr, "traced %zu elements, skipped %zu\n", result.traced, result.skipped);
+    std::printf("%s", paroculus::serialize(result.document).c_str());
+    return 0;
+}
+
+}  // namespace
 
 int main(int argc, char *argv[]) {
     bool wantSelftest = false;
     const char *scriptPath = nullptr;
     const char *recordPath = nullptr;
+    const char *exportPath = nullptr;
+    const char *importPath = nullptr;
     for(int i = 1; i < argc; i++) {
         if(std::strcmp(argv[i], "--selftest") == 0) {
             wantSelftest = true;
+        } else if(std::strcmp(argv[i], "--export") == 0) {
+            if(i + 1 >= argc) {
+                std::fprintf(stderr, "--export needs a file\n");
+                return 2;
+            }
+            exportPath = argv[++i];
+        } else if(std::strcmp(argv[i], "--import") == 0) {
+            if(i + 1 >= argc) {
+                std::fprintf(stderr, "--import needs a file\n");
+                return 2;
+            }
+            importPath = argv[++i];
         } else if(std::strcmp(argv[i], "--script") == 0) {
             if(i + 1 >= argc) {
                 std::fprintf(stderr, "--script needs a file\n");
@@ -40,6 +105,11 @@ int main(int argc, char *argv[]) {
         std::fprintf(stderr, "--script and --record are mutually exclusive\n");
         return 2;
     }
+    // Export and import are headless projections that run and exit before any
+    // window: no Qt is needed to bake a file or trace one.
+    if(exportPath != nullptr) return runExport(exportPath);
+    if(importPath != nullptr) return runImport(importPath);
+
     if(recordPath != nullptr) paroculus::pendingScript::setRecordPath(recordPath);
 
     // Parsed before the window opens, so a bad script fails at the command line

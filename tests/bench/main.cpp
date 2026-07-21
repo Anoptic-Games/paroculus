@@ -223,6 +223,16 @@ int main(int argc, char *argv[]) {
                          s.params, warmRatio);
             failures++;
         }
+        // The deterministic half of the gate, and the one safe to automate: the
+        // translation arena's high-water mark is a function of the document, not
+        // of the machine's clock, so an exact change here is a real regression in
+        // how much scratch a solve takes rather than a timing flake.
+        if(s.bytes != it->bytes) {
+            std::fprintf(stderr,
+                         "FAIL: arena bytes at %d params changed %zu -> %zu vs baseline\n",
+                         s.params, s.bytes, it->bytes);
+            failures++;
+        }
     }
 
     return failures == 0 ? 0 : 1;

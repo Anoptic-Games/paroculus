@@ -10,13 +10,16 @@
 // a script can do, through exactly this interface.
 #pragma once
 
+#include <functional>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
 #include <memory>
 
 #include "core/bake.h"
+#include "solve/scheduler.h"
 #include "core/composition.h"
 #include "core/compound.h"
 #include "core/copy.h"
@@ -257,6 +260,40 @@ public:
 
     // Rebuilds the derived indexes after the document changed underneath.
     void refresh();
+
+    // -----------------------------------------------------------------------
+    // Asynchronous solving
+    // -----------------------------------------------------------------------
+    //
+    // Off by default, and that default is load-bearing: with no scheduler the
+    // refresh path is exactly the synchronous one, so a small predictable system
+    // never pays the rubber-banding an async solve trades for headroom, and the
+    // gesture corpus stays deterministic. Synchronous-under-budget is the norm.
+    //
+    // Turned on, a component at or above `sizeThreshold` entities solves on a
+    // worker instead of in the frame: the refresh submits an immutable snapshot
+    // and leaves that component showing its last coherent pose, the UI never
+    // blocks, and a finished result is applied whole — never a partial solution
+    // blended into a coherent one. The threshold is the policy PRINCIPLES names.
+    //
+    // workers == 0 runs the scheduler inline (solve on submit), which is the
+    // synchronous execution of the async machinery: the same generations and the
+    // same discard, on the calling thread. workers > 0 is the real pool.
+    void enableAsyncSolving(size_t sizeThreshold, unsigned workers);
+
+    // Applies whatever the workers have finished — whole results only — and
+    // rebuilds the derived indexes. Returns whether the pose changed. The shell
+    // calls it per frame; a test calls it until the pose settles. A no-op when
+    // async solving was never enabled.
+    bool pumpAsync();
+
+    // Whether a worker still owes a result. The shell uses it to keep pumping; a
+    // test uses it to know a burst has settled.
+    bool asyncBusy() const;
+
+    // The injected-delay seam, forwarded to the scheduler. For tests only; null
+    // and untouched on the app path.
+    void setAsyncSolveHook(std::function<void(uint64_t)> hook);
 
     HitPolicy &policy() { return policy_; }
     SnapPolicy &snapPolicy() { return snapPolicy_; }
@@ -720,6 +757,32 @@ private:
     // PRINCIPLES describes: rendering and hit testing read it through pose(),
     // and it is rebuilt from the document rather than stored in it.
     SolveContext settled_;
+
+    // The asynchronous solve path, present only when opted in. Null on the
+    // synchronous-only build, which is what makes refresh() unchanged there.
+    std::unique_ptr<SolveScheduler> scheduler_;
+    size_t asyncThreshold_ = 0;
+    // The last coherent pose of every entity solved off-thread, carried across
+    // refreshes so an async component keeps its solved geometry rather than
+    // snapping back to committed seeds each frame. Overlaid onto settled_ only for
+    // components that are async this frame, so a component that goes back under
+    // budget is not clobbered by a stale async answer.
+    std::vector<SeedSpan> asyncPose_;
+    // The entities that belong to an async component as of the last refresh. An
+    // async result is applied to settled_ only for these, so a stale result for a
+    // component that has since gone synchronous cannot overwrite its fresh solve.
+    std::set<EntityId> asyncMembers_;
+    // Bumped every refresh, which is every document edit. A submission is tagged
+    // with it and a drained result is dropped when the tag no longer matches, so
+    // a solve of a document the user has since edited is discarded rather than
+    // applied — the staleness the per-component generation cannot catch, because
+    // an edit can change which component an entity is in.
+    uint64_t docEpoch_ = 0;
+
+    // Folds finished worker results into asyncPose_ and settled_ — whole, ok, and
+    // current-epoch results only — leaving a failed or stale one to hold the last
+    // coherent pose. Shared by the end of refresh() and pumpAsync.
+    void applyAsyncResults(const std::vector<SolveResult> &results);
     SpatialIndex index_;
     Selection selection_;
     Presentation presentation_;

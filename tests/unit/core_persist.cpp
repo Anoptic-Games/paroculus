@@ -1,12 +1,16 @@
 #include <doctest/doctest.h>
 
 #include <clocale>
+#include <fstream>
+#include <sstream>
 
 #include "core/persist.h"
 #include "support/build.h"
 
 using namespace paroculus;
 using paroculus::test::Rng;
+using paroculus::test::addArc;
+using paroculus::test::addCircle;
 using paroculus::test::addConstraint;
 using paroculus::test::addPoint;
 using paroculus::test::addSegment;
@@ -30,6 +34,7 @@ Document richDocument() {
     style.strokeWidth = Slot(0.25);
     style.strokeColor = 0xff3366ccu;
     style.filled = true;
+    style.opacity = Slot(0.5);
     const StyleId sid(doc.apply(AddRecord<StyleRecord>{style}).allocated);
 
     ParameterRecord gutter;
@@ -75,22 +80,93 @@ Document richDocument() {
     const EntityId cid(doc.apply(AddRecord<EntityRecord>{circle}).allocated);
     addConstraint(doc, ConstraintKind::Radius, {cid}, Slot(3.5));
 
-    RegionRecord region;
-    region.boundary = edges;
-    region.style = sid;
-    region.layer = lid;
-    doc.apply(AddRecord<RegionRecord>{region});
+    // An arc, so the curved-entity seeds and three-point form are in the corpus.
+    const EntityId arcStart = addPoint(doc, 8.5, 5.0);
+    const EntityId arcEnd = addPoint(doc, 5.0, 8.5);
+    paroculus::test::addArc(doc, centre, arcStart, arcEnd);
 
+    // A reference measurement — non-driving, so the driving flag round-trips in
+    // both states rather than only the one every other constraint sets.
+    ConstraintRecord reference;
+    reference.kind = ConstraintKind::PointPointDistance;
+    reference.operands[0] = pts[2];
+    reference.operands[1] = pts[3];
+    reference.driving = false;
+    reference.value = Slot(9.5);
+    doc.apply(AddRecord<ConstraintRecord>{reference});
+
+    // The square as an outline, the circle as one, and a punched composite over
+    // the two — so op, operands, z and punch are all exercised, not just the
+    // plain-outline line every other region test uses.
+    RegionRecord square;
+    square.boundary = edges;
+    square.style = sid;
+    square.layer = lid;
+    const RegionId squareId(doc.apply(AddRecord<RegionRecord>{square}).allocated);
+
+    RegionRecord disc;
+    disc.boundary = {cid};
+    disc.style = sid;
+    disc.layer = lid;
+    const RegionId discId(doc.apply(AddRecord<RegionRecord>{disc}).allocated);
+
+    RegionRecord cut;
+    cut.op = CompositeOp::Subtract;
+    cut.operands = {squareId, discId};
+    cut.layer = lid;
+    cut.z = 2;
+    cut.punch = true;
+    doc.apply(AddRecord<RegionRecord>{cut});
+
+    // A union and an intersect over fresh disc operands, so both composite tokens
+    // round-trip — the subtract above is not the only op the freeze suite sees.
+    auto discRegion = [&](double cx, double cy) -> RegionId {
+        const EntityId c = addPoint(doc, cx, cy);
+        const EntityId circle = addCircle(doc, c, 2.0);
+        RegionRecord reg;
+        reg.boundary = {circle};
+        reg.layer = lid;
+        return RegionId(doc.apply(AddRecord<RegionRecord>{reg}).allocated);
+    };
+    RegionRecord uni;
+    uni.op = CompositeOp::Union;
+    uni.operands = {discRegion(20.0, 20.0), discRegion(24.0, 20.0)};
+    uni.layer = lid;
+    doc.apply(AddRecord<RegionRecord>{uni});
+    RegionRecord inter;
+    inter.op = CompositeOp::Intersect;
+    inter.operands = {discRegion(30.0, 20.0), discRegion(34.0, 20.0)};
+    inter.layer = lid;
+    doc.apply(AddRecord<RegionRecord>{inter});
+
+    const ConstraintId firstConstraint = doc.constraints().records().front().id;
     TagRecord tag;
     tag.kind = TagKind::Rectangle;
     tag.entities = edges;
-    tag.constraints = {doc.constraints().records().front().id};
+    tag.constraints = {firstConstraint};
     doc.apply(AddRecord<TagRecord>{tag});
+
+    // A mirror tag and a distribution tag, so those kind tokens round-trip too.
+    TagRecord mirror;
+    mirror.kind = TagKind::Mirror;
+    mirror.entities = {edges[0], edges[1]};
+    mirror.constraints = {firstConstraint};
+    doc.apply(AddRecord<TagRecord>{mirror});
+    TagRecord distribution;
+    distribution.kind = TagKind::Distribution;
+    distribution.entities = {pts[0], pts[2], pts[4]};
+    doc.apply(AddRecord<TagRecord>{distribution});
 
     GroupRecord group;
     group.name = "frame";
     group.members = edges;
     doc.apply(AddRecord<GroupRecord>{group});
+
+    // A non-empty usage section, so the ranking history's write and parse paths
+    // are round-tripped rather than skipped by a document that imposed nothing.
+    doc.noteUsage(ConstraintKind::Parallel);
+    doc.noteUsage(ConstraintKind::Parallel);
+    doc.noteUsage(ConstraintKind::EqualLength);
 
     return doc;
 }
@@ -544,4 +620,163 @@ TEST_CASE("property: round-tripping reaches a fixed point on random documents") 
         CHECK_MESSAGE(serialize(loaded) == once, "seed ", seed);
         CHECK_MESSAGE(loaded == doc, "seed ", seed);
     }
+}
+
+// A random valid mutation drawn from the whole record vocabulary, so the fuzz
+// below exercises curves, radii, reference constraints and deletions rather
+// than the points-segments-distances the property above stays inside.
+namespace {
+
+void fuzzStep(Document &doc, Rng &rng, std::vector<EntityId> &points,
+              std::vector<EntityId> &segments, std::vector<EntityId> &circles) {
+    switch(rng.below(9)) {
+        case 0:
+        case 1: {
+            const EntityId p = addPoint(doc, rng.real(-1e3, 1e3), rng.real(-1e3, 1e3));
+            if(p.valid()) points.push_back(p);
+            break;
+        }
+        case 2: {
+            if(points.size() < 2) break;
+            const EntityId a = points[rng.below(points.size())];
+            const EntityId b = points[rng.below(points.size())];
+            if(a != b) {
+                const EntityId s = addSegment(doc, a, b);
+                if(s.valid()) segments.push_back(s);
+            }
+            break;
+        }
+        case 3: {
+            if(points.empty()) break;
+            const EntityId c = addCircle(doc, points[rng.below(points.size())], rng.real(1.0, 50.0));
+            if(c.valid()) circles.push_back(c);
+            break;
+        }
+        case 4: {
+            if(points.size() < 3) break;
+            addArc(doc, points[rng.below(points.size())], points[rng.below(points.size())],
+                   points[rng.below(points.size())]);
+            break;
+        }
+        case 5: {
+            if(segments.empty()) break;
+            addConstraint(doc, rng.chance(2) ? ConstraintKind::Horizontal : ConstraintKind::Vertical,
+                          {segments[rng.below(segments.size())]});
+            break;
+        }
+        case 6: {
+            if(circles.empty()) break;
+            addConstraint(doc, ConstraintKind::Radius, {circles[rng.below(circles.size())]},
+                          Slot(rng.real(1.0, 50.0)));
+            break;
+        }
+        case 7: {
+            if(points.size() < 2) break;
+            const EntityId a = points[rng.below(points.size())];
+            const EntityId b = points[rng.below(points.size())];
+            if(a == b) break;
+            // A reference measurement half the time, so both driving states are
+            // reached by the fuzz rather than only the imposed one.
+            ConstraintRecord c;
+            c.kind = ConstraintKind::PointPointDistance;
+            c.operands[0] = a;
+            c.operands[1] = b;
+            c.driving = !rng.chance(2);
+            c.value = Slot(rng.real(1.0, 100.0));
+            doc.apply(AddRecord<ConstraintRecord>{c});
+            break;
+        }
+        default: {
+            if(points.empty()) break;
+            for(const Command &cmd : deletionStep(doc, points[rng.below(points.size())])) {
+                REQUIRE(doc.apply(cmd).ok());
+            }
+            points.clear();
+            segments.clear();
+            circles.clear();
+            for(const EntityRecord &e : doc.entities().records()) {
+                if(e.kind == EntityKind::Point) points.push_back(e.id);
+                if(e.kind == EntityKind::Segment) segments.push_back(e.id);
+                if(e.kind == EntityKind::Circle) circles.push_back(e.id);
+            }
+            break;
+        }
+    }
+}
+
+}  // namespace
+
+TEST_CASE("fuzz: broad random documents reach a byte fixed point after one cycle") {
+    // The property the freeze rests on, at volume and over the whole vocabulary:
+    // whatever a random valid edit script builds, serialize then load then
+    // serialize is the identity from the first cycle on. Seeded from the rich
+    // fixture half the time, so regions, tags, groups, styles and composites ride
+    // through the same churn the loose geometry does.
+    for(uint64_t seed = 1; seed <= 80; seed++) {
+        Rng rng(seed * 6364136223846793005ull + 1442695040888963407ull);
+        Document doc = (seed % 2 == 0) ? richDocument() : Document();
+
+        std::vector<EntityId> points, segments, circles;
+        for(const EntityRecord &e : doc.entities().records()) {
+            if(e.kind == EntityKind::Point) points.push_back(e.id);
+            if(e.kind == EntityKind::Segment) segments.push_back(e.id);
+            if(e.kind == EntityKind::Circle) circles.push_back(e.id);
+        }
+
+        const int steps = 20 + static_cast<int>(rng.below(40));
+        for(int i = 0; i < steps; i++) fuzzStep(doc, rng, points, segments, circles);
+
+        const std::string once = serialize(doc);
+        Document loaded;
+        const LoadResult first = deserialize(once, loaded);
+        REQUIRE_MESSAGE(first.ok, "seed ", seed, ": ", first.error);
+        const std::string twice = serialize(loaded);
+        CHECK_MESSAGE(twice == once, "seed ", seed);       // byte fixed point
+        CHECK_MESSAGE(loaded == doc, "seed ", seed);       // and the model round-trips
+
+        // The document the loader built is itself byte-stable — a second load of
+        // the same text lands on the same bytes, which is the property a diff
+        // and a merge both depend on.
+        Document again;
+        REQUIRE(deserialize(twice, again).ok);
+        CHECK_MESSAGE(serialize(again) == twice, "seed ", seed);
+    }
+}
+
+TEST_CASE("forward-compat: a future-versioned file sheds nothing through open and save") {
+    // tests/corpus/future.paro is a version-0 document carrying record kinds no
+    // build in this tree defines — keyframe, animation, constellation, mesh —
+    // which is what a future additive version looks like to a reader that
+    // predates it. The freeze's whole forward-compatibility promise is that
+    // opening and re-saving it loses none of them.
+    const std::string path = std::string(PAROCULUS_CORPUS_DIR) + "/future.paro";
+    std::ifstream file(path);
+    REQUIRE_MESSAGE(file.good(), "missing corpus file: ", path);
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    const std::string original = buffer.str();
+
+    Document loaded;
+    const LoadResult result = deserialize(original, loaded);
+    REQUIRE_MESSAGE(result.ok, result.error);
+
+    // The known records arrived: two segments, a horizontal, a driving distance.
+    CHECK(loaded.entities().size() == 5);
+    CHECK(loaded.constraints().size() == 2);
+
+    // The unknown ones arrived verbatim and in order.
+    REQUIRE(loaded.unknownRecords().size() == 4);
+    CHECK(loaded.unknownRecords()[0] == "keyframe 1 track=7 at=0.5 value=12");
+    CHECK(loaded.unknownRecords()[3] == "mesh 9 verts=42 faces=80");
+
+    // Re-saving keeps every future line, and a second cycle is the identity —
+    // an older build in the loop cannot erode a newer file one save at a time.
+    const std::string written = serialize(loaded);
+    for(const std::string &line : loaded.unknownRecords()) {
+        CHECK_MESSAGE(written.find(line + "\n") != std::string::npos, line);
+    }
+    Document again;
+    REQUIRE(deserialize(written, again).ok);
+    CHECK(serialize(again) == written);
+    CHECK(again.unknownRecords().size() == 4);
 }

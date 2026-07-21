@@ -95,4 +95,20 @@ struct SolveOutcome {
 SolveOutcome solve(const Document &doc, SolveContext &context,
                    const SolveOptions &options = {});
 
+// Serializes the actual solver call across threads while sharing is active.
+//
+// The vendored solver's C wrapper keeps a file-global scratch system, so two
+// Slvs_Solve calls in flight at once corrupt each other. Translation and readback
+// touch no global and stay concurrent; only the call itself is guarded, and only
+// while a scheduler with real workers is alive. The synchronous-only build never
+// begins sharing and pays nothing — the guarded region is entered exactly when a
+// worker thread could be inside the solver at the same time as the UI thread.
+//
+// This is the one place a lock crosses threads in our code, and it is a substrate
+// constraint rather than a document race: it protects the third-party solver's
+// global scratch, not any state the no-locks rule is about. Reference-counted, so
+// nested schedulers compose.
+void beginSolverSharing();
+void endSolverSharing();
+
 }  // namespace paroculus

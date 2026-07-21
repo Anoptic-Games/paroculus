@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
+#include <set>
 #include <unordered_set>
 
 #include "interact/loops.h"
@@ -171,10 +173,39 @@ void Session::refresh() {
         if(id != NO_COMPONENT && id < components) grouped[id].push_back(e.id);
     }
 
+    // One document snapshot per refresh, shared by every component that goes
+    // async this frame; taken lazily so the synchronous path copies nothing.
+    std::shared_ptr<const Document> snapshot;
+    if(scheduler_) {
+        // A new epoch for this edit. In-flight solves of the previous document
+        // are tagged with the old epoch and will be dropped on drain.
+        docEpoch_++;
+        asyncMembers_.clear();
+    }
+
     for(std::vector<EntityId> &members : grouped) {
         if(members.empty()) continue;
+        // The component's key and size, read before the members are moved into
+        // the context. The key is the least member id; it is unique across
+        // components in a refresh, and cross-refresh staleness is caught by the
+        // epoch tag rather than by the key.
+        uint64_t key = members.front().value();
+        for(EntityId m : members) key = std::min(key, static_cast<uint64_t>(m.value()));
+        const size_t size = members.size();
+
         SolveContext component = SolveContext::forMembers(*doc_, std::move(members));
         if(component.empty()) continue;
+
+        if(scheduler_ && size >= asyncThreshold_) {
+            // Over budget: solve on a worker. The component keeps its last
+            // coherent pose — committed seeds until the first result lands, its
+            // solved pose after — and the UI does not wait for the answer. Members
+            // are recorded before the context is moved into the submission.
+            if(!snapshot) snapshot = std::make_shared<const Document>(*doc_);
+            for(EntityId m : component.members()) asyncMembers_.insert(m);
+            scheduler_->submit(key, snapshot, std::move(component), {}, docEpoch_);
+            continue;
+        }
 
         const std::vector<SeedSpan> before = component.params();
         const SolveOutcome outcome = solve(*doc_, component, options);
@@ -189,6 +220,24 @@ void Session::refresh() {
                 if(into.entity == solved.entity) into.seeds = solved.seeds;
             }
         }
+    }
+
+    // Carry the last coherent pose of the async components forward onto settled_,
+    // and prune what is no longer async so a component that dropped back under
+    // budget keeps the fresh synchronous solve above rather than a stale answer.
+    if(scheduler_) {
+        std::vector<SeedSpan> kept;
+        kept.reserve(asyncPose_.size());
+        for(const SeedSpan &s : asyncPose_) {
+            if(asyncMembers_.count(s.entity) == 0) continue;
+            kept.push_back(s);
+            for(SeedSpan &into : settled_.params())
+                if(into.entity == s.entity) into.seeds = s.seeds;
+        }
+        asyncPose_ = std::move(kept);
+        // Fold in anything the workers finished while this refresh ran, whole
+        // results only, before the single index rebuild below.
+        applyAsyncResults(scheduler_->drain());
     }
 
     // The readout follows the document, so an undo or a deletion updates it
@@ -209,6 +258,62 @@ void Session::refresh() {
     presentation_.brokenTags = brokenTags(*doc_);
 
     index_.rebuild(pose());
+}
+
+void Session::enableAsyncSolving(size_t sizeThreshold, unsigned workers) {
+    asyncThreshold_ = sizeThreshold;
+    scheduler_ = std::make_unique<SolveScheduler>(workers);
+    // Deliberately no refresh here: the caller sets any hook and then refreshes,
+    // so the first submission is gated exactly like every later one.
+}
+
+void Session::setAsyncSolveHook(std::function<void(uint64_t)> hook) {
+    if(scheduler_) scheduler_->setSolveHook(std::move(hook));
+}
+
+bool Session::asyncBusy() const { return scheduler_ && !scheduler_->idle(); }
+
+void Session::applyAsyncResults(const std::vector<SolveResult> &results) {
+    for(const SolveResult &r : results) {
+        // A solve of a document the user has since edited is stale — its topology
+        // may no longer exist — so it is dropped rather than applied over the
+        // newer one. The resubmission under the current epoch carries the answer.
+        if(r.tag != docEpoch_) continue;
+
+        // A component's over-constraint stays visible even though its geometry is
+        // not moved by the failed solve: the readout takes the severity, the pose
+        // keeps its last coherent state. This mirrors the synchronous path, where
+        // a component that does not solve holds its committed seeds.
+        presentation_.status = moreSevere(presentation_.status, r.outcome.status);
+        if(!r.outcome.ok()) continue;
+
+        // Whole results only, and only onto members that are async this frame, so
+        // the pose a reader sees is always one coherent solution and a stale
+        // answer cannot overwrite a component that has gone synchronous.
+        for(const SeedSpan &span : r.context.params()) {
+            if(asyncMembers_.count(span.entity) == 0) continue;
+            bool found = false;
+            for(SeedSpan &s : asyncPose_) {
+                if(s.entity == span.entity) {
+                    s.seeds = span.seeds;
+                    found = true;
+                    break;
+                }
+            }
+            if(!found) asyncPose_.push_back(span);
+            for(SeedSpan &into : settled_.params())
+                if(into.entity == span.entity) into.seeds = span.seeds;
+        }
+    }
+}
+
+bool Session::pumpAsync() {
+    if(!scheduler_) return false;
+    const std::vector<SolveResult> results = scheduler_->drain();
+    if(results.empty()) return false;
+    applyAsyncResults(results);
+    index_.rebuild(pose());
+    return true;
 }
 
 void Session::setTool(ToolKind kind) {

@@ -65,6 +65,11 @@ std::vector<Point> ringOf(const Document &doc, const Pose &pose, const RegionRec
 Bake bakeForExport(const Document &doc, const Pose &pose) {
     Bake out;
 
+    // One counter for fills and groups both, so operand order survives the split
+    // into two lists. Stamped in creation order, which the emit recursion walks
+    // in operand order.
+    size_t nextSeq = 0;
+
     // Fills first, layer by layer and by z within each, so a consumer that
     // simply paints the list in order gets the composition it saw on screen.
     // The order is the whole of what survives of the layer model: after the
@@ -88,7 +93,7 @@ Bake bakeForExport(const Document &doc, const Pose &pose) {
             // subtract's subtrahends before its minuend — three faults the
             // exporter would consume as truth.
             const size_t root = out.groups.size();
-            out.groups.push_back(BakedGroup{region.op, NO_BAKE_GROUP});
+            out.groups.push_back(BakedGroup{region.op, NO_BAKE_GROUP, nextSeq++});
 
             auto emit = [&](const RegionRecord &r, size_t into, auto &&self) -> void {
                 if(r.op == CompositeOp::Outline) {
@@ -97,6 +102,7 @@ Bake bakeForExport(const Document &doc, const Pose &pose) {
                     if(fill.ring.empty()) return;
                     fill.combine = out.groups[into].op;
                     fill.group = into;
+                    fill.seq = nextSeq++;
                     fill.layer = layer;
                     fill.colour = colour;
                     fill.punch = region.punch;
@@ -104,7 +110,7 @@ Bake bakeForExport(const Document &doc, const Pose &pose) {
                     return;
                 }
                 const size_t mine = out.groups.size();
-                out.groups.push_back(BakedGroup{r.op, into});
+                out.groups.push_back(BakedGroup{r.op, into, nextSeq++});
                 // Operand order, which is what makes the first ring of a
                 // subtract group the thing being cut. Cycles are refused by
                 // validation, so the recursion terminates.

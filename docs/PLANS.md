@@ -911,6 +911,107 @@ holds with no blend; open an export in an external viewer.
 Exit: format spec published in docs/; async path exercised by corpus;
 export/import round-trip demos recorded.
 
+Landed. The four pillars are in and green through `nix flake check`: the format
+froze with a written spec, the async path degrades over-budget solving off the UI
+thread, the bench gained a deterministic gate, and SVG export and import speak to
+the outside world.
+
+The format froze at version 0 rather than bumping a number. The freeze is a
+policy and a spec, not a version change: "v1" is the product version, and the
+on-disk format has been version 0 since stage 1 and stays there. docs/FORMAT.md
+is the spec, field for field against persist.cpp, with the migration policy at
+its end — additive change keeps the version and rides the unknown-record
+mechanism, a breaking change bumps the version and ships a read shim, and a
+greater version than the reader's is refused whole. Forward compatibility is
+therefore exactly what PRINCIPLES named it, unknown record kinds surviving a
+round-trip, and tests/corpus/future.paro is a version-0 document carrying record
+kinds no build here defines, which the corpus opens and re-saves shedding
+nothing. The fuzz round-trip reaches a byte fixed point after one cycle over the
+whole vocabulary, and the rich fixture the freeze suite calls its contract was
+broadened to exercise every branch it had been skipping — both composite
+operators, all three tag kinds, a non-empty usage section. A seed list longer
+than the kind owns is now refused like an over-long point list, closing the one
+load-path asymmetry a review found.
+
+The async path is snapshot-in, generation-out over lock-free SPSC rings, in
+solve/spsc.h and solve/scheduler. A submit hands a worker an immutable document
+snapshot and a component context; a result carries the whole solved context and
+its generation; the UI drains, keeps the freshest per component, and never sees a
+partial solution because a context is filled entirely before it is pushed. The
+synchronous path is preferred under budget and is byte-identical when async is
+off — the scheduler is opt-in and null by default — which is what keeps the
+gesture corpus deterministic. The determinism, stale-drop and no-partial-blend
+properties are exercised both inline and on real worker threads through the
+injected-delay hook the plan named.
+
+One deviation was forced and is load-bearing. The vendored solver's C wrapper
+keeps a file-global scratch system (`static System SYS`, `static ParamSet
+dragged`), so two Slvs_Solve calls in flight at once corrupt each other —
+concurrent solving is not possible without patching the pinned submodule, which
+is out of this stage's scope. So a solver-serialization gate guards the solver
+call: a mutex taken only while a scheduler with real workers is alive, so the
+synchronous-only build never touches it and pays nothing. This is the one lock
+that crosses threads in our code, and it is a substrate constraint rather than a
+document race — it protects the third-party solver's global scratch, not any
+state the no-locks rule is about, and it is held only for the solve. The
+consequence, stated plainly: async buys the UI-never-blocks and last-coherent-pose
+properties, not a parallel-solve speedup, because the solver still runs one at a
+time. When the vendored solver is made thread-safe (its globals thread-local, the
+same shape platformbase already gives its mimalloc arena), the gate lifts and the
+pool parallelises with no change above the seam.
+
+Staleness is caught twice. Per-component generations order results within a
+component, and a per-refresh document epoch — bumped every edit — tags each
+submission so a solve of a document the user has since edited is dropped rather
+than applied over the newer one, which the per-component key alone cannot catch
+because an edit can move an entity to a different component. And a failed or
+non-converged async solve is not applied at all: the component holds its last
+coherent pose exactly as the synchronous path holds its committed seeds, while
+its over-constraint still reaches the readout. That last point was a review
+finding — the first cut applied every async result unconditionally, which would
+have walked geometry through its own constraints, the one thing the sync path
+forbids.
+
+The bench stayed a solve bench and gained a deterministic half. The existing
+ratio-vs-baseline timing comparison is the CI-adjacent gate, run on demand
+because a wall-clock gate in the sandbox is a flake generator, which was already
+the decided design. Beside it now is an exact arena-bytes gate: the translation
+scratch's high-water mark is a function of the document, not the clock, so a
+change there is a real regression in how much a solve allocates rather than a
+timing wobble — the half that is safe to automate. Frame-time benchmarking on
+rendered reference scenes is deferred, because it needs Skia in the bench and the
+solver is the variable term the budget actually turns on.
+
+SVG export is the bake carried the last mile, in core/svg. The region algebra
+that has no SVG equivalent is expressed structurally rather than resolved by a
+polygon-boolean library core has no business growing: a fill is a path, a subtract
+and an alpha-overwrite are masks, an intersect is a nested clip, a union is
+painting the operands. The masks are op-respecting — a subtract flips its
+subtrahends to the opposite polarity, so a nested or punched composite carves the
+region it actually is rather than the union of its rings, which two review
+findings caught the first cut getting wrong. Structural expression is exact when
+operands nest, the ordinary hole-in-a-plate case, and can only approximate a
+pathological non-nesting arrangement or an intersect inside a mask; those are
+counted in the file's own loss-report comment rather than shipped as a wrong shape
+with no word said. A punch carves what its layer accumulated below it in z-order
+and never a stroke, which is the incremental-masking fix a review forced. Import
+is a trace and deliberately less: a straight-line-and-circle subset to
+unconstrained geometry, inference-on-import deferred, everything outside the
+subset skipped whole and counted. Both directions share the document-up /
+SVG-down y convention, so an export re-imported lands where it started. The app
+grew `--export` and `--import`, headless projections that run and exit before any
+window, and tests/corpus/import.svg plus the round-trip demo are the recorded
+artefacts the exit asked for.
+
+Three high-effort adversarial reviews over the finished diff shaped the final
+state, and the pattern from stage 7 held: the defects clustered on the new
+surfaces where behaviour was inferred rather than shown — the async result
+application and the SVG mask compositor. Every finding worth acting on is fixed
+and carries a regression test. What is deferred is deferred honestly and named
+here: true parallel solving behind a thread-safe solver, frame-time benchmarking,
+and the deep-nested-composite and external-path-notation corners of the SVG
+converter, each counted or documented rather than left silent.
+
 ### Track R — renderer (parallel, entry after stage 6)
 
 The QQuickPaintedItem CPU path is a known shortcut. This track swaps it

@@ -12,6 +12,7 @@ endif()
 option(PAROCULUS_TESTS "Build the doctest runner and register tests with CTest" OFF)
 
 find_package(PkgConfig REQUIRED)
+find_package(Threads REQUIRED)
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Quick Qml)
 find_package(Eigen3 3.4 REQUIRED NO_MODULE)
 pkg_check_modules(SKIA REQUIRED IMPORTED_TARGET skia)
@@ -108,6 +109,8 @@ add_library(paroculus-core STATIC
     src/core/slots.h
     src/core/solution.cpp
     src/core/solution.h
+    src/core/svg.cpp
+    src/core/svg.h
     src/core/table.h
     src/core/tags.cpp
     src/core/tags.h
@@ -139,13 +142,18 @@ add_library(paroculus-solve STATIC
     src/solve/demosketch.h
     src/solve/diagnose.cpp
     src/solve/diagnose.h
+    src/solve/scheduler.cpp
+    src/solve/scheduler.h
     src/solve/solve.cpp
     src/solve/solve.h
+    src/solve/spsc.h
 )
 # mimalloc is PRIVATE for the same reason the solver is: every solve context
-# owns a heap, and no layer above needs to know what it is made of.
+# owns a heap, and no layer above needs to know what it is made of. Threads is
+# PUBLIC: the async scheduler's workers are std::threads, and a consumer that
+# links this static library has to carry pthread through to the final link.
 target_link_libraries(paroculus-solve
-    PUBLIC paroculus-core
+    PUBLIC paroculus-core Threads::Threads
     PRIVATE paroculus-solver PkgConfig::MIMALLOC)
 
 # The bundled typeface, compiled in rather than looked up.
@@ -280,6 +288,7 @@ if(PAROCULUS_TESTS)
         tests/unit/core_persist.cpp
         tests/unit/core_slots.cpp
         tests/unit/core_solution.cpp
+        tests/unit/core_svg.cpp
         tests/unit/core_table.cpp
         tests/unit/core_taxonomy.cpp
         tests/unit/core_topology.cpp
@@ -304,6 +313,7 @@ if(PAROCULUS_TESTS)
         tests/raster/composition.cpp
         tests/raster/regions.cpp
         tests/raster/dimensions.cpp
+        tests/gestures/async.cpp
         tests/gestures/corpus.cpp
         tests/gestures/composition.cpp
         tests/gestures/flagship.cpp
@@ -311,6 +321,7 @@ if(PAROCULUS_TESTS)
         tests/gestures/structure.cpp
         tests/unit/solve_context.cpp
         tests/unit/solve_demosketch.cpp
+        tests/unit/solve_scheduler.cpp
         tests/semantics/applicability.cpp
         tests/semantics/catalogue.cpp
         tests/semantics/branches.cpp

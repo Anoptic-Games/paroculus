@@ -3,7 +3,9 @@
 #include <slvs.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <mutex>
 #include <unordered_map>
 
 #include "core/composition.h"
@@ -11,6 +13,13 @@
 
 namespace paroculus {
 namespace {
+
+// Guards the vendored solver's file-global scratch. Only taken while sharing is
+// active — the count is zero on the synchronous-only path, so the branch is never
+// entered and the hot drag path is byte-identical to before.
+std::mutex g_solverMutex;
+std::atomic<int> g_solverSharing{0};
+
 
 // Group 1 is the fixed base — origin, normal, workplane — which the solver may
 // not move. Group 2 is the sketch it may.
@@ -360,7 +369,15 @@ SolveOutcome solve(const Document &doc, SolveContext &context, const SolveOption
     sys.faileds = t.constraintCount;
     sys.calculateFaileds = options.diagnoseFailures ? 1 : 0;
 
-    Slvs_Solve(&sys, GROUP_SKETCH);
+    // Only the solver call is guarded — translation above and readback below use
+    // per-call storage and stay concurrent. The lock is skipped entirely unless a
+    // scheduler has begun sharing, so nothing crosses threads on the pure path.
+    if(g_solverSharing.load(std::memory_order_acquire) > 0) {
+        std::lock_guard<std::mutex> lock(g_solverMutex);
+        Slvs_Solve(&sys, GROUP_SKETCH);
+    } else {
+        Slvs_Solve(&sys, GROUP_SKETCH);
+    }
 
     outcome.status = static_cast<SolveStatus>(sys.result);
     outcome.dof = sys.dof;
@@ -402,5 +419,8 @@ SolveOutcome solve(const Document &doc, SolveContext &context, const SolveOption
             .count();
     return outcome;
 }
+
+void beginSolverSharing() { g_solverSharing.fetch_add(1, std::memory_order_release); }
+void endSolverSharing() { g_solverSharing.fetch_sub(1, std::memory_order_release); }
 
 }  // namespace paroculus
