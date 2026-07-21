@@ -111,9 +111,51 @@ CopyStep copyStep(const Document &doc, std::span<const EntityId> selection,
             step.droppedConstraints++;
             continue;
         }
+        // A frame-referenced kind — symmetric-horizontal and vertical — means the
+        // world origin through no operand, so the world frame is outside every
+        // copied set and the relation straddles it by meaning even when all its
+        // operands came. Dropped and counted on every copy, plain or mirror, or
+        // the copy's component is consistent on its own and the solver slides the
+        // pair back toward the world axis by the offset. Read from the taxonomy
+        // marker, never a hardcoded kind list.
+        if(constraintInfo(c.kind).frameReferenced) {
+            step.droppedConstraints++;
+            continue;
+        }
+        // A null-reference horizontal or vertical means parallel to the document
+        // frame, and a reflection does not preserve that: the image of a
+        // document-horizontal edge lies at twice the mirror-axis angle, so about a
+        // tilted axis the copied relation contradicts the symmetry that pins the
+        // image and freezes the whole component, original included. Dropped and
+        // counted under any orientation reversal — uniformly, even for an
+        // axis-aligned mirror where it is merely redundant against the symmetry,
+        // because an exact-angle test would be a nondeterministic cliff on
+        // solved-but-inexact guides. A named reference is different: one inside
+        // the set is kept just above, since reflection preserves parallelism and
+        // perpendicularity between two things that both reflect, and one outside
+        // already dropped as a straddler. Future surface: mirror could ask
+        // rotate's retarget question and place a reflected frame, and the drop is
+        // the answer that rewrites nothing.
+        if(placement.reversesOrientation &&
+           (c.kind == ConstraintKind::Horizontal || c.kind == ConstraintKind::Vertical) &&
+           bound == constraintInfo(c.kind).operandCount) {
+            step.droppedConstraints++;
+            continue;
+        }
         ConstraintRecord copy = c;
         copy.id = ConstraintId(nextConstraint++);
         for(size_t i = 0; i < bound; i++) copy.operands[i] = step.entities.at(c.operands[i]);
+        // A reflected arc trades its endpoints (points[1] <-> points[2] above),
+        // and a tangency names its touch point by that index — alternative 0
+        // reads points[1], 1 reads points[2]. So the physical end that held the
+        // tangency now sits under the other index, and the alternative has to flip
+        // to keep naming it. Tangent is the only alternative-carrying kind this
+        // reaches: the angle kinds' alternative picks the supplement of an angle
+        // between two segment directions, and a mirror swaps no segment's ends,
+        // so theirs is unchanged.
+        if(placement.reversesOrientation && c.kind == ConstraintKind::Tangent) {
+            copy.alternative = c.alternative == 0 ? 1 : 0;
+        }
         step.constraints.emplace(c.id, copy.id);
         step.commands.push_back(AddRecord<ConstraintRecord>{copy});
     }

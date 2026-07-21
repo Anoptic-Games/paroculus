@@ -661,17 +661,14 @@ std::vector<RegionId> compositesOver(const Document &doc, RegionId id) {
 // below what it can combine renders broken rather than evaporating. The
 // operands it kept become visible in their own right again, which is the
 // non-destructive half of the boolean promise made good.
+//
+// A delegation to the combined overload, which computes exactly this — a lone
+// doomed region, its surviving composites shrunk, and nothing else — over the
+// whole doomed set. The command stream is byte-identical to the shrink-then-
+// remove this used to spell out.
 std::vector<Command> deletionStep(const Document &doc, RegionId id) {
-    std::vector<Command> out;
-    for(RegionId c : compositesOver(doc, id)) {
-        RegionRecord shrunk = *doc.regions().find(c);
-        shrunk.operands.erase(
-            std::remove(shrunk.operands.begin(), shrunk.operands.end(), id),
-            shrunk.operands.end());
-        out.push_back(SetRecord<RegionRecord>{std::move(shrunk)});
-    }
-    out.push_back(RemoveRecord<RegionRecord>{id});
-    return out;
+    const RegionId one[] = {id};
+    return deletionStep(doc, std::span<const EntityId>(), std::span<const ConstraintId>(), one);
 }
 
 ParameterDependents dependentsOf(const Document &doc, ParameterId id) {
@@ -750,9 +747,16 @@ std::vector<Command> deletionStep(const Document &doc, std::span<const Constrain
 
 std::vector<Command> deletionStep(const Document &doc, std::span<const EntityId> ids,
                                   std::span<const ConstraintId> relations) {
+    return deletionStep(doc, ids, relations, std::span<const RegionId>());
+}
+
+std::vector<Command> deletionStep(const Document &doc, std::span<const EntityId> ids,
+                                  std::span<const ConstraintId> relations,
+                                  std::span<const RegionId> regions) {
     std::vector<Command> out;
     std::vector<EntityId> seenEntities;
     std::vector<ConstraintId> seenConstraints;
+    std::vector<RegionId> doomedRegions;
     // Every entity the cascade actually removes, dependents before what they
     // are built on. Held back rather than emitted inline because the group
     // shrinks below have to be computed over the whole set and applied before
@@ -788,6 +792,15 @@ std::vector<Command> deletionStep(const Document &doc, std::span<const EntityId>
         once(seenConstraints, id);
     }
 
+    // The regions the user named for removal. Deduplicated, and skipping any not
+    // live so a stale id in the selection is a no-op rather than a refusal. A
+    // named region is removed whole — never shrunk — which is what keeps it from
+    // colliding with the entity pass's shrink of the same record.
+    for(RegionId id : regions) {
+        if(doc.regions().find(id) == nullptr) continue;
+        once(doomedRegions, id);
+    }
+
     // Regions and tags shrink, and the shrinks go first.
     //
     // A region that lost a boundary edge no longer encloses anything, and it
@@ -807,6 +820,9 @@ std::vector<Command> deletionStep(const Document &doc, std::span<const EntityId>
         return std::find(seenConstraints.begin(), seenConstraints.end(), c) !=
                seenConstraints.end();
     };
+    auto doomedRegion = [&](RegionId r) {
+        return std::find(doomedRegions.begin(), doomedRegions.end(), r) != doomedRegions.end();
+    };
 
     for(const TagRecord &t : doc.tags().records()) {
         TagRecord shrunk = t;
@@ -820,11 +836,21 @@ std::vector<Command> deletionStep(const Document &doc, std::span<const EntityId>
         if(shrunk != t) out.push_back(SetRecord<TagRecord>{std::move(shrunk)});
     }
 
+    // A region being removed outright is skipped here: shrinking a record the
+    // same step deletes would emit a set against an id a later remove makes
+    // unfindable, and the step rolls back. A surviving outline drops its doomed
+    // boundary edges; a surviving composite drops its doomed operand regions —
+    // the lift-it-back-out shrink, now computed in the same pass so a fill and a
+    // boundary edge of it can go together.
     for(const RegionRecord &r : doc.regions().records()) {
+        if(doomedRegion(r.id)) continue;
         RegionRecord shrunk = r;
         shrunk.boundary.erase(
             std::remove_if(shrunk.boundary.begin(), shrunk.boundary.end(), doomedEntity),
             shrunk.boundary.end());
+        shrunk.operands.erase(
+            std::remove_if(shrunk.operands.begin(), shrunk.operands.end(), doomedRegion),
+            shrunk.operands.end());
         if(shrunk != r) out.push_back(SetRecord<RegionRecord>{std::move(shrunk)});
     }
 
@@ -853,6 +879,23 @@ std::vector<Command> deletionStep(const Document &doc, std::span<const EntityId>
     }
 
     for(ConstraintId c : seenConstraints) out.push_back(RemoveRecord<ConstraintRecord>{c});
+
+    // Regions next, and ordered so a doomed composite precedes any doomed
+    // operand it names: a region removal is refused while a live composite still
+    // lists it, and a doomed composite is live until its own removal lands. Every
+    // surviving composite naming a doomed region was shrunk above, so by here the
+    // only record that can still name one is another doomed region.
+    std::vector<RegionId> regionRemoval;
+    std::vector<RegionId> visitedRegions;
+    auto orderRegion = [&](RegionId r, auto &&self) -> void {
+        if(!once(visitedRegions, r)) return;
+        for(RegionId parent : compositesOver(doc, r)) {
+            if(doomedRegion(parent)) self(parent, self);
+        }
+        regionRemoval.push_back(r);
+    };
+    for(RegionId r : doomedRegions) orderRegion(r, orderRegion);
+    for(RegionId r : regionRemoval) out.push_back(RemoveRecord<RegionRecord>{r});
 
     // Entities last: a removal is refused while anything still names it, and by
     // here nothing does.

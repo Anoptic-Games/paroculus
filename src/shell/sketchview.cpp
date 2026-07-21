@@ -24,7 +24,10 @@ using paroculus::PointerEvent;
 SketchView::SketchView(QQuickItem *parent) : QQuickPaintedItem(parent) {
     setAcceptedMouseButtons(Qt::LeftButton | Qt::MiddleButton);
     setAcceptHoverEvents(true);
-    setFlag(ItemAcceptsInputMethod, true);
+    // No ItemAcceptsInputMethod: the numeric strip is keystroke-driven and there
+    // is no inputMethodEvent handler, so accepting input-method events would only
+    // invite an IME to swallow digits and tool letters as preedit. Real text
+    // entry, if it is ever wanted, arrives through a real text surface.
     setFocus(true);
 
     // The demo, as a document. Stage 4's tools replace this with geometry the
@@ -121,9 +124,15 @@ double SketchView::devicePixelRatio() const {
 // HiDPI display the sketch would rasterise at 1x and be scaled up. Sizing it
 // explicitly is what buys the real resolution; paint() still works in logical
 // coordinates, because Qt applies the compensating scale to the painter.
-void SketchView::syncTextureSize() {
+void SketchView::syncTextureSize() { setTextureSize(deviceSize()); }
+
+// The backing raster's size in device pixels. Rounded once, from the logical
+// size and the ratio: rounding width()*dpr at the texture and qRound(width())*dpr
+// at the surface differ by a pixel at fractional logical sizes, and the surface
+// then rescales onto the texture — a blur with no cause the drawing can show.
+QSize SketchView::deviceSize() const {
     const double dpr = devicePixelRatio();
-    setTextureSize(QSize(qMax(1, qRound(width() * dpr)), qMax(1, qRound(height() * dpr))));
+    return QSize(qMax(1, qRound(width() * dpr)), qMax(1, qRound(height() * dpr)));
 }
 
 void SketchView::syncViewport() {
@@ -217,8 +226,13 @@ void SketchView::mouseMoveEvent(QMouseEvent *event) {
 }
 
 void SketchView::mouseReleaseEvent(QMouseEvent *event) {
-    if(panning_) {
-        if(event->button() == Qt::MiddleButton) panning_ = false;
+    // The middle release ends the pan and is consumed. Every other button is an
+    // edit and always reaches the session, panning or not — so a left press that
+    // opened a drag before the pan began still gets the release that ends it.
+    // Swallowing that release stranded the drag: it went on to track the bare
+    // cursor and committed on the next unrelated click.
+    if(event->button() == Qt::MiddleButton) {
+        panning_ = false;
         return;
     }
     session_->handle(translate(event->position(), event->button(), event->modifiers(),
@@ -266,13 +280,33 @@ void SketchView::wheelEvent(QWheelEvent *event) {
 // can read it rather than inside a Qt event handler.
 namespace {
 
+// The digit engraved on a key's face, 1..9, or 0 for anything else. Read from
+// the physical key, never from text() or key(): registry.h defines `digit` as
+// the engraved key, independent of shift and layout, and neither of those is.
+// text() is the layout's shifted glyph — shift+1 is '!' — and key() is the
+// resolved keysym — Key_Exclam — so reading the digit from either leaves the
+// rank-one decline (shift+1) unreachable on a US layout and confirm broken on
+// layouts whose unshifted number row prints symbols (AZERTY).
+//
+// On X11 and Wayland the native scan code is the evdev code offset by eight, so
+// the top-row digits 1..9 occupy 10..18 whatever the layout or shift state; that
+// range maps straight through. Outside it — the numpad, or a platform on another
+// scan-code scheme — fall back to the Key_1..Key_9 keysyms, which shift does not
+// disturb there.
+int engravedDigit(const QKeyEvent *event) {
+    const quint32 scan = event->nativeScanCode();
+    if(scan >= 10 && scan <= 18) return static_cast<int>(scan) - 10 + 1;
+    if(event->key() >= Qt::Key_1 && event->key() <= Qt::Key_9) {
+        return event->key() - Qt::Key_1 + 1;
+    }
+    return 0;
+}
+
 paroculus::KeyStroke strokeOf(const QKeyEvent *event) {
     paroculus::KeyStroke stroke;
     const QString text = event->text();
     if(!text.isEmpty()) stroke.character = text.at(0).toLatin1();
-    if(event->key() >= Qt::Key_1 && event->key() <= Qt::Key_9) {
-        stroke.digit = event->key() - Qt::Key_1 + 1;
-    }
+    stroke.digit = engravedDigit(event);
     if(event->modifiers() & Qt::ShiftModifier) stroke.modifiers |= Modifier::Shift;
     if(event->modifiers() & Qt::ControlModifier) stroke.modifiers |= Modifier::Control;
     if(event->modifiers() & Qt::AltModifier) stroke.modifiers |= Modifier::Alt;
@@ -675,11 +709,10 @@ QString SketchView::selectionText() const {
 // paint() keeps its own coordinates logical regardless, per Qt's contract for
 // an explicit textureSize.
 void SketchView::paint(QPainter *painter) {
-    const QSize size = QSize(qRound(width()), qRound(height()));
-    if(size.isEmpty()) return;
+    if(width() <= 0.0 || height() <= 0.0) return;
 
     const double dpr = devicePixelRatio();
-    const QSize device(qRound(size.width() * dpr), qRound(size.height() * dpr));
+    const QSize device = deviceSize();
 
     if(surface_.size() != device) {
         surface_ = QImage(device, QImage::Format_ARGB32_Premultiplied);

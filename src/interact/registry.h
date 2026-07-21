@@ -95,6 +95,12 @@ struct ActionContext {
     // What a transform would write into. Zero means the selection reaches no
     // parameter, so every transform dims rather than refusing after the fact.
     size_t transformable = 0;
+    // Some of what a transform would move is locked, so rotate and scale refuse
+    // whole — a transform does not move the lock — and their rows dim exactly as
+    // the step's own gate refuses, rather than claiming to apply and no-oping.
+    // Duplicate and mirror are unaffected: they copy to new geometry the lock
+    // says nothing about.
+    bool transformLocked = false;
     // Axis-referenced relations a rotation would make a question of, and
     // absolute dimensions a scale would. Both are counts rather than flags
     // because the surface reports them: "this rotation is a question about four

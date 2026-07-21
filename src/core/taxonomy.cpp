@@ -69,6 +69,11 @@ constexpr bool constraintTableIsWellFormed() {
                 if(c.operands[i] != c.operands[0]) return false;
             }
         }
+        // A frame-referenced kind carries its reference absolutely, through no
+        // operand, so it cannot also own an optional reference slot: the two are
+        // different answers to "what frame does this mean", and a kind claiming
+        // both would be ambiguous about which one the copy rule reads.
+        if(c.frameReferenced && c.optionalOperands != 0) return false;
     }
     return true;
 }

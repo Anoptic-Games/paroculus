@@ -66,6 +66,12 @@ std::vector<SurfaceEntry> stripEntries(const Session &session) {
     std::vector<SurfaceEntry> out;
     const Document &doc = session.document();
     const SurfacePolicy &policy = session.surfacePolicy();
+    // Computed once, as paletteEntries already does. The fill and toggle
+    // predicates below read only cheap flags, but contextOf walks the document —
+    // the transform closure included — so rebuilding it per pushIfApplicable was
+    // four full walks for four boolean reads, on a path a property getter
+    // re-invokes per refresh.
+    const ActionContext context = contextOf(session);
 
     for(const RelationOffer &offer : session.relationOffers()) {
         const Action *action = impositionAction(offer.kind, Strength::Impose);
@@ -95,7 +101,7 @@ std::vector<SurfaceEntry> stripEntries(const Session &session) {
     auto pushIfApplicable = [&](std::string_view name) {
         const Action *action = findAction(name);
         if(action == nullptr) return;
-        if(action->applicable != nullptr && !action->applicable(contextOf(session), *action)) {
+        if(action->applicable != nullptr && !action->applicable(context, *action)) {
             return;
         }
         SurfaceEntry entry;

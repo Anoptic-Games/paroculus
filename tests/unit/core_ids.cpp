@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include <limits>
 #include <type_traits>
 #include <unordered_set>
 
@@ -70,6 +71,20 @@ TEST_CASE("setNext refuses to make the null id issuable") {
     IdAllocator<EntityId> alloc;
     alloc.setNext(0);
     CHECK(alloc.allocate().valid());
+}
+
+TEST_CASE("the last id is issuable and the counter refuses to wrap past it") {
+    // The counter wraps to the null value after the final id is handed out.
+    // allocate() must still issue that final id and must not then reissue null.
+    IdAllocator<EntityId> alloc;
+    const EntityId::Value ceiling = std::numeric_limits<EntityId::Value>::max();
+    alloc.setNext(ceiling);
+    const EntityId last = alloc.allocate();
+    CHECK(last.valid());
+    CHECK(last.value() == ceiling);
+    // The watermark has now wrapped to the null value; a further allocate()
+    // asserts on it rather than issuing null, so it is not exercised here.
+    CHECK(alloc.next() == 0u);
 }
 
 TEST_CASE("ids over different domains are distinct types") {

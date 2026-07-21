@@ -198,6 +198,19 @@
             export QT_PLUGIN_PATH="${qt.qtbase}/lib/qt-6/plugins"
             export HOME="$TMPDIR/paroculus-home"
             mkdir -p "$HOME"
+          ''
+          # The comma-decimal persistence test guards a printf/locale regression,
+          # and can only guard it if a European locale is actually available —
+          # otherwise it falls back to a substring check the regression would
+          # pass. glibcLocales supplies the archive; PAROCULUS_REQUIRE_LOCALE
+          # makes the test fail rather than skip when no such locale can be set.
+          # Gated on the tests build (and Linux) so no other variant pulls
+          # glibcLocales into a closure whose checkPhase never runs.
+          + lib.optionalString (tests && host.isLinux) ''
+            export LOCALE_ARCHIVE="${pkgs.glibcLocales}/lib/locale/locale-archive"
+            export PAROCULUS_REQUIRE_LOCALE=1
+          ''
+          + ''
             ctest --output-on-failure
             runHook postCheck
           '';
@@ -422,6 +435,12 @@
               done
               echo "[paroculus] ${hostTag} — $(cmake --version | head -1)"
               echo "[paroculus] configure: cmake -G Ninja -S . -B build/Debug -DPAROCULUS_TESTS=ON"
+            ''
+            # The same locale wiring the sandbox checkPhase uses, so a hand-run
+            # ctest exercises the comma-decimal branch rather than its fallback.
+            + lib.optionalString isLinux ''
+              export LOCALE_ARCHIVE="${pkgs.glibcLocales}/lib/locale/locale-archive"
+              export PAROCULUS_REQUIRE_LOCALE=1
             ''
             + submodulePinWarn;
           };

@@ -473,7 +473,10 @@ std::optional<std::string_view> attr(std::string_view attrs, std::string_view na
 std::optional<double> number(std::string_view s) {
     // Trim surrounding space and a trailing unit-ish suffix is not accepted:
     // the subset is unitless user coordinates, and a value with "px" is refused
-    // rather than silently read as its numeric prefix.
+    // rather than silently read as its numeric prefix. A non-finite value is
+    // refused too — from_chars parses "nan" and "inf", and a record may hold no
+    // non-finite seed, so a coordinate that parses to one is skipped exactly as
+    // export folds one to 0.
     size_t a = 0, b = s.size();
     while(a < b && std::isspace(static_cast<unsigned char>(s[a]))) a++;
     while(b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) b--;
@@ -481,6 +484,7 @@ std::optional<double> number(std::string_view s) {
     double v = 0.0;
     const auto r = std::from_chars(s.data(), s.data() + s.size(), v);
     if(r.ec != std::errc{} || r.ptr != s.data() + s.size()) return std::nullopt;
+    if(!std::isfinite(v)) return std::nullopt;
     return v;
 }
 
@@ -559,8 +563,11 @@ private:
     void traceRect(std::string_view a) {
         const auto x = attr(a, "x"), y = attr(a, "y"), w = attr(a, "width"), h = attr(a, "height");
         if(!w || !h) { skipped_++; return; }
-        const double x0 = x ? number(*x).value_or(0.0) : 0.0;
-        const double y0 = y ? number(*y).value_or(0.0) : 0.0;
+        // Absent means the SVG default of 0; present-but-unreadable means skip,
+        // never a coercion to 0 counted as traced.
+        double x0 = 0.0, y0 = 0.0;
+        if(x) { const auto n = number(*x); if(!n) { skipped_++; return; } x0 = *n; }
+        if(y) { const auto n = number(*y); if(!n) { skipped_++; return; } y0 = *n; }
         const auto nw = number(*w), nh = number(*h);
         if(!nw || !nh) { skipped_++; return; }
         const EntityId a0 = addPoint(x0, y0);
@@ -577,8 +584,10 @@ private:
     void traceCircle(std::string_view a) {
         const auto cx = attr(a, "cx"), cy = attr(a, "cy"), rr = attr(a, "r");
         if(!rr) { skipped_++; return; }
-        const double x0 = cx ? number(*cx).value_or(0.0) : 0.0;
-        const double y0 = cy ? number(*cy).value_or(0.0) : 0.0;
+        // Same rule as the rect corner: absent defaults, unreadable skips.
+        double x0 = 0.0, y0 = 0.0;
+        if(cx) { const auto n = number(*cx); if(!n) { skipped_++; return; } x0 = *n; }
+        if(cy) { const auto n = number(*cy); if(!n) { skipped_++; return; } y0 = *n; }
         const auto radius = number(*rr);
         if(!radius || !(*radius > 0.0)) { skipped_++; return; }
         const EntityId centre = addPoint(x0, y0);
@@ -722,7 +731,21 @@ private:
         traced_++;
     }
 
-    void dispatch(std::string_view tag, std::string_view attrs) {
+    // Whether a tag names one of the shapes the trace turns into records, as
+    // opposed to a structural container or an element outside the subset. Only a
+    // geometry element is dropped by a transform: a container carries no shape of
+    // its own to mis-place, and an unrecognised element is already counted.
+    static bool isGeometryTag(std::string_view tag) {
+        return tag == "line" || tag == "polyline" || tag == "polygon" || tag == "rect" ||
+               tag == "circle" || tag == "path";
+    }
+
+    // Inputs: tag name, its attribute blob, and whether a transform governs it —
+    // its own or an enclosing container's. A transform this trace does not apply
+    // drops the geometry element whole and counts it, because tracing at the
+    // untransformed coordinates would report moved geometry as a success.
+    void dispatch(std::string_view tag, std::string_view attrs, bool transformed) {
+        if(transformed && isGeometryTag(tag)) { skipped_++; return; }
         if(tag == "line") traceLine(attrs);
         else if(tag == "polyline") tracePolyline(attrs, false);
         else if(tag == "polygon") tracePolyline(attrs, true);
@@ -739,6 +762,19 @@ private:
     }
 
     void scan(std::string_view svg) {
+        // A stack of the currently open elements, each flagged with whether it
+        // carries a transform, and a running count of the flagged ones. While the
+        // count is positive every geometry element is dropped: this trace applies
+        // no affine, so a transformed element traced in place is mis-placed
+        // geometry reported as success. A stack rather than a bare counter because
+        // a close tag must undo exactly what its open added, and a transformed
+        // <g>'s close reads the same as a plain <g>'s — only the stack remembers
+        // which was which. Every non-self-closing element is pushed so the stack
+        // stays balanced against every close tag; only a transform-carrying one
+        // raises the count.
+        std::vector<bool> openTransform;
+        size_t transformDepth = 0;
+
         size_t i = 0;
         while(i < svg.size()) {
             const size_t lt = svg.find('<', i);
@@ -756,8 +792,21 @@ private:
                 i = (end == std::string_view::npos) ? svg.size() : end + 3;
                 continue;
             }
-            if(lt + 1 < svg.size() &&
-               (svg[lt + 1] == '/' || svg[lt + 1] == '?' || svg[lt + 1] == '!')) {
+
+            // A close tag pops the innermost open element and undoes its
+            // contribution to the transform depth.
+            if(lt + 1 < svg.size() && svg[lt + 1] == '/') {
+                const size_t gt = svg.find('>', lt);
+                if(gt == std::string_view::npos) break;
+                if(!openTransform.empty()) {
+                    if(openTransform.back()) transformDepth--;
+                    openTransform.pop_back();
+                }
+                i = gt + 1;
+                continue;
+            }
+            // A processing instruction or a declaration opens nothing.
+            if(lt + 1 < svg.size() && (svg[lt + 1] == '?' || svg[lt + 1] == '!')) {
                 const size_t gt = svg.find('>', lt);
                 if(gt == std::string_view::npos) break;
                 i = gt + 1;
@@ -787,7 +836,28 @@ private:
             while(nameEnd < inner.size() && inner[nameEnd] != ' ' && inner[nameEnd] != '\n' &&
                   inner[nameEnd] != '\t' && inner[nameEnd] != '\r' && inner[nameEnd] != '/')
                 nameEnd++;
-            dispatch(inner.substr(0, nameEnd), inner.substr(nameEnd));
+            const std::string_view tag = inner.substr(0, nameEnd);
+            const std::string_view attrs = inner.substr(nameEnd);
+
+            // Self-closing when the last non-space character is '/'. It sits
+            // outside any quoted value because gt was located respecting quotes,
+            // so a value ending in '/' is never mistaken for the empty-element
+            // slash.
+            size_t last = inner.size();
+            while(last > 0 && (inner[last - 1] == ' ' || inner[last - 1] == '\n' ||
+                               inner[last - 1] == '\t' || inner[last - 1] == '\r'))
+                last--;
+            const bool selfClosing = last > 0 && inner[last - 1] == '/';
+
+            const bool hasTransform = attr(attrs, "transform").has_value();
+            dispatch(tag, attrs, transformDepth > 0 || hasTransform);
+
+            // An open element's transform governs its descendants until its close;
+            // a self-closing tag has none to govern, so it never poisons a sibling.
+            if(!selfClosing) {
+                openTransform.push_back(hasTransform);
+                if(hasTransform) transformDepth++;
+            }
             i = gt + 1;
         }
     }

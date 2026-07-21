@@ -641,3 +641,41 @@ TEST_CASE("the panel downgrades a width it cannot drive") {
     // exists to preserve.
     CHECK(session->presentation().status != SolveStatus::Inconsistent);
 }
+
+TEST_CASE("mirror reports the relations it dropped at the boundary") {
+    // mirrorStep copies through copyStep, which sheds the null-reference axis
+    // relations a reflection cannot preserve. Those drops are the no-silent-changes
+    // half of the operation, so the session's structure report has to carry the
+    // count out — a mirror that discarded it would quietly hand back geometry less
+    // constrained than what it reflected.
+    Document doc;
+    UndoJournal journal;
+    std::unique_ptr<Session> session = fresh(doc, journal);
+
+    // An L squared against the document frame: two null-reference axis relations,
+    // the meaning a tilted reflection cannot keep.
+    const EntityId a = addPoint(doc, 10.0, 0.0);
+    const EntityId b = addPoint(doc, 60.0, 0.0);
+    const EntityId c = addPoint(doc, 60.0, 30.0);
+    const EntityId across = addSegment(doc, a, b);
+    const EntityId up = addSegment(doc, b, c);
+    addConstraint(doc, ConstraintKind::Horizontal, {across});
+    addConstraint(doc, ConstraintKind::Vertical, {up});
+
+    // A tilted construction guide, which the selection tells apart from the bars.
+    const EntityId axisFrom = addPoint(doc, -40.0, -40.0);
+    const EntityId axisTo = addPoint(doc, 40.0, 40.0);
+    const EntityId axis = addSegment(doc, axisFrom, axisTo);
+    EntityRecord guide = *doc.entities().find(axis);
+    guide.role = Role::Construction;
+    REQUIRE(doc.apply(SetRecord<EntityRecord>{guide}).ok());
+    session->refresh();
+
+    session->select({across, up, axis});
+    REQUIRE(invokeAction(*session, "relation.mirror"));
+
+    // Both axis relations straddled the world frame the reflection tilts away
+    // from, so both were dropped — and the count reached the surface. Today the
+    // report reads 0 because mirrorStep discarded what the copy counted.
+    CHECK(session->presentation().structure.droppedRelations == 2);
+}

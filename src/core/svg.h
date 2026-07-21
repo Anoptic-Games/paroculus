@@ -57,14 +57,19 @@ struct SvgImport {
 
 // Traces the geometry out of an SVG string. Lines, polylines, polygons, rects
 // and circles become points, segments and circles; straight-line paths (M, L, H,
-// V, Z, with implicit command repetition) become the same. Curved path commands,
-// transforms and everything else are skipped and counted. No constraint is
-// imposed and no inference is run.
+// V, Z, with implicit command repetition) become the same. Curved path commands
+// and everything outside that subset are skipped and counted. A transform is not
+// applied but honoured by omission: an element carrying one, or nested anywhere
+// under an ancestor carrying one, is skipped whole rather than traced at the
+// coordinates the transform would have moved. No constraint is imposed and no
+// inference is run.
 //
 // Two honest limits of a lossy trace. Path coordinates are read in plain and
 // exponent-free notation — the form our own export writes — so a path using
-// scientific notation is skipped whole rather than half-read. And because the
-// trace is unconstrained, an exported filled region — which reaches the file as
+// scientific notation is skipped whole rather than half-read. A non-finite
+// coordinate is refused on the principle export folds one to 0: a record holds
+// no non-finite seed in either direction. And because the trace is
+// unconstrained, an exported filled region — which reaches the file as
 // both its fill path and the stroked polylines of its boundary — re-imports as
 // two overlapping copies of that boundary; it round-trips its coordinates, not
 // its record count.

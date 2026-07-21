@@ -12,6 +12,7 @@
 
 #include <QImage>
 #include <QQuickPaintedItem>
+#include <QSize>
 #include <QString>
 #include <QTimer>
 #include <QVariantList>
@@ -129,6 +130,10 @@ private:
     void syncViewport();
     // Keeps the backing texture at the panel's true resolution.
     void syncTextureSize();
+    // The backing raster's size in device pixels, rounded once from the logical
+    // size and the ratio. The texture and paint()'s surface both read it here so
+    // they cannot round to sizes a pixel apart and force a rescale.
+    QSize deviceSize() const;
     double devicePixelRatio() const;
 
     // Adopts a recorded session and starts stepping through it. Playback is

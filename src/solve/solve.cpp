@@ -122,20 +122,73 @@ Slvs_hGroup groupFor(const Document &doc, EntityId id) {
     return isLocked(doc, id) ? GROUP_BASE : GROUP_SKETCH;
 }
 
-// Whether every operand of `c` has all of its parameters locked.
+// Whether a kind's equation reads only a curve operand's radius magnitude,
+// leaving the curve's position — a circle's centre, an arc's far endpoint —
+// out of the constraint. Radius and equal-radius are the two; point-on-circle
+// also takes a curve but relates its position, so it reads the centre.
 //
-// Such a constraint has nothing to solve for. Emitting it anyway would hand the
-// solver an equation with no unknown to satisfy it, and the verdict would be
-// Inconsistent — a lock making a system contradictory, which is exactly what a
-// lock must never be able to do. It is already satisfied, by geometry that
-// cannot move, so leaving it out changes no answer.
-bool allFrozen(const Document &doc, const ConstraintRecord &c) {
-    const size_t n = boundOperandCount(c);
-    if(n == 0) return false;
-    for(size_t i = 0; i < n; i++) {
-        if(!isFrozen(doc, c.operands[i])) return false;
+// This is the one place the parameter footprint below is not the operand's whole
+// geometry, and it exists because a circle owns a radius parameter its centre
+// point does not: a Radius names the circle, but its equation touches only that
+// own parameter.
+bool radiusOnly(ConstraintKind k) {
+    return k == ConstraintKind::Radius || k == ConstraintKind::EqualRadius;
+}
+
+// Whether any solver parameter this operand contributes to `kind`'s equation is
+// free — in GROUP_SKETCH rather than the fixed base. Walked at parameter
+// granularity, mirroring exactly how translate() wires each kind:
+//   point    its two own parameters, group groupFor(point)
+//   segment  its two endpoints' parameters (it owns none)
+//   arc      its defining points (it owns none); a radius-only kind reads the
+//            radius as |centre-start| and leaves the far end, every other kind
+//            reads the whole arc
+//   circle   its own radius parameter, group groupFor(circle); its centre point
+//            is read only when the kind relates the circle's position
+bool operandFree(const Document &doc, ConstraintKind kind, EntityId id) {
+    const EntityRecord *e = doc.entities().find(id);
+    if(e == nullptr) return false;
+    switch(e->kind) {
+        case EntityKind::Point:
+            return groupFor(doc, id) == GROUP_SKETCH;
+        case EntityKind::Segment:
+            return groupFor(doc, e->points[0]) == GROUP_SKETCH ||
+                   groupFor(doc, e->points[1]) == GROUP_SKETCH;
+        case EntityKind::Arc:
+            if(groupFor(doc, e->points[0]) == GROUP_SKETCH ||
+               groupFor(doc, e->points[1]) == GROUP_SKETCH) {
+                return true;
+            }
+            if(radiusOnly(kind)) return false;
+            return groupFor(doc, e->points[2]) == GROUP_SKETCH;
+        case EntityKind::Circle:
+            if(groupFor(doc, id) == GROUP_SKETCH) return true;
+            if(radiusOnly(kind)) return false;
+            return groupFor(doc, e->points[0]) == GROUP_SKETCH;
     }
-    return true;
+    return false;
+}
+
+// Whether `c` has any unknown the solver could move to satisfy it — any free
+// parameter in the footprint its equation actually reads.
+//
+// A constraint with no free parameter is left out of the system: it is already
+// satisfied by geometry that cannot move, so no answer changes, and emitting it
+// would hand the solver an equation with no unknown — the verdict comes back
+// Inconsistent, a lock making a system contradictory, which is exactly what a
+// lock must never be able to do. The footprint is per parameter and not per
+// whole entity, because a lock can freeze one parameter of an entity while
+// another floats: a circle on a locked layer whose centre point sits on an
+// unlocked one has its radius fixed but its centre free, and a Radius constraint
+// on it reads only the fixed radius — asking whole-entity frozenness would emit
+// it against a frozen radius and make a dimensioned circle Inconsistent.
+bool constraintHasFreeParam(const Document &doc, const ConstraintRecord &c) {
+    const size_t n = boundOperandCount(c);
+    if(n == 0) return true;  // no operands to freeze; emitted as before
+    for(size_t i = 0; i < n; i++) {
+        if(operandFree(doc, c.kind, c.operands[i])) return true;
+    }
+    return false;
 }
 
 void translate(const Document &doc, const SolveContext &context, const SolveOptions &options,
@@ -263,7 +316,7 @@ void translate(const Document &doc, const SolveContext &context, const SolveOpti
         const ConstraintRecord &c = *record;
         if(!c.driving) continue;  // a reference measurement reads, it never drives
         if(!fullyInside(c, context)) continue;
-        if(allFrozen(doc, c)) continue;
+        if(!constraintHasFreeParam(doc, c)) continue;
         if(c.id.valid() && std::find(options.suppressed.begin(), options.suppressed.end(),
                                      c.id) != options.suppressed.end()) {
             continue;

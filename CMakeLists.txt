@@ -352,25 +352,69 @@ if(PAROCULUS_TESTS)
     set_tests_properties(selftest PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-    # Benchmarks are run on demand, not by CTest: they are wall-clock numbers on
-    # a shared machine, and a timing gate in the sandbox would be a flake
-    # generator rather than a signal. Run from the work tree root so the
-    # baseline path resolves:  ./build/Debug/paroculus-bench
+    # The timed benchmarks are run on demand, not by CTest: they are wall-clock
+    # numbers on a shared machine, and a timing gate in the sandbox would be a
+    # flake generator rather than a signal:  ./build/Debug/paroculus-bench
+    #
+    # The arena-bytes half is deterministic — a function of the document, not the
+    # clock — so its --check-arena mode is registered below. The baseline path is
+    # compiled in from the source tree rather than resolved from the working
+    # directory, which is the one thing a sandbox is free to change.
     add_executable(paroculus-bench tests/bench/main.cpp)
     target_link_libraries(paroculus-bench PRIVATE paroculus-solve)
+    target_compile_definitions(paroculus-bench PRIVATE
+        PAROCULUS_BENCH_BASELINE="${CMAKE_CURRENT_SOURCE_DIR}/tests/bench/baseline.txt")
+    add_test(NAME bench-arena COMMAND paroculus-bench --check-arena)
 
-    # Link-boundary canaries. Each is a translation unit that links only
-    # paroculus-core and then reaches for a header belonging to a higher layer.
-    # They are excluded from the default build and compiled by CTest, which
-    # expects them to fail — that expectation is the whole test. If a canary
-    # ever compiles, a seam has been widened into a convention.
-    foreach(canary slvs skia)
-        add_executable(paroculus-canary-${canary} EXCLUDE_FROM_ALL
-            tests/boundary/canary_${canary}.cpp)
-        target_link_libraries(paroculus-canary-${canary} PRIVATE paroculus-core)
-        add_test(NAME boundary-${canary}
+    # CLI dispatch. The headless entry points and the argument guards. --export
+    # and --import run before any QGuiApplication, and the mode-conflict and
+    # bad-script guards return before it too, so none of these needs a display —
+    # they run under the same offscreen QPA the selftest does, for the same
+    # reason and in case a path ever grows a Qt dependency.
+    add_test(NAME cli-export
+             COMMAND paroculus --export "${CMAKE_CURRENT_BINARY_DIR}/cli-export.svg")
+    add_test(NAME cli-import
+             COMMAND paroculus --import "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/import.svg")
+    add_test(NAME cli-conflicting-flags
+             COMMAND paroculus --selftest --export "${CMAKE_CURRENT_BINARY_DIR}/cli-unused.svg")
+    add_test(NAME cli-bad-script
+             COMMAND paroculus --script "${CMAKE_CURRENT_BINARY_DIR}/no-such-file.paro")
+    set_tests_properties(cli-export cli-import cli-conflicting-flags cli-bad-script
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    set_tests_properties(cli-conflicting-flags cli-bad-script PROPERTIES WILL_FAIL TRUE)
+
+    # Link-boundary canaries. Each is a translation unit that links one layer
+    # target and then reaches for a header belonging to a layer that target must
+    # not expose. EXCLUDE_FROM_ALL and compiled by CTest, which expects them to
+    # fail — that expectation is the whole test. If a canary ever compiles, a
+    # seam has been widened into a convention.
+    #
+    #   slvs / skia on core  — core sees neither the solver nor Skia.
+    #   solve_consumer       — a consumer of paroculus-solve still cannot see
+    #                          slvs.h; catches paroculus-solver flipping to PUBLIC
+    #                          and leaking the solver upward into interact/shell.
+    #   render_consumer      — a consumer of paroculus-render still cannot see
+    #                          Skia; catches the Skia link flipping to PUBLIC.
+    #   interact_qt          — the interact layer stays toolkit-free; catches a
+    #                          Qt dependency reaching it, which would make gesture
+    #                          scripts un-runnable headlessly.
+    #
+    # Each links only its layer target and NOT the forbidden library, so the
+    # include resolves exactly when the seam widens — never because the canary
+    # dragged the header in itself.
+    function(paroculus_canary name)
+        add_executable(paroculus-canary-${name} EXCLUDE_FROM_ALL
+            tests/boundary/canary_${name}.cpp)
+        target_link_libraries(paroculus-canary-${name} PRIVATE ${ARGN})
+        add_test(NAME boundary-${name}
                  COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}"
-                         --target paroculus-canary-${canary})
-        set_tests_properties(boundary-${canary} PROPERTIES WILL_FAIL TRUE RUN_SERIAL TRUE)
-    endforeach()
+                         --target paroculus-canary-${name})
+        set_tests_properties(boundary-${name} PROPERTIES WILL_FAIL TRUE RUN_SERIAL TRUE)
+    endfunction()
+
+    paroculus_canary(slvs paroculus-core)
+    paroculus_canary(skia paroculus-core)
+    paroculus_canary(solve_consumer paroculus-solve)
+    paroculus_canary(render_consumer paroculus-render)
+    paroculus_canary(interact_qt paroculus-interact)
 endif()

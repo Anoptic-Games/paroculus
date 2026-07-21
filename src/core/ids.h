@@ -9,9 +9,11 @@
 // design exists to prevent.
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 
 namespace paroculus {
 
@@ -71,11 +73,23 @@ class IdAllocator {
 public:
     using Value = typename IdType::Value;
 
-    IdType allocate() { return IdType(next_++); }
+    // The watermark wraps to 0 after the last value (2^32-1) is issued, and 0 is
+    // the null ID: an unguarded wrap would hand out null and then reissue every
+    // live ID from 1. A document consuming 2^32 IDs is already pathological, so a
+    // hard assert is the right refusal — the null state is caught before it can
+    // be issued rather than silently corrupting identity.
+    IdType allocate() {
+        assert(next_ != 0 && "IdAllocator exhausted: 2^32 IDs issued");
+        return IdType(next_++);
+    }
 
     // Raises the watermark so nothing at or below `id` is ever issued. Used on
-    // load, where IDs arrive from the file rather than from here.
+    // load, where IDs arrive from the file rather than from here. The max value
+    // leaves nothing above it, so reserving above it exhausts the allocator
+    // rather than wrapping the watermark to the null value.
     void reserveAbove(IdType id) {
+        assert(id.value() != std::numeric_limits<Value>::max() &&
+               "IdAllocator exhausted: loaded the max ID");
         if(id.value() >= next_) next_ = id.value() + 1;
     }
 

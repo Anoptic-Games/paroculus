@@ -9,9 +9,16 @@
 //
 // That is what makes the isometry property testable. A rigidly constrained
 // cluster rotated about any centre has every internal residual still at zero
-// before anything re-solves, because every relation in the catalogue that is not
-// axis-referenced is invariant under rigid motion — so the re-solve is the
-// identity, not a settling.
+// before anything re-solves, because a relation that refers only to its operands
+// is invariant under rigid motion — so the re-solve is the identity, not a
+// settling. Two families are the exceptions and both are exceptions on purpose:
+// the axis-referenced kinds carry the document frame as a nullable operand and
+// are the rotate question below, and the frame-referenced kinds
+// (symmetric-horizontal and vertical, the taxonomy's `frameReferenced` column)
+// mean the world origin through no operand at all. A transform about any other
+// centre moves the geometry out from under a frame-referenced relation and it
+// resists — the default answer that rewrites nothing, since a caller who said
+// nothing must not have constraints edited on their behalf.
 //
 // The two frictions and their answers:
 //
@@ -51,6 +58,10 @@ enum class TransformError : uint8_t {
     Degenerate,     // a zero scale factor, which is not a transform but a collapse
     NonUniform,     // refused in-model; available only at the export bake
     Locked,         // some of what would move is locked, and a lock does not move
+    // A frame-referenced relation binds what would move. Symmetric-horizontal and
+    // vertical mean symmetry about the document frame through no operand, so a
+    // transform can neither retarget nor rewrite them; refused whole, as a lock is.
+    FrameReferenced,
 };
 
 const char *transformErrorName(TransformError e);
@@ -183,15 +194,5 @@ TransformStep scaleStep(const Document &doc, std::span<const EntityId> selection
 // rather than the action being missing and the user concluding the tool forgot.
 TransformStep nonUniformScaleStep(const Document &doc, std::span<const EntityId> selection,
                                   double factorX, double factorY);
-
-// Translates the selection by (dx, dy).
-//
-// Not a question anywhere: every relation in the catalogue is
-// translation-invariant, axis-referenced ones included, so this never retargets
-// and never rescales. Here rather than in interact because duplicate-with-offset
-// needs it and a drag is a different mechanism entirely — a drag is a solve, and
-// this is a rewrite.
-TransformStep translateStep(const Document &doc, std::span<const EntityId> selection, double dx,
-                            double dy);
 
 }  // namespace paroculus

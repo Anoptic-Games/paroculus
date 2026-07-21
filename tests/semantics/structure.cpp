@@ -722,3 +722,276 @@ TEST_CASE("a broken tag is not carried through a copy") {
     CHECK(doc.tags().size() == 1);
     CHECK(brokenTags(doc).size() == 1);
 }
+
+// ---------------------------------------------------------------------------
+// Review findings 1-3: implicit references under copy and mirror
+//
+// Three relations carry a reference no operand walk can see: an arc's endpoint
+// labels that a mirror permutes, a null-reference axis relation that means the
+// document frame, and the origin-symmetric kinds that mean the world origin.
+// Each survived an operation that changed what it meant.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// An arc tangent to a segment at one of its ends, satisfied exactly at the
+// seeds. `atEnd` picks the touch point: 0 is the arc's start (index 1), 1 is its
+// end (index 2), recorded as the tangency's `alternative`.
+struct TangentArc {
+    Document doc;
+    EntityId arc;
+    ConstraintId tangent;
+    std::vector<EntityId> subject;  // arc + segment, for a mirror
+};
+
+TangentArc tangentArc(uint8_t atEnd) {
+    TangentArc t;
+    const EntityId centre = addPoint(t.doc, 0.0, 0.0);
+    const EntityId start = addPoint(t.doc, 10.0, 0.0);
+    const EntityId end = addPoint(t.doc, 0.0, 10.0);
+    t.arc = addArc(t.doc, centre, start, end);
+    // The tangent line touches the chosen end perpendicular to the radius there:
+    // vertical at the start (radius points +x), horizontal at the end (radius
+    // points +y). The touch point lies on it, so the residual is zero at seeds.
+    EntityId s0, s1;
+    if(atEnd == 0) {
+        s0 = addPoint(t.doc, 10.0, -8.0);
+        s1 = addPoint(t.doc, 10.0, 8.0);
+    } else {
+        s0 = addPoint(t.doc, -8.0, 10.0);
+        s1 = addPoint(t.doc, 8.0, 10.0);
+    }
+    const EntityId seg = addSegment(t.doc, s0, s1);
+    t.tangent = addConstraint(t.doc, ConstraintKind::Tangent, {t.arc, seg});
+    if(atEnd != 0) {
+        ConstraintRecord r = *t.doc.constraints().find(t.tangent);
+        r.alternative = 1;
+        t.doc.apply(SetRecord<ConstraintRecord>{r});
+    }
+    t.subject = {t.arc, seg};
+    return t;
+}
+
+// Two segments squared against the document frame: an L whose corner is at b.
+// Nothing names a reference axis, so both relations mean the document frame —
+// the meaning a reflection cannot preserve.
+struct AxisCluster {
+    Document doc;
+    EntityId a, b, c, across, up;
+    std::vector<EntityId> subject;  // the two segments
+};
+
+AxisCluster axisCluster() {
+    AxisCluster k;
+    k.a = addPoint(k.doc, 10.0, 0.0);
+    k.b = addPoint(k.doc, 60.0, 0.0);
+    k.c = addPoint(k.doc, 60.0, 30.0);
+    k.across = addSegment(k.doc, k.a, k.b);
+    k.up = addSegment(k.doc, k.b, k.c);
+    addConstraint(k.doc, ConstraintKind::Horizontal, {k.across});
+    addConstraint(k.doc, ConstraintKind::Vertical, {k.up});
+    k.subject = {k.across, k.up};
+    return k;
+}
+
+}  // namespace
+
+TEST_CASE("mirror keeps a tangency at the right end of a reflected arc") {
+    // copy swaps a reflected arc's endpoints — correct, since the un-swapped copy
+    // is the complementary arc — but a tangency names its touch point by index,
+    // so the alternative has to flip with the swap or the copy holds at the wrong
+    // physical end. Both values of `alternative` are covered.
+    auto mirrored = [](TangentArc &t) -> const ConstraintRecord * {
+        const EntityId axisFrom = addPoint(t.doc, 30.0, -50.0);
+        const EntityId axisTo = addPoint(t.doc, 30.0, 50.0);
+        const EntityId axis = addSegment(t.doc, axisFrom, axisTo);
+        EntityRecord guide = *t.doc.entities().find(axis);
+        guide.role = Role::Construction;
+        REQUIRE(t.doc.apply(SetRecord<EntityRecord>{guide}).ok());
+
+        std::vector<EntityId> selection = t.subject;
+        selection.push_back(axis);
+        const CompoundStep step = mirrorStep(t.doc, selection, axis);
+        REQUIRE(step.ok());
+        REQUIRE(applyAll(t.doc, step.commands));
+
+        // The copied tangency is the one that is not the original.
+        for(const ConstraintRecord &c : t.doc.constraints().records()) {
+            if(c.kind == ConstraintKind::Tangent && c.id != t.tangent) return &c;
+        }
+        return nullptr;
+    };
+
+    SUBCASE("tangent at the arc's start flips to the end form on the copy") {
+        TangentArc t = tangentArc(0);
+        REQUIRE(worstResidual(t.doc) < 1e-9);  // satisfied at the seeds
+        const ConstraintRecord *copied = mirrored(t);
+        REQUIRE(copied != nullptr);
+        // The reflected start now sits at index 2, so the copy touches there.
+        CHECK(copied->alternative == 1);
+        const Pose pose(t.doc);
+        const std::optional<double> r = residual(pose, *copied);
+        REQUIRE(r.has_value());
+        CHECK(std::abs(*r) < 1e-9);
+        // Nothing to settle: the copied tangency already holds at the reflected
+        // seeds, so the re-solve is the identity. Without the flip this residual
+        // would be the arc's diameter and the re-solve would move the geometry.
+        CHECK(resolveDrift(t.doc) < 1e-9);
+    }
+
+    SUBCASE("tangent at the arc's end flips to the start form on the copy") {
+        TangentArc t = tangentArc(1);
+        REQUIRE(worstResidual(t.doc) < 1e-9);
+        const ConstraintRecord *copied = mirrored(t);
+        REQUIRE(copied != nullptr);
+        CHECK(copied->alternative == 0);
+        const Pose pose(t.doc);
+        const std::optional<double> r = residual(pose, *copied);
+        REQUIRE(r.has_value());
+        CHECK(std::abs(*r) < 1e-9);
+        CHECK(resolveDrift(t.doc) < 1e-9);
+    }
+}
+
+TEST_CASE("a reflection drops the null-reference axis relations it cannot preserve") {
+    // A horizontal or vertical with no reference names the document frame, and a
+    // reflection does not preserve that meaning, so it is dropped and counted —
+    // uniformly, even when the mirror axis is axis-aligned and the relation is
+    // only redundant. A plain translation keeps them, the control that proves the
+    // drop is the reversal's doing.
+
+    // Reflection about y = x: (x, y) -> (y, x). Orientation-reversing.
+    const CopyPlacement tilted{[](Point p) { return Point{p.y, p.x}; }, true};
+    // Reflection about the x-axis: (x, y) -> (x, -y). Axis-aligned, so the images
+    // of the H/V edges are themselves H/V and the relation is redundant, not
+    // contradictory — and is dropped anyway.
+    const CopyPlacement aligned{[](Point p) { return Point{p.x, -p.y}; }, true};
+
+    SUBCASE("about a tilted axis") {
+        AxisCluster k = axisCluster();
+        const CopyStep copy = copyStep(k.doc, k.subject, tilted);
+        CHECK(copy.droppedConstraints == 2);
+        CHECK(copy.constraints.empty());
+        // The geometry still came: two segments over three points.
+        CHECK(copy.entities.size() == 5);
+    }
+
+    SUBCASE("about an axis-aligned axis, where the relation is only redundant") {
+        AxisCluster k = axisCluster();
+        const CopyStep copy = copyStep(k.doc, k.subject, aligned);
+        CHECK(copy.droppedConstraints == 2);
+        CHECK(copy.constraints.empty());
+    }
+
+    SUBCASE("a translation keeps them") {
+        AxisCluster k = axisCluster();
+        const CopyStep copy = copyStep(k.doc, k.subject, 100.0, 0.0);
+        CHECK(copy.droppedConstraints == 0);
+        CHECK(copy.constraints.size() == 2);
+    }
+}
+
+TEST_CASE("mirroring an axis-constrained cluster stays consistent") {
+    // The whole of finding 2: without the drop, the copied horizontal contradicts
+    // the symmetry that pins the image, and the entire component — original
+    // included — goes Inconsistent and freezes. With it, the image is held by the
+    // symmetry alone and the document solves.
+    auto mirrorAbout = [](Point from, Point to) {
+        AxisCluster k = axisCluster();
+        const EntityId axisFrom = addPoint(k.doc, from.x, from.y);
+        const EntityId axisTo = addPoint(k.doc, to.x, to.y);
+        const EntityId axis = addSegment(k.doc, axisFrom, axisTo);
+        EntityRecord guide = *k.doc.entities().find(axis);
+        guide.role = Role::Construction;
+        REQUIRE(k.doc.apply(SetRecord<EntityRecord>{guide}).ok());
+
+        std::vector<EntityId> selection = k.subject;
+        selection.push_back(axis);
+        const CompoundStep step = mirrorStep(k.doc, selection, axis);
+        REQUIRE(step.ok());
+        REQUIRE(applyAll(k.doc, step.commands));
+
+        // No axis relation was copied: the two in the document are the originals.
+        size_t axisRelations = 0;
+        for(const ConstraintRecord &c : k.doc.constraints().records()) {
+            if(c.kind == ConstraintKind::Horizontal || c.kind == ConstraintKind::Vertical) {
+                axisRelations++;
+            }
+        }
+        CHECK(axisRelations == 2);
+        // The image sits at the reflected pose: every symmetric relation is
+        // satisfied at the seeds, so nothing is violated and the re-solve is the
+        // identity. Without the drop this residual would be enormous and the
+        // solve would fail.
+        CHECK(worstResidual(k.doc) < 1e-9);
+        CHECK(resolveDrift(k.doc) < 1e-6);
+    };
+
+    SUBCASE("about a tilted axis") { mirrorAbout(Point{-30.0, -30.0}, Point{30.0, 30.0}); }
+    SUBCASE("about an axis-aligned axis") { mirrorAbout(Point{0.0, -40.0}, Point{0.0, 40.0}); }
+}
+
+TEST_CASE("a frame-referenced relation does not survive a copy") {
+    // Symmetric-horizontal means the two points are mirror images about the world
+    // origin's vertical axis — an absolute reference no operand carries. Copying
+    // with an offset would carry it verbatim, and the copy's component being
+    // consistent on its own, the solver slides the pair back toward the world
+    // axis. Instead it is dropped and counted, and the copy lands where placed.
+    Document doc;
+    const EntityId a = addPoint(doc, -30.0, 20.0);
+    const EntityId b = addPoint(doc, 30.0, 20.0);
+    addConstraint(doc, ConstraintKind::SymmetricHorizontal, {a, b});
+    REQUIRE(worstResidual(doc) < 1e-12);  // equal y, x summing to zero
+
+    const std::vector<EntityId> selection{a, b};
+    const CopyStep copy = copyStep(doc, selection, 100.0, 0.0);
+    CHECK(copy.constraints.empty());
+    CHECK(copy.droppedConstraints == 1);
+    CHECK(copy.entities.size() == 2);
+    REQUIRE(applyAll(doc, copy.commands));
+
+    const EntityId copyA = copy.entities.at(a);
+    const EntityId copyB = copy.entities.at(b);
+
+    // No snap-back: the copied pair has no relation left to pull it, so the solve
+    // leaves it exactly at the offset placement.
+    SolveContext context = SolveContext::forWholeDocument(doc);
+    SolveOptions options;
+    options.diagnoseFailures = false;
+    REQUIRE(solve(doc, context, options).ok());
+    Pose pose(doc);
+    pose.overlay(context.params());
+    const Point pa = *pose.point(copyA);
+    const Point pb = *pose.point(copyB);
+    CHECK(pa.x == doctest::Approx(70.0));
+    CHECK(pa.y == doctest::Approx(20.0));
+    CHECK(pb.x == doctest::Approx(130.0));
+    CHECK(pb.y == doctest::Approx(20.0));
+}
+
+TEST_CASE("a transform refuses on a frame-referenced relation") {
+    // The transform half of finding 3. Symmetric-horizontal means symmetry about
+    // the document frame through no operand, so a rotation or scale about any
+    // centre but the world origin moves the pair out from under it and the
+    // re-solve slides it back — a silent change. There is no operand to retarget,
+    // so the transform refuses whole, exactly as it refuses through a lock.
+    Document doc;
+    const EntityId a = addPoint(doc, -30.0, 20.0);
+    const EntityId b = addPoint(doc, 30.0, 20.0);
+    addConstraint(doc, ConstraintKind::SymmetricHorizontal, {a, b});
+    const std::vector<EntityId> selection{a, b};
+
+    RotateOptions rotate;
+    rotate.centre = Point{5.0, 5.0};
+    rotate.angle = 0.5;
+    const TransformStep rotated = rotateStep(doc, selection, rotate);
+    CHECK(rotated.error == TransformError::FrameReferenced);
+    CHECK(rotated.commands.empty());
+
+    ScaleOptions scale;
+    scale.centre = Point{5.0, 5.0};
+    scale.factor = 2.0;
+    const TransformStep scaled = scaleStep(doc, selection, scale);
+    CHECK(scaled.error == TransformError::FrameReferenced);
+    CHECK(scaled.commands.empty());
+}

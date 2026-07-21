@@ -91,6 +91,18 @@ struct CopyStep {
 // Groups are not copied. A group is a drag-together default the user set up over
 // particular geometry; the copy is different geometry and the user has not said
 // anything about it.
+//
+// A frame-referenced relation — symmetric-horizontal and vertical, which mean
+// the world origin through no operand — is dropped and counted on every copy,
+// because the world frame is outside every copied set: an offset copy that kept
+// it would slide back toward the world axis. An orientation-reversing placement
+// (a mirror) drops two more things a translation does not. A null-reference
+// horizontal or vertical means the document frame, which reflection does not
+// preserve, so it drops and counts like a straddler; and a tangency's arc had
+// its endpoints swapped, so its alternative flips to keep naming the same
+// physical end. Both keep the copy honest about what a reflection changed. A
+// future mirror could instead retarget those axis relations to a reflected
+// frame, exactly as rotate does — dropping is the answer that rewrites nothing.
 CopyStep copyStep(const Document &doc, std::span<const EntityId> selection,
                   const CopyPlacement &placement);
 

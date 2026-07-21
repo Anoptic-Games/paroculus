@@ -31,7 +31,14 @@ using namespace paroculus;
 
 namespace {
 
-const char *BASELINE_PATH = "tests/bench/baseline.txt";
+// Compiled in from the source tree, so the directory CTest runs from does not
+// decide whether the baseline is found. The timed run reads and writes it; the
+// arena gate reads it. A hand-compile without the definition refuses rather
+// than silently falling back to a path that only resolves from the work root.
+#ifndef PAROCULUS_BENCH_BASELINE
+#error "PAROCULUS_BENCH_BASELINE must be defined — the checked-in baseline path"
+#endif
+const char *BASELINE_PATH = PAROCULUS_BENCH_BASELINE;
 
 // Provisional budget from the plan: a warm solve of a 256-parameter component
 // well inside a frame. A 16ms frame has to hold input, solve, raster and
@@ -169,13 +176,66 @@ std::vector<Sample> read(const char *path) {
     return samples;
 }
 
+// The deterministic half of the gate, run by CTest. The translation arena's
+// high-water mark is a function of the document, not of the machine's clock, so
+// an exact change is a real regression in how much scratch a solve takes rather
+// than a timing flake. Solves each component once for its byte count and
+// compares against the baseline; no timing is measured and none is gated — a
+// wall-clock gate in the sandbox is a flake generator. Fails on any mismatch,
+// on a baseline missing a row, or on a missing baseline file.
+int checkArena() {
+    const std::vector<Sample> baseline = read(BASELINE_PATH);
+    if(baseline.empty()) {
+        std::fprintf(stderr, "FAIL: no bench baseline at %s (run --record to write one)\n",
+                     BASELINE_PATH);
+        return 1;
+    }
+
+    int failures = 0;
+    for(int params = 8; params <= 1024; params *= 2) {
+        const Document doc = buildChain(params / 2);
+        SolveContext context = SolveContext::forWholeDocument(doc);
+        SolveOptions options;
+        options.diagnoseFailures = false;
+
+        const SolveOutcome outcome = solve(doc, context, options);
+        if(!outcome.ok()) {
+            std::fprintf(stderr, "FAIL: %d params failed to solve (%s)\n", params,
+                         statusName(outcome.status));
+            failures++;
+            continue;
+        }
+
+        const auto it = std::find_if(baseline.begin(), baseline.end(),
+                                     [&](const Sample &b) { return b.params == params; });
+        if(it == baseline.end()) {
+            std::fprintf(stderr, "FAIL: no baseline row for %d params\n", params);
+            failures++;
+            continue;
+        }
+        if(outcome.arenaBytes != it->bytes) {
+            std::fprintf(stderr, "FAIL: arena bytes at %d params changed %zu -> %zu vs baseline\n",
+                         params, outcome.arenaBytes, it->bytes);
+            failures++;
+        } else {
+            std::printf("ok  %8d params  %10zu arena bytes\n", params, outcome.arenaBytes);
+        }
+    }
+    return failures == 0 ? 0 : 1;
+}
+
 }  // namespace
 
 int main(int argc, char *argv[]) {
     bool record = false;
+    bool checkArenaOnly = false;
     for(int i = 1; i < argc; i++) {
         if(std::strcmp(argv[i], "--record") == 0) record = true;
+        else if(std::strcmp(argv[i], "--check-arena") == 0) checkArenaOnly = true;
     }
+
+    // The CTest gate: deterministic, quick, and free of any wall-clock reading.
+    if(checkArenaOnly) return checkArena();
 
     const std::vector<Sample> samples = run();
 

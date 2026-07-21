@@ -1,16 +1,33 @@
 #include "core/parameters.h"
 
 #include <algorithm>
+#include <memory>
 #include <vector>
 
 namespace paroculus {
 
+// Depth guards a hand-edited cycle, so it is tested before the memo: a cycle
+// never completes and so never caches, and terminates by exhausting the bound.
+// The memo then keys resolved values by id, so a parameter reached through two
+// nodes — or two paths of a diamond — resolves once. A well-formed graph's
+// longest chain sits far under the bound, so every reference has budget to
+// resolve fully wherever it is reached and the id key is exact.
 std::optional<double> TableParameterEnv::lookup(ParameterId id) const {
     if(depth_ <= 0) return std::nullopt;
+
+    if(memo_ == nullptr) memo_ = std::make_shared<Memo>();
+    const auto it = memo_->find(id);
+    if(it != memo_->end()) return it->second;
+
     const ParameterRecord *r = table_.find(id);
-    if(r == nullptr) return std::nullopt;
-    const TableParameterEnv next(table_, depth_ - 1);
-    return r->value.evaluate(&next);
+    if(r == nullptr) {
+        (*memo_)[id] = std::nullopt;
+        return std::nullopt;
+    }
+    const TableParameterEnv next(table_, depth_ - 1, memo_);
+    const std::optional<double> v = r->value.evaluate(&next);
+    (*memo_)[id] = v;
+    return v;
 }
 
 std::optional<double> evaluateParameter(const ParameterTable &table, ParameterId id) {

@@ -176,6 +176,10 @@ void Session::refresh() {
     // One document snapshot per refresh, shared by every component that goes
     // async this frame; taken lazily so the synchronous path copies nothing.
     std::shared_ptr<const Document> snapshot;
+    // The component keys that go async this frame, so the stored async outcomes
+    // can be pruned to them: a component that dropped back under budget stops
+    // being folded into the readout and is counted by the synchronous loop.
+    std::set<uint64_t> asyncKeysThisFrame;
     if(scheduler_) {
         // A new epoch for this edit. In-flight solves of the previous document
         // are tagged with the old epoch and will be dropped on drain.
@@ -203,6 +207,7 @@ void Session::refresh() {
             // are recorded before the context is moved into the submission.
             if(!snapshot) snapshot = std::make_shared<const Document>(*doc_);
             for(EntityId m : component.members()) asyncMembers_.insert(m);
+            asyncKeysThisFrame.insert(key);
             scheduler_->submit(key, snapshot, std::move(component), {}, docEpoch_);
             continue;
         }
@@ -235,6 +240,16 @@ void Session::refresh() {
                 if(into.entity == s.entity) into.seeds = s.seeds;
         }
         asyncPose_ = std::move(kept);
+        // Drop stored outcomes for components no longer async this frame, so the
+        // readout counts each solved component once — one that went synchronous
+        // is now accounted for by the loop above.
+        for(auto it = asyncOutcomes_.begin(); it != asyncOutcomes_.end();) {
+            if(asyncKeysThisFrame.count(it->first) != 0) {
+                ++it;
+            } else {
+                it = asyncOutcomes_.erase(it);
+            }
+        }
         // Fold in anything the workers finished while this refresh ran, whole
         // results only, before the single index rebuild below.
         applyAsyncResults(scheduler_->drain());
@@ -249,8 +264,17 @@ void Session::refresh() {
     // solve, and freezing the last numbers on screen would report degrees of
     // freedom for geometry the user just deleted. Nothing has no freedom and
     // nothing is wrong with it.
-    presentation_.dof = components == 0 ? 0 : (solvedAnything ? dof : -1);
-    presentation_.status = worst;
+    //
+    // The synchronous half is kept so a result the UI pumps in between refreshes
+    // folds into it without re-solving; publishReadout combines it with the
+    // stored async outcomes, so an off-thread component counts rather than
+    // reading as unsolved — the sync-only recompute that used to clobber the
+    // async status is gone.
+    syncDof_ = dof;
+    syncWorst_ = worst;
+    syncSolvedAnything_ = solvedAnything;
+    componentCount_ = components;
+    publishReadout();
 
     // Recomputed rather than accumulated: a region is broken because of what it
     // is now, and one that was mended by an undo has to stop saying so.
@@ -280,12 +304,22 @@ void Session::applyAsyncResults(const std::vector<SolveResult> &results) {
         // newer one. The resubmission under the current epoch carries the answer.
         if(r.tag != docEpoch_) continue;
 
-        // A component's over-constraint stays visible even though its geometry is
-        // not moved by the failed solve: the readout takes the severity, the pose
-        // keeps its last coherent state. This mirrors the synchronous path, where
-        // a component that does not solve holds its committed seeds.
-        presentation_.status = moreSevere(presentation_.status, r.outcome.status);
+        // The readout takes this component's outcome whether or not its geometry
+        // moved: a failed solve escalates the status and keeps the last coherent
+        // pose, exactly as the synchronous branch does. Recorded per component so
+        // publishReadout folds it in — a drain inside refresh no longer has its
+        // escalation clobbered by the sync-only recompute, and its dof is counted.
+        asyncOutcomes_[r.key] = AsyncOutcome{r.outcome.dof, r.outcome.status};
         if(!r.outcome.ok()) continue;
+
+        // The invisible geometry this solve moved something visible with, named
+        // by the same narrow rule the synchronous branch applies: the before-pose
+        // is the members' committed seeds, the after-pose the solved context. So
+        // an off-thread component reports its hidden influences too.
+        std::vector<EntityId> members = r.context.members();
+        const std::vector<SeedSpan> before =
+            SolveContext::forMembers(*doc_, std::move(members)).params();
+        noteHiddenInfluence(before, r.context.params());
 
         // Whole results only, and only onto members that are async this frame, so
         // the pose a reader sees is always one coherent solution and a stale
@@ -307,11 +341,34 @@ void Session::applyAsyncResults(const std::vector<SolveResult> &results) {
     }
 }
 
+void Session::publishReadout() {
+    // Fold the stored async outcomes into the synchronous half: each escalates
+    // the status like a synchronous component, and an ok one adds its degrees of
+    // freedom. Ordered iteration over the map keeps this deterministic.
+    int dof = syncDof_;
+    SolveStatus worst = syncWorst_;
+    bool solved = syncSolvedAnything_;
+    for(const auto &entry : asyncOutcomes_) {
+        const AsyncOutcome &o = entry.second;
+        worst = moreSevere(worst, o.status);
+        if(o.status == SolveStatus::Okay || o.status == SolveStatus::RedundantOkay) {
+            dof += o.dof;
+            solved = true;
+        }
+    }
+    presentation_.dof = componentCount_ == 0 ? 0 : (solved ? dof : -1);
+    presentation_.status = worst;
+}
+
 bool Session::pumpAsync() {
     if(!scheduler_) return false;
     const std::vector<SolveResult> results = scheduler_->drain();
     if(results.empty()) return false;
     applyAsyncResults(results);
+    // The readout follows the pumped result the same frame it lands, so a
+    // component that solved off-thread stops reading as unsolved without waiting
+    // for the next edit's refresh.
+    publishReadout();
     index_.rebuild(pose());
     return true;
 }
@@ -764,6 +821,15 @@ void Session::handle(const PointerEvent &event) {
         switch(event.action) {
             case PointerAction::Press: {
                 if(event.button != Button::Left) return;
+                // The click discards any typed value: it arrives at the pointer
+                // and overwrites the resolved position, exactly as the numeric
+                // twin's invariant intends. Left standing, the field would swallow
+                // command keys and, worse, its text would prefix the next
+                // placement's digits — type 5, click, type 3 commits 53. Cancelled
+                // before the commit, so refreshToolPresentation republishes it as
+                // inactive the same frame, for a commit and an opening click alike
+                // since both run this branch.
+                numeric_.cancel();
                 const SnapResult inference = inferAt(event.document);
                 presentation_.snapCandidates = inference.candidates;
 
@@ -809,7 +875,13 @@ void Session::handle(const PointerEvent &event) {
                 }
                 if(drag_) {
                     updateDrag(event.document);
-                } else if(dragStarted_) {
+                } else if(dragStarted_ && !pressed_.valid()) {
+                    // The marquee is the empty-space gesture only. A press that
+                    // landed on an entity whose beginDrag found nothing to move —
+                    // a segment body owns no parameters — must not fall through to
+                    // a box that would replace the run selected at press with
+                    // whatever it caught, usually nothing. The move does nothing,
+                    // and the release keeps the selection the press made.
                     presentation_.marqueeActive = true;
                     presentation_.marqueeTo = event.screen;
                 }
@@ -860,6 +932,9 @@ void Session::handle(const PointerEvent &event) {
                 // the geometry would clear the relation too.
                 if(!additive) selection_.set(std::vector<EntityId>{});
                 selectConstraint(mark->constraint, additive);
+                // A relation click is a selection change too, so the downgrade
+                // offer the previous selection produced no longer names anything.
+                presentation_.downgrade.reset();
                 pressed_ = EntityId();
                 return;
             }
@@ -944,16 +1019,11 @@ void Session::handle(Key key, Modifier modifiers) {
                 return;
             }
             if(tool_) {
-                // Ending the chain abandons the placement, and confirmations
-                // belong to the placement.
-                confirmedOffers_.clear();
-                pendingSnaps_.clear();
-                // The offers went with it. Left standing they ghost a relation
-                // about a placement that no longer exists, until the next move
-                // happens to recompute them — and a tool that keeps running
-                // after Esc may not get one.
-                presentation_.snapCandidates.clear();
-                if(!tool_->escape()) setTool(ToolKind::Select);
+                // First Esc abandons the placement and keeps the tool; a second,
+                // when the tool has nothing left to abandon, leaves it.
+                // endToolPlacement does the abandoning and reports which case
+                // this is.
+                if(!endToolPlacement()) setTool(ToolKind::Select);
                 refreshToolPresentation();
                 return;
             }
@@ -964,14 +1034,17 @@ void Session::handle(Key key, Modifier modifiers) {
             return;
 
         case Key::Delete:
+            endGesturesForEdit();
             deleteSelection();
             return;
 
         case Key::Undo:
+            endGesturesForEdit();
             if(journal_->undo(*doc_)) refresh();
             return;
 
         case Key::Redo:
+            endGesturesForEdit();
             if(journal_->redo(*doc_)) refresh();
             return;
 
@@ -1219,6 +1292,36 @@ void Session::cancelDrag() {
     refresh();
 }
 
+// Abandons a creation tool's in-flight placement, keeping the tool. The
+// confirmations and offers belong to the placement, not the tool: left standing,
+// an offer ghosts a relation about a placement that no longer exists, and a tool
+// that keeps running after this may never get the move that would recompute it.
+// Returns tool_->escape()'s verdict — whether the tool has more to abandon,
+// which is what tells Escape a second press should leave the tool.
+bool Session::endToolPlacement() {
+    confirmedOffers_.clear();
+    pendingSnaps_.clear();
+    presentation_.snapCandidates.clear();
+    return tool_->escape();
+}
+
+// Ends every gesture in flight, each the way one Escape press ends its kind, so
+// a key that edits the document — Delete, Undo, Redo — never fires through a live
+// numeric field, drag or placement. The numeric field is cancelled, the drag is
+// rolled back rather than committed, and the tool's placement is reset while the
+// tool stays selected. All three at once, not one level, because the edit acts
+// once and whatever was in flight has to be gone before it does — otherwise an
+// undo mid-chain strands the tool's anchor and every later click is refused, and
+// a mid-drag undo commits a surprising step over the rolled-back pose.
+void Session::endGesturesForEdit() {
+    if(numeric_.active()) applyNumericCancel();
+    if(drag_) cancelDrag();
+    if(tool_) {
+        endToolPlacement();
+        refreshToolPresentation();
+    }
+}
+
 // The handle's half of the bargain: the drag ran with these dimensions
 // suppressed so the geometry could move freely, and now the values follow it.
 //
@@ -1289,10 +1392,8 @@ std::vector<RelationOffer> Session::relationOffers() const {
 
 void Session::select(std::vector<EntityId> ids) {
     selection_.set(std::move(ids));
-    // The downgrade offer names a reading of the selection it was refused for,
-    // so it means nothing about a different one. An offer that outlived its
-    // selection would invoke a measurement over whatever is selected now.
-    presentation_.downgrade.reset();
+    // refreshSelectionOffers clears the downgrade offer, which names a reading of
+    // the selection it was refused for and means nothing about a different one.
     refreshSelectionOffers();
 }
 
@@ -1481,6 +1582,8 @@ bool Session::selectConflicting() {
     if(presentation_.conflicting.empty()) return false;
     selection_.clear();
     selection_.setConstraints(presentation_.conflicting);
+    // A selection change; the downgrade offer names a reading of the old one.
+    presentation_.downgrade.reset();
     return true;
 }
 
@@ -1560,6 +1663,14 @@ void Session::refreshLoopOffers(EntityId seed) {
 }
 
 void Session::refreshSelectionOffers() {
+    // The downgrade offer names a reading of the selection it was refused for, so
+    // a change of selection makes it meaningless. Reset here — the one place
+    // every selection-changing pointer path and the Esc ascent funnel through —
+    // so the offer lives exactly as long as the selection that produced it.
+    // Before the tool guard, so select() clears it even while a tool is up; and
+    // commitCandidate, which sets the offer, returns without calling this, so a
+    // just-set offer always survives its own commit.
+    presentation_.downgrade.reset();
     if(tool_) return;
     refreshLoopOffers(selection_.items().empty() ? EntityId() : selection_.items().front());
 }
@@ -1695,6 +1806,10 @@ void Session::deleteSelection() {
 
     if(journal_->applyStep(*doc_, "delete", std::move(step)) == CommandError::None) {
         selection_.clear();
+        // deleteSelection does not go through refreshSelectionOffers — and may run
+        // with a tool up, which would short-circuit it — so the downgrade offer
+        // the now-deleted selection named is cleared here.
+        presentation_.downgrade.reset();
         refresh();
     } else {
         presentation_.deletedEntities = 0;
@@ -1768,6 +1883,9 @@ bool Session::newLayer() {
        CommandError::None) {
         return false;
     }
+    // No refresh: a new layer changes no solve input, and refresh bumps the async
+    // epoch, which would needlessly drop in-flight worker results. moveLayer
+    // carries the precedent for a layer mutation that does refresh.
     return true;
 }
 
@@ -1971,6 +2089,9 @@ bool Session::groupSelection() {
     GroupRecord group;
     group.name = "group " + std::to_string(doc_->groups().size() + 1);
     group.members = selection_.items();
+    // No refresh: grouping changes no solve input, and refresh bumps the async
+    // epoch, which would needlessly drop in-flight worker results. moveLayer
+    // carries the precedent for a mutation that does refresh.
     return journal_->applyStep(*doc_, "group", AddRecord<GroupRecord>{std::move(group)}) ==
            CommandError::None;
 }
@@ -1988,6 +2109,9 @@ bool Session::dissolveGroups() {
         if(touched) step.push_back(RemoveRecord<GroupRecord>{g.id});
     }
     if(step.empty()) return false;
+    // No refresh: dissolving a group changes no solve input, and refresh bumps
+    // the async epoch, which would needlessly drop in-flight worker results.
+    // moveLayer carries the precedent for a mutation that does refresh.
     return journal_->applyStep(*doc_, "dissolve group", std::move(step)) == CommandError::None;
 }
 
@@ -2274,6 +2398,12 @@ bool Session::applyCompound(const CompoundStep &step, const char *label) {
         return false;
     }
     presentation_.structure.copied = step.entities.size();
+    // The drops the underlying copy could not bring, reported exactly as the
+    // duplicate path reports a CopyStep's, so a mirror does not silently hand back
+    // something less constrained than what it reflected.
+    presentation_.structure.droppedRelations = step.droppedConstraints;
+    presentation_.structure.droppedRegions = step.droppedRegions;
+    presentation_.structure.droppedTags = step.droppedTags;
     refresh();
     return true;
 }

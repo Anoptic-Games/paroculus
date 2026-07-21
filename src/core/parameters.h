@@ -11,6 +11,8 @@
 // live here.
 #pragma once
 
+#include <map>
+#include <memory>
 #include <optional>
 #include <string_view>
 
@@ -22,11 +24,22 @@ namespace paroculus {
 
 using ParameterTable = RecordTable<ParameterRecord>;
 
-// Resolves parameter references against a table, with a depth bound.
+// Resolves parameter references against a table, with a depth bound and a
+// per-evaluation memo.
 //
 // The bound is not redundant with the cycle check: assignment guards the front
 // door, and this contains a loop that arrived some other way, such as a
 // hand-edited file. Evaluation must terminate on any input.
+//
+// The memo is not an optimization to reach for later. Slot::evaluate memoizes
+// within one slot, but a slot reading the same parameter through two nodes
+// re-resolves it once per node, so a chain of doublings costs 2^n: a document
+// with a 60-deep chain never evaluates, on the solve path, the frame, the bake
+// and parameter deletion alike. The memo resolves each parameter at most once
+// per top-level evaluate, making the cost linear in the reference graph. It is
+// shared down the recursion — the nested env resolving a reference sees what the
+// root already resolved — and it caches nullopt too, since re-walking a failing
+// branch is the same blowup.
 class TableParameterEnv : public ParameterEnv {
 public:
     explicit TableParameterEnv(const ParameterTable &table, int depth = 64)
@@ -37,8 +50,21 @@ public:
     std::optional<double> lookup(ParameterId id) const override;
 
 private:
+    // A resolved parameter to its value, for the life of one top-level evaluate.
+    // A present entry means resolved; its nullopt means resolved-to-unevaluable.
+    // Ordered by ParameterId and only ever point-queried, so no iteration order
+    // reaches a result.
+    using Memo = std::map<ParameterId, std::optional<double>>;
+
+    // Recursion constructor: one level deeper, sharing the root's memo.
+    TableParameterEnv(const ParameterTable &table, int depth, std::shared_ptr<Memo> memo)
+        : table_(table), depth_(depth), memo_(std::move(memo)) {}
+
     const ParameterTable &table_;
     int depth_;
+    // Lazily allocated on the first reference, so a constant slot allocates
+    // nothing; mutable because resolution is logically const.
+    mutable std::shared_ptr<Memo> memo_;
 };
 
 // Convenience over TableParameterEnv for a single lookup.

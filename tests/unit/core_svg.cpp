@@ -261,6 +261,90 @@ TEST_CASE("import: what the subset cannot read is counted, not guessed") {
     CHECK(mixed.skipped == 1);
 }
 
+TEST_CASE("import: a transform is skipped whole, never traced at untransformed coordinates") {
+    // The trace applies no affine, so an element carrying a transform — or nested
+    // under one — is dropped and counted rather than traced where the transform
+    // did not put it. Honest skip, not a wrong placement reported as success.
+    SUBCASE("a rect inside a transformed group is skipped, not traced") {
+        const SvgImport r = readSvg(
+            "<svg><g transform=\"translate(100,100)\">"
+            "<rect x=\"0\" y=\"0\" width=\"10\" height=\"5\"/></g></svg>");
+        CHECK(r.traced == 0);
+        CHECK(r.skipped == 1);
+        CHECK(r.document.entities().size() == 0);  // nothing traced at the wrong place
+    }
+    SUBCASE("a rect with its own transform is skipped") {
+        const SvgImport r = readSvg(
+            "<svg><rect x=\"0\" y=\"0\" width=\"10\" height=\"5\" transform=\"rotate(45)\"/></svg>");
+        CHECK(r.traced == 0);
+        CHECK(r.skipped == 1);
+    }
+    SUBCASE("a sibling outside the transformed group still traces") {
+        const SvgImport r = readSvg(
+            "<svg><g transform=\"translate(100,100)\">"
+            "<rect x=\"0\" y=\"0\" width=\"10\" height=\"5\"/></g>"
+            "<line x1=\"0\" y1=\"0\" x2=\"10\" y2=\"20\"/></svg>");
+        CHECK(r.traced == 1);   // the line
+        CHECK(r.skipped == 1);  // the enclosed rect
+        // The line traced at its stated coordinates: doc y is up, so y2=20 → -20.
+        bool near = false;
+        for(const EntityRecord &e : r.document.entities().records())
+            if(e.kind == EntityKind::Point && std::abs(e.seeds[0] - 10.0) < 1e-9 &&
+               std::abs(e.seeds[1] + 20.0) < 1e-9)
+                near = true;
+        CHECK(near);
+    }
+    SUBCASE("only the inner transform's children are skipped") {
+        const SvgImport r = readSvg(
+            "<svg><g><g transform=\"translate(5,5)\">"
+            "<rect x=\"0\" y=\"0\" width=\"1\" height=\"1\"/></g>"
+            "<circle cx=\"0\" cy=\"0\" r=\"3\"/></g></svg>");
+        CHECK(r.traced == 1);   // the circle, under the outer untransformed g
+        CHECK(r.skipped == 1);  // the rect, under the inner transformed g
+    }
+    SUBCASE("a self-closing transformed group poisons nothing after it") {
+        const SvgImport r = readSvg(
+            "<svg><g transform=\"translate(9,9)\"/>"
+            "<rect x=\"0\" y=\"0\" width=\"10\" height=\"5\"/></svg>");
+        CHECK(r.traced == 1);   // the rect is a sibling, not a child of the group
+        CHECK(r.skipped == 0);  // the empty group carries no geometry to skip
+    }
+}
+
+TEST_CASE("import: a non-finite coordinate is skipped, never traced as non-finite geometry") {
+    // Export folds a non-finite coordinate to 0; import refuses it. from_chars
+    // parses "nan"/"inf", so without the guard one would reach a record's seeds.
+    SUBCASE("a nan coordinate skips its element") {
+        const SvgImport r = readSvg("<svg><line x1=\"nan\" y1=\"0\" x2=\"10\" y2=\"20\"/></svg>");
+        CHECK(r.traced == 0);
+        CHECK(r.skipped == 1);
+        CHECK(r.document.entities().size() == 0);  // no record with non-finite seeds
+    }
+    SUBCASE("an inf coordinate skips its element") {
+        const SvgImport r = readSvg("<svg><line x1=\"0\" y1=\"0\" x2=\"10\" y2=\"inf\"/></svg>");
+        CHECK(r.traced == 0);
+        CHECK(r.skipped == 1);
+    }
+    SUBCASE("a rect's defaulted corner skips when present but unreadable") {
+        // x/y default to 0 when absent; present-but-non-finite must skip, not
+        // coerce to the default and count as traced.
+        const SvgImport r = readSvg("<svg><rect x=\"nan\" y=\"0\" width=\"10\" height=\"5\"/></svg>");
+        CHECK(r.traced == 0);
+        CHECK(r.skipped == 1);
+        CHECK(r.document.entities().size() == 0);
+    }
+    SUBCASE("a circle's defaulted centre skips when present but unreadable") {
+        const SvgImport r = readSvg("<svg><circle cx=\"inf\" cy=\"0\" r=\"5\"/></svg>");
+        CHECK(r.traced == 0);
+        CHECK(r.skipped == 1);
+    }
+    SUBCASE("an absent defaulted coordinate still defaults") {
+        const SvgImport r = readSvg("<svg><rect width=\"10\" height=\"5\"/></svg>");
+        CHECK(r.traced == 1);
+        CHECK(r.skipped == 0);
+    }
+}
+
 TEST_CASE("import: the checked-in corpus SVG traces to the expected record set") {
     // A recorded demo of import-as-trace: a hand-authored SVG mixing the
     // supported subset with an ellipse, text and a curved path the trace skips.

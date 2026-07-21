@@ -1,5 +1,9 @@
 #include <doctest/doctest.h>
 
+#include <optional>
+#include <string>
+#include <vector>
+
 #include "core/composition.h"
 #include "core/document.h"
 #include "core/persist.h"
@@ -9,6 +13,30 @@ using namespace paroculus;
 using paroculus::test::addConstraint;
 using paroculus::test::addPoint;
 using paroculus::test::addSegment;
+
+namespace {
+
+// Applies each command of a step, capturing its inverse first exactly as the
+// journal does, and returns the inverses so the caller can undo by replaying
+// them in reverse. Every forward command is required to apply — a step that
+// rolls back is the composition failure these tests exist to rule out.
+std::vector<Command> applyCapturingUndo(Document &doc, const std::vector<Command> &step) {
+    std::vector<Command> inverses;
+    for(const Command &c : step) {
+        const std::optional<Command> inverse = doc.invert(c);
+        REQUIRE(inverse);
+        inverses.push_back(*inverse);
+        REQUIRE(doc.apply(c).ok());
+    }
+    return inverses;
+}
+
+// Replays `inverses` newest-first, the way an undo does.
+void undo(Document &doc, const std::vector<Command> &inverses) {
+    for(auto it = inverses.rbegin(); it != inverses.rend(); ++it) REQUIRE(doc.apply(*it).ok());
+}
+
+}  // namespace
 
 TEST_CASE("geometry is born free and accretes constraints") {
     // Everything a user draws starts fully free; constraints are opportunistic
@@ -579,6 +607,119 @@ TEST_CASE("a removal that would dangle is refused, and the cascade is available"
     CHECK(regionState(doc, doc.regions().records().front()) == RegionState::Broken);
     // q was not part of the cascade: only what would have dangled goes.
     CHECK(doc.entities().contains(q));
+}
+
+TEST_CASE("a fill and one of its own edges delete in one step") {
+    // The combined overload is what lets a selection reach a fill and a boundary
+    // edge of it at once. The entity pass would shrink the region to drop the
+    // edge while the region pass removes it outright — two sets of the same
+    // record — and concatenating them either order rolls the whole gesture back.
+    // Computed together, the named region is removed and never shrunk.
+    Document doc;
+    const EntityId p0 = addPoint(doc, 0.0, 0.0);
+    const EntityId p1 = addPoint(doc, 10.0, 0.0);
+    const EntityId p2 = addPoint(doc, 5.0, 8.0);
+    const EntityId e0 = addSegment(doc, p0, p1);
+    const EntityId e1 = addSegment(doc, p1, p2);
+    const EntityId e2 = addSegment(doc, p2, p0);
+    RegionRecord loop;
+    loop.boundary = {e0, e1, e2};
+    REQUIRE(doc.apply(AddRecord<RegionRecord>{loop}).ok());
+    const RegionId rid = doc.regions().records().back().id;
+    REQUIRE(regionState(doc, rid) == RegionState::Whole);
+
+    const std::string before = serialize(doc);
+    const EntityId edges[] = {e0};
+    const RegionId regions[] = {rid};
+    const std::vector<Command> step =
+        deletionStep(doc, edges, std::span<const ConstraintId>(), regions);
+
+    const std::vector<Command> inverses = applyCapturingUndo(doc, step);
+    CHECK_FALSE(doc.regions().contains(rid));
+    CHECK_FALSE(doc.entities().contains(e0));
+    // The other two edges are untouched — only what was named goes.
+    CHECK(doc.entities().contains(e1));
+    CHECK(doc.entities().contains(e2));
+
+    undo(doc, inverses);
+    CHECK(serialize(doc) == before);
+}
+
+TEST_CASE("a fill deletes together with every edge that bounds it") {
+    // The whole loop and the fill it carries, in one gesture. The region is
+    // removed whole rather than shrunk edge by edge, so there is no set of a
+    // record a later remove has already taken.
+    Document doc;
+    const EntityId p0 = addPoint(doc, 0.0, 0.0);
+    const EntityId p1 = addPoint(doc, 10.0, 0.0);
+    const EntityId p2 = addPoint(doc, 5.0, 8.0);
+    const EntityId e0 = addSegment(doc, p0, p1);
+    const EntityId e1 = addSegment(doc, p1, p2);
+    const EntityId e2 = addSegment(doc, p2, p0);
+    RegionRecord loop;
+    loop.boundary = {e0, e1, e2};
+    REQUIRE(doc.apply(AddRecord<RegionRecord>{loop}).ok());
+    const RegionId rid = doc.regions().records().back().id;
+
+    const std::string before = serialize(doc);
+    const EntityId edges[] = {e0, e1, e2};
+    const RegionId regions[] = {rid};
+    const std::vector<Command> inverses = applyCapturingUndo(
+        doc, deletionStep(doc, edges, std::span<const ConstraintId>(), regions));
+
+    CHECK_FALSE(doc.regions().contains(rid));
+    CHECK_FALSE(doc.entities().contains(e0));
+    CHECK_FALSE(doc.entities().contains(e1));
+    CHECK_FALSE(doc.entities().contains(e2));
+    // The corner points are not built on the edges, so they stay.
+    CHECK(doc.entities().contains(p0));
+    CHECK(doc.entities().contains(p1));
+    CHECK(doc.entities().contains(p2));
+
+    undo(doc, inverses);
+    CHECK(serialize(doc) == before);
+}
+
+TEST_CASE("deleting a composite's operand shrinks the composite in the same step") {
+    // A region doomed by name that is an operand of a surviving composite: the
+    // composite shrinks to lift it out, exactly as the region overload does on
+    // its own, and the two removals compose because the shrink is computed over
+    // the whole doomed set before anything is removed.
+    Document doc;
+    const EntityId p = addPoint(doc, 0.0, 0.0);
+    const EntityId q = addPoint(doc, 1.0, 0.0);
+    const EntityId a = addSegment(doc, p, q);
+    const EntityId b = addSegment(doc, q, p);
+
+    RegionRecord one;
+    one.boundary = {a};
+    REQUIRE(doc.apply(AddRecord<RegionRecord>{one}).ok());
+    const RegionId first = doc.regions().records().back().id;
+    RegionRecord two;
+    two.boundary = {b};
+    REQUIRE(doc.apply(AddRecord<RegionRecord>{two}).ok());
+    const RegionId second = doc.regions().records().back().id;
+
+    RegionRecord composite;
+    composite.op = CompositeOp::Union;
+    composite.operands = {first, second};
+    REQUIRE(doc.apply(AddRecord<RegionRecord>{composite}).ok());
+    const RegionId both = doc.regions().records().back().id;
+
+    const std::string before = serialize(doc);
+    const RegionId regions[] = {first};
+    const std::vector<Command> inverses = applyCapturingUndo(
+        doc, deletionStep(doc, std::span<const EntityId>(), std::span<const ConstraintId>(),
+                          regions));
+
+    CHECK_FALSE(doc.regions().contains(first));
+    CHECK(doc.regions().contains(second));
+    REQUIRE(doc.regions().contains(both));
+    // The composite kept the operand that survived and dropped the one deleted.
+    CHECK(doc.regions().find(both)->operands == std::vector<RegionId>{second});
+
+    undo(doc, inverses);
+    CHECK(serialize(doc) == before);
 }
 
 TEST_CASE("a leaf entity deletes on its own") {

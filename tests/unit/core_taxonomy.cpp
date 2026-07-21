@@ -124,6 +124,22 @@ TEST_CASE("the invariance split matches the thesis") {
     }
 }
 
+TEST_CASE("exactly the origin-symmetric kinds are frame-referenced") {
+    // Symmetric-horizontal and vertical constrain a pair about the world origin
+    // through no operand — an absolute reference no operand walk can see — so
+    // copy drops-and-counts them and transforms leave them to resist. Nothing
+    // else carries the marker: a copy dropping a relation a translation actually
+    // preserves would be as wrong as one keeping these.
+    for(const auto &c : CONSTRAINT_KINDS) {
+        const bool expected = c.kind == ConstraintKind::SymmetricHorizontal ||
+                              c.kind == ConstraintKind::SymmetricVertical;
+        CHECK_MESSAGE(c.frameReferenced == expected, c.name);
+        // The coherence rule the table asserts: a frame-referenced kind carries
+        // its reference absolutely, so it owns no optional reference slot.
+        if(c.frameReferenced) CHECK_MESSAGE(c.optionalOperands == 0, c.name);
+    }
+}
+
 TEST_CASE("radius declares its solver value scale") {
     // The solver constrains diameter; the document declares radius. Recording
     // the factor as data keeps the seam from growing a special case the

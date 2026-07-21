@@ -183,6 +183,23 @@ struct ConstraintKindInfo {
     // reading is canonical when each group is in ascending ID order and the
     // groups themselves are.
     uint8_t operandGroupSize;
+
+    // Whether the kind's meaning references the document frame or world origin
+    // through no operand at all — an absolute reference no operand walk can see.
+    //
+    // True for exactly the two origin-symmetric kinds: symmetric-horizontal and
+    // symmetric-vertical constrain a pair about the workplane axis through the
+    // world origin (the solver's au+bu=0). A copy or an off-origin transform
+    // reasoning over operands alone would carry them verbatim and let the pair
+    // slide back toward the world axis — so copy drops-and-counts them on every
+    // copy, because the world frame is outside every copied set, and transforms
+    // leave them to resist, which is the default answer that rewrites nothing.
+    //
+    // Distinct from the nullable reference horizontal and vertical carry: those
+    // mean the document frame too, but through an optional operand slot that
+    // rotate can retarget, so they are a question with an answer rather than an
+    // absolute. A frame-referenced kind therefore carries no optional operand.
+    bool frameReferenced;
 };
 
 // The three strengths every relation the tool can compute exists at.
@@ -262,10 +279,17 @@ inline constexpr std::array<ConstraintKindInfo, 22> CONSTRAINT_KINDS = {{
     {ConstraintKind::LengthDifference, "length-difference", 2,
      {OperandKind::Segment, OperandKind::Segment}, 1, Invariance::Absolute, 100033, 1.0,
      0, 0, 0, true},
+    // Frame-referenced: symmetric about the world origin's axis through no
+    // operand, so a copy or an off-origin transform reading operands alone would
+    // slide the pair back toward it. The trailing `true` is the marker; the
+    // zeros before it are the optional/alternative/group columns these kinds do
+    // not use, spelled out because the marker sits after them.
     {ConstraintKind::SymmetricHorizontal, "symmetric-horizontal", 2,
-     {OperandKind::Point, OperandKind::Point}, 0, Invariance::ScaleInvariant, 100015, 1.0},
+     {OperandKind::Point, OperandKind::Point}, 0, Invariance::ScaleInvariant, 100015, 1.0,
+     0, 0, 0, false, 0, true},
     {ConstraintKind::SymmetricVertical, "symmetric-vertical", 2,
-     {OperandKind::Point, OperandKind::Point}, 0, Invariance::ScaleInvariant, 100016, 1.0},
+     {OperandKind::Point, OperandKind::Point}, 0, Invariance::ScaleInvariant, 100016, 1.0,
+     0, 0, 0, false, 0, true},
     {ConstraintKind::SymmetricAboutLine, "symmetric-about-line", 3,
      {OperandKind::Point, OperandKind::Point, OperandKind::Segment},
      0, Invariance::ScaleInvariant, 100017, 1.0},

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 
+#include "core/composition.h"
 #include "interact/impose.h"
 #include "interact/session.h"
 
@@ -254,7 +255,21 @@ constexpr ActionParameter OFFSET_PARAMETERS[] = {{"dx", false}, {"dy", false}};
 // the silent choice the surface exists to prevent.
 constexpr ActionParameter SIDE_PARAMETERS[] = {{"tag", true}, {"value", true}};
 
-bool haveTransformable(const ActionContext &c, const Action &) { return c.transformable > 0; }
+// Rotate and scale refuse whole on any lock in the transform closure — seeding
+// a locked parameter is a move, and a transform does not move the lock — so the
+// predicate mirrors that gate: transformable geometry with nothing in it locked.
+// An action that claimed to apply and then refused is exactly the
+// applicable-and-refusing this table exists to make impossible.
+bool haveTransformable(const ActionContext &c, const Action &) {
+    return c.transformable > 0 && !c.transformLocked;
+}
+
+// Duplicate copies to new geometry and never moves the lock, so it stays
+// applicable over a locked selection — the copy is different geometry the lock
+// says nothing about. Mirror is the same bijection over new geometry and reads
+// its own predicate; distribute imposes relations and refuses on no lock; so
+// both are left as they are, and only rotate and scale gain the lock guard.
+bool haveDuplicable(const ActionContext &c, const Action &) { return c.transformable > 0; }
 
 // Never applicable, and present anyway.
 //
@@ -453,7 +468,7 @@ const Catalogue &catalogue() {
             // Listed, permanently dimmed. See `never`.
             {"transform.scale-non-uniform", "Scale non-uniformly (export only)", {},
              NON_UNIFORM_PARAMETERS, never, doScaleNonUniform},
-            {"edit.duplicate", "Duplicate", {}, OFFSET_PARAMETERS, haveTransformable,
+            {"edit.duplicate", "Duplicate", {}, OFFSET_PARAMETERS, haveDuplicable,
              doDuplicate},
 
             // Compound relations: primitives plus a tag, never a new kind.
@@ -546,6 +561,16 @@ KeyBinding resolveKey(const ActionContext &context, const KeyStroke &stroke) {
         out.action = a;
         if(index) out.arguments.set("index", static_cast<double>(*index));
     };
+
+    // A stroke carrying Control resolves to nothing, deliberately, and before
+    // any other reading — offers, fields and commands alike. The binding
+    // grammar spells only shift+ chords; the production-UI stage grows ctrl+
+    // bindings — undo, redo, copy, paste — as ordinary registry rows, and that
+    // grammar belongs to that stage rather than here. Until then a Control
+    // chord must not fall through to the bare-letter command: on a platform
+    // whose text() delivers the plain letter under Ctrl, ctrl+r would otherwise
+    // alias into the rectangle tool.
+    if(has(stroke.modifiers, Modifier::Control)) return out;
 
     // Offer numbers first, and only when a modifier claims them. Read off the
     // key's digit rather than the character it printed, because a shifted digit
@@ -646,9 +671,35 @@ ActionContext contextOf(const Session &session) {
     const std::vector<EntityId> moved = transformClosure(session.document(), c.selection);
     for(EntityId id : moved) {
         const EntityRecord *e = session.document().entities().find(id);
-        if(e != nullptr && entityInfo(e->kind).ownParamCount > 0) c.transformable++;
+        if(e != nullptr && entityInfo(e->kind).ownParamCount > 0) {
+            c.transformable++;
+            // Mirrors the transform's own anyLocked gate: a rotation or scale
+            // refuses whole if any parameter it would write sits on a locked
+            // layer, so the predicate has to see the same lock the step would.
+            if(isLocked(session.document(), id)) c.transformLocked = true;
+        }
         if(e != nullptr && e->kind == EntityKind::Point && session.selection().contains(id)) {
             c.selectedPoints++;
+        }
+    }
+    // A frame-referenced relation binding the closure dims rotate and scale for
+    // the same reason a lock does: it means symmetry about the document frame
+    // through no operand, so a transform can neither retarget nor rewrite it and
+    // refuses whole. Set on the same flag — it dims the same two rows — so
+    // applicable still equals runnable; duplicate ignores the flag and copies to
+    // new geometry the drop rules handle. In record (ID) order, so the flag is
+    // set the same way every frame.
+    if(!c.transformLocked) {
+        for(const ConstraintRecord &rel : session.document().constraints().records()) {
+            if(!constraintInfo(rel.kind).frameReferenced) continue;
+            const size_t bound = boundOperandCount(rel);
+            for(size_t i = 0; i < bound; i++) {
+                if(std::binary_search(moved.begin(), moved.end(), rel.operands[i])) {
+                    c.transformLocked = true;
+                    break;
+                }
+            }
+            if(c.transformLocked) break;
         }
     }
     c.axisConstraints = axisReferencedIn(session.document(), moved).size();

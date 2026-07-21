@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <clocale>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 
@@ -519,8 +520,12 @@ TEST_CASE("the decimal point is a point, whatever the process locale says") {
         break;
     }
     std::setlocale(LC_ALL, restore.c_str());
-    // No comma-decimal locale is generated on this machine; the substring check
-    // above still holds the property, weakly.
+    // The check environment sets PAROCULUS_REQUIRE_LOCALE and ships a
+    // comma-decimal locale, so an unexercised run there is a gate that could
+    // never fail and fails loudly instead. A dev machine without such a locale
+    // sets nothing and keeps the graceful skip; the substring check above still
+    // holds the property, weakly.
+    if(std::getenv("PAROCULUS_REQUIRE_LOCALE")) REQUIRE(tried);
     MESSAGE("comma-decimal locale exercised: ", tried);
 }
 
@@ -779,4 +784,159 @@ TEST_CASE("forward-compat: a future-versioned file sheds nothing through open an
     REQUIRE(deserialize(written, again).ok);
     CHECK(serialize(again) == written);
     CHECK(again.unknownRecords().size() == 4);
+}
+
+TEST_CASE("a version at or above 2^31 refuses instead of wrapping to zero") {
+    // The gate cast the uint32 header to int, so 3000000000 read negative and
+    // loaded as version 0 — the one outcome refuse-whole forbids. Compared
+    // unsigned, every version above the reader's refuses with line 1.
+    for(const char *v : {"99", "3000000000", "4294967295"}) {
+        CAPTURE(v);
+        Document out;
+        const LoadResult r = deserialize(std::string("paroculus ") + v + "\n", out);
+        CHECK_FALSE(r.ok);
+        CHECK(r.line == 1);
+        CHECK(r.error == "document written by a newer version");
+    }
+    // Version 0 — the reader's own — still loads.
+    Document zero;
+    CHECK(deserialize("paroculus 0\n", zero).ok);
+}
+
+TEST_CASE("malformed references and colours are refused rather than coerced to zero") {
+    // Six fields once read through value_or(0): a garbled colour became invisible
+    // fully-transparent geometry and layer=main silently landed on the base layer,
+    // both with no error and the second skipping the dangling-reference check a
+    // wrong numeric id trips. Each now refuses like order= and z= already did.
+    auto tamper = [](std::string text, std::string_view key, std::string_view value,
+                     size_t from) {
+        const size_t at = text.find(key, from);
+        REQUIRE(at != std::string::npos);
+        const size_t vstart = at + key.size();
+        size_t vend = vstart;
+        while(vend < text.size() && text[vend] != ' ' && text[vend] != '\n') vend++;
+        return text.substr(0, vstart) + std::string(value) + text.substr(vend);
+    };
+    // A non-numeric value and an out-of-range numeric one both refuse, and the
+    // untouched base still round-trips byte-identically.
+    auto checkField = [&](const std::string &base, std::string_view key, size_t from) {
+        CAPTURE(key);
+        Document ok;
+        REQUIRE(deserialize(base, ok).ok);
+        CHECK(serialize(ok) == base);
+        for(std::string_view bad : {std::string_view("main"), std::string_view("9999999999")}) {
+            CAPTURE(bad);
+            Document out;
+            CHECK_FALSE(deserialize(tamper(base, key, bad, from), out).ok);
+        }
+    };
+
+    // stroke= and fill= on a style. "stroke-width=" holds no "stroke=" and
+    // "filled=" no "fill=", so each key finds only the colour it names.
+    Document styleDoc;
+    StyleRecord s;
+    s.name = "hair";
+    s.strokeWidth = Slot(0.25);
+    s.strokeColor = 0x11223344u;
+    s.fillColor = 0x55667788u;
+    s.filled = true;
+    REQUIRE(styleDoc.apply(AddRecord<StyleRecord>{s}).ok());
+    const std::string styleText = serialize(styleDoc);
+    checkField(styleText, "stroke=", 0);
+    checkField(styleText, "fill=", 0);
+
+    // layer= and style= on an entity. The watermark line carries both keys and
+    // is harmless whatever it says, so the search starts at the entity line.
+    Document entityDoc;
+    LayerRecord el;
+    el.name = "g";
+    const LayerId elid(entityDoc.apply(AddRecord<LayerRecord>{el}).allocated);
+    StyleRecord es;
+    es.name = "h";
+    es.strokeWidth = Slot(0.25);
+    const StyleId esid(entityDoc.apply(AddRecord<StyleRecord>{es}).allocated);
+    const EntityId p = addPoint(entityDoc, 1.0, 2.0);
+    EntityRecord e = *entityDoc.entities().find(p);
+    e.layer = elid;
+    e.style = esid;
+    REQUIRE(entityDoc.apply(SetRecord<EntityRecord>{e}).ok());
+    const std::string entityText = serialize(entityDoc);
+    const size_t entityLine = entityText.find("entity ");
+    REQUIRE(entityLine != std::string::npos);
+    checkField(entityText, "layer=", entityLine);
+    checkField(entityText, "style=", entityLine);
+
+    // style= and layer= on a region. Its centre point's entity line also carries
+    // layer=, so the search starts at the region line to reach the region's own.
+    Document regionDoc;
+    LayerRecord rl;
+    rl.name = "g";
+    const LayerId rlid(regionDoc.apply(AddRecord<LayerRecord>{rl}).allocated);
+    StyleRecord rs;
+    rs.name = "h";
+    rs.strokeWidth = Slot(0.25);
+    const StyleId rsid(regionDoc.apply(AddRecord<StyleRecord>{rs}).allocated);
+    const EntityId c = addPoint(regionDoc, 0.0, 0.0);
+    const EntityId circle = addCircle(regionDoc, c, 5.0);
+    RegionRecord reg;
+    reg.boundary = {circle};
+    reg.style = rsid;
+    reg.layer = rlid;
+    REQUIRE(regionDoc.apply(AddRecord<RegionRecord>{reg}).ok());
+    const std::string regionText = serialize(regionDoc);
+    const size_t regionLine = regionText.find("region ");
+    REQUIRE(regionLine != std::string::npos);
+    checkField(regionText, "style=", regionLine);
+    checkField(regionText, "layer=", regionLine);
+}
+
+TEST_CASE("a seed list must hold exactly the kind's own parameter count") {
+    // A point owns two seeds. An under-length list once stayed zero-filled and
+    // re-save normalized it away; now it refuses in both directions, mirroring
+    // the point-list check. The empty marker "-" is refused too, since a point
+    // owns parameters.
+    auto point = [](const char *seeds) {
+        return std::string("paroculus 0\n") +
+               "entity 1 kind=point role=normal layer=0 points=- seeds=" + seeds + "\n";
+    };
+    Document out;
+    CHECK_FALSE(deserialize(point("-"), out).ok);      // empty, under-length
+    CHECK_FALSE(deserialize(point("0"), out).ok);      // one, under-length
+    CHECK(deserialize(point("0,0"), out).ok);          // exactly two
+    CHECK_FALSE(deserialize(point("0,0,0"), out).ok);  // three, over-length
+}
+
+TEST_CASE("a record claiming the null id is refused, not called a duplicate") {
+    // Id 0 is the null sentinel no allocator issues and no live record carries.
+    // It slipped past the id check and reached addAt, which reported a misleading
+    // "duplicate id" for an id no record can hold. It is refused before the add.
+    Document out;
+    const LoadResult r = deserialize(
+        "paroculus 0\nlayer 0 name=\"x\" order=0 visible=1 locked=0\n", out);
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("duplicate") == std::string::npos);
+    CHECK(r.error == "layer without an id");
+}
+
+TEST_CASE("a trailing null operand is normalized away on re-save") {
+    // boundOperandCount counts required operands plus trailing valid optional
+    // ones, so a horizontal whose optional reference is the null id writes only
+    // its one bound operand. operands=5,0 is accepted and re-serializes as
+    // operands=5 — an accepted normalization, not a refusal.
+    Document doc;
+    const EntityId a = addPoint(doc, 0.0, 0.0);
+    const EntityId b = addPoint(doc, 100.0, 0.0);
+    const EntityId subject = addSegment(doc, a, b);
+    REQUIRE(addConstraint(doc, ConstraintKind::Horizontal, {subject}).valid());
+    const std::string plain = serialize(doc);
+    const std::string key = "operands=" + std::to_string(subject.value());
+    const size_t at = plain.find(key + "\n");
+    REQUIRE(at != std::string::npos);
+    // A trailing null operand appended by hand.
+    const std::string withNull =
+        plain.substr(0, at + key.size()) + ",0" + plain.substr(at + key.size());
+
+    Document loaded;
+    REQUIRE(deserialize(withNull, loaded).ok);
+    CHECK(serialize(loaded) == plain);  // normalized back to the bound operand alone
 }

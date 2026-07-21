@@ -176,6 +176,41 @@ TEST_CASE("a punch does not cut through the layer below it") {
     CHECK(at(pixels, view, Point{0.0, 0.0}) == at(pixels, view, Point{65.0, 0.0}));
 }
 
+TEST_CASE("fills with no punch skip the offscreen and composite in place") {
+    // The saved layer exists only to scope alpha-kClear punches. A document
+    // whose regions never punch takes the direct path, which must land every
+    // pixel exactly where the offscreen path did: kSrcOver is associative and a
+    // transparent layer is its identity, so the two are the same composite. The
+    // punch cases above exercise the offscreen; this exercises the branch that
+    // skips it.
+    Document doc;
+    const LayerId under = addLayer(doc, "under", 0);
+    const LayerId over = addLayer(doc, "over", 1);
+
+    // Two opaque plates on different layers, overlapping in the middle, and a
+    // third on the base layer off to one side. Nothing punches.
+    const RegionId back = addFilledRect(doc, -15.0, 0.0, 45.0, 40.0, under);
+    const RegionId front = addFilledRect(doc, 15.0, 0.0, 45.0, 40.0, over);
+    const RegionId side = addFilledRect(doc, 0.0, -60.0, 20.0, 15.0);
+    styleRegion(doc, back, addOpaque(doc, 0xff993322u));
+    styleRegion(doc, front, addOpaque(doc, 0xff2266ccu));
+    styleRegion(doc, side, addOpaque(doc, 0xff33aa55u));
+
+    const ViewTransform view = centredView();
+    const std::vector<uint32_t> pixels = paint(Pose(doc), view);
+
+    // Inside each fill where only it covers, and background outside every one.
+    CHECK(painted(pixels, view, Point{-45.0, 0.0}));
+    CHECK(painted(pixels, view, Point{45.0, 0.0}));
+    CHECK(painted(pixels, view, Point{0.0, -60.0}));
+    CHECK_FALSE(painted(pixels, view, Point{0.0, 90.0}));
+
+    // In the overlap the upper layer wins, exactly as the offscreen path put it:
+    // the pixel matches the front-only fill and differs from the back-only one.
+    CHECK(at(pixels, view, Point{5.0, 0.0}) == at(pixels, view, Point{45.0, 0.0}));
+    CHECK(at(pixels, view, Point{5.0, 0.0}) != at(pixels, view, Point{-45.0, 0.0}));
+}
+
 TEST_CASE("a composite draws the combination, not its operands") {
     Document doc;
     const RegionId plate = addFilledRect(doc, 0.0, 0.0, 60.0, 40.0);

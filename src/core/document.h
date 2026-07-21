@@ -269,6 +269,24 @@ std::vector<Command> deletionStep(const Document &doc, std::span<const Constrain
 std::vector<Command> deletionStep(const Document &doc, std::span<const EntityId> entities,
                                   std::span<const ConstraintId> constraints);
 
+// Geometry, relations and whole regions in one cascade. The union of the two
+// overloads above with the region one below, and the only shape that composes
+// them: a selection holding a fill and one of its own boundary edges cannot be
+// two steps stitched together. Each emits a set of the same region — the entity
+// pass shrinking its boundary, the region pass removing it outright — and one
+// concatenation order applies the removal first, whereupon the shrink names a
+// record that is gone and the whole step rolls back to nothing.
+//
+// So it is one computation over the whole doomed set. A region named for removal
+// is removed and never shrunk; a surviving region that loses boundary edges or
+// operands shrinks; a surviving composite over a doomed region shrinks to drop
+// it. Shrinks precede removals, and the removals order so that no command names
+// a record an earlier command in the step already took — composites before the
+// operands they name, entities last.
+std::vector<Command> deletionStep(const Document &doc, std::span<const EntityId> entities,
+                                  std::span<const ConstraintId> constraints,
+                                  std::span<const RegionId> regions);
+
 // What a layer or a style is attached to: entities and regions naming it, in ID
 // order.
 //

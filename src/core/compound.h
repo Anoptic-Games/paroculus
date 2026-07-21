@@ -46,6 +46,13 @@ struct CompoundStep {
     std::vector<ConstraintId> constraints;
     TagId tag;
 
+    // What the underlying copy could not bring, so a mirror reports its drops
+    // rather than discarding the count the copy computed — the no-silent-changes
+    // half. Distribute expands from nothing and leaves them zero, correctly.
+    size_t droppedConstraints = 0;
+    size_t droppedRegions = 0;
+    size_t droppedTags = 0;
+
     bool ok() const { return error == CompoundError::None; }
 };
 

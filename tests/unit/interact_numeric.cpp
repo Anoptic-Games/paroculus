@@ -589,6 +589,88 @@ TEST_CASE("a fresh placement inherits no dimension from an abandoned one") {
     CHECK(dimensions == 1);
 }
 
+TEST_CASE("a pointer click discards a typed value; the next placement starts fresh") {
+    // Finding 7: committing a placement by pointer press cancels the numeric
+    // entry, exactly as Enter does. Left active, the field swallows command keys
+    // and — worse — its stale text prefixes the next placement's digits: type 5,
+    // click, type 3 would commit a segment of length 53.
+    Entry e(ToolKind::Line);
+    e.click(Point{0.0, 0.0});  // opens the chain
+    e.moveTo(Point{37.0, 0.0});
+    e.typeText("5");
+    REQUIRE(e.session->presentation().numericActive);
+
+    // A Press/Release placement commits segment one at the pointer, not at the
+    // typed 5, and the field is gone the same frame.
+    const ViewTransform &view = e.session->viewport().view;
+    const Eigen::Vector2d at = view.toScreen(Point{40.0, 0.0});
+    e.session->handle(PointerEvent::at(PointerAction::Move, at, view));
+    e.session->handle(PointerEvent::at(PointerAction::Press, at, view, Button::Left));
+    e.session->handle(PointerEvent::at(PointerAction::Release, at, view, Button::Left));
+    CHECK_FALSE(e.session->presentation().numericActive);
+    CHECK(e.session->presentation().numericText.empty());
+
+    // Typing now starts a fresh value, not a continuation of the discarded one.
+    e.moveTo(Point{40.0, 20.0});
+    e.typeText("3");
+    CHECK(e.session->presentation().numericText == "3");
+    e.session->handle(Key::Enter);
+
+    // The chained segment took length 3 — the fresh digit alone — and no segment
+    // came out at the stale-prefixed 53.
+    const Pose pose = e.session->pose();
+    std::vector<double> lengths;
+    for(const EntityRecord &r : e.doc.entities().records()) {
+        if(r.kind != EntityKind::Segment) continue;
+        const Point a = *pose.point(r.points[0]);
+        const Point b = *pose.point(r.points[1]);
+        lengths.push_back(std::hypot(b.x - a.x, b.y - a.y));
+    }
+    REQUIRE(lengths.size() == 2);
+    bool sawFresh = false, sawStale = false;
+    for(double len : lengths) {
+        if(std::fabs(len - 3.0) < 1e-9) sawFresh = true;
+        if(std::fabs(len - 53.0) < 1e-6) sawStale = true;
+    }
+    CHECK(sawFresh);
+    CHECK_FALSE(sawStale);
+}
+
+TEST_CASE("a refused imposition's downgrade offer does not outlive its selection") {
+    // Finding 11: the downgrade offer names a reading of the selection it was
+    // refused for, so a change of selection must clear it. The pointer selection
+    // path left it standing, and the strip rendered it over unrelated geometry.
+    Document doc;
+    const EntityId a = paroculus::test::addPoint(doc, 0.0, 0.0);
+    const EntityId b = paroculus::test::addPoint(doc, 100.0, 0.0);
+    const EntityId c = paroculus::test::addPoint(doc, 0.0, 60.0);
+    const EntityId d = paroculus::test::addPoint(doc, 40.0, 60.0);
+    paroculus::test::addSegment(doc, c, d);
+    paroculus::test::addConstraint(doc, ConstraintKind::Pin, {a});
+    paroculus::test::addConstraint(doc, ConstraintKind::Pin, {b});
+
+    UndoJournal journal;
+    Session session(doc, journal);
+    session.setViewport(entryViewport());
+
+    // A driving distance of 50 between two points pinned 100 apart cannot hold,
+    // so the imposition is refused and leaves the downgrade on offer.
+    session.select({a, b});
+    const bool applied =
+        session.impose(ConstraintKind::PointPointDistance, Strength::Impose, 0, 50.0);
+    CHECK_FALSE(applied);
+    REQUIRE(session.presentation().downgrade.has_value());
+
+    // Click-select different geometry through pointer events. The offer named a
+    // reading of {a, b}, so it means nothing about this run and is cleared.
+    const ViewTransform &view = session.viewport().view;
+    const Eigen::Vector2d at = view.toScreen(*session.pose().point(c));
+    session.handle(PointerEvent::at(PointerAction::Press, at, view, Button::Left));
+    session.handle(PointerEvent::at(PointerAction::Release, at, view, Button::Left));
+    REQUIRE(session.selection().contains(c));
+    CHECK_FALSE(session.presentation().downgrade.has_value());
+}
+
 TEST_CASE("a typed space survives the round trip") {
     // The length grammar accepts a space — "45 mm" is a value a user types —
     // and fields on a script line are space-delimited, so an unescaped one

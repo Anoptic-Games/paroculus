@@ -727,3 +727,108 @@ TEST_CASE("gesture: degrees of freedom are summed over the components that solve
     CHECK(session.presentation().status == SolveStatus::Okay);
     CHECK(session.presentation().dof == 4);
 }
+
+TEST_CASE("gesture: an undo mid-chain leaves the line tool able to draw") {
+    // Finding 8: a document-editing key first ends what is in flight the way one
+    // Esc would. Undo mid-chain therefore resets the tool's placement before it
+    // undoes the segment; unguarded, the undo stranded the tool's anchor on a
+    // now-deleted point and every later click was refused until Esc.
+    Document doc;
+    UndoJournal journal;
+    Session session(doc, journal);
+    session.setViewport(testViewport());
+    session.snapPolicy().gridEnabled = false;
+    session.setTool(ToolKind::Line);
+
+    const Viewport &v = session.viewport();
+    auto click = [&](Point p) {
+        const Eigen::Vector2d s = v.view.toScreen(p);
+        session.handle(PointerEvent::at(PointerAction::Move, s, v.view));
+        session.handle(PointerEvent::at(PointerAction::Press, s, v.view, Button::Left));
+    };
+    auto segments = [&] {
+        size_t n = 0;
+        for(const EntityRecord &r : doc.entities().records())
+            if(r.kind == EntityKind::Segment) n++;
+        return n;
+    };
+
+    click(Point{-80.0, 0.0});  // opens the chain
+    click(Point{-20.0, 0.0});  // commits segment one; the chain stays anchored
+    REQUIRE(segments() == 1);
+    REQUIRE(session.canUndo());
+
+    session.handle(Key::Undo);  // ends the placement, then undoes the segment
+    CHECK(session.canRedo());   // the undo applied
+    CHECK(segments() == 0);     // segment one is gone
+
+    // The tool is not stuck: two fresh clicks commit a new segment.
+    click(Point{40.0, 0.0});
+    click(Point{100.0, 20.0});
+    CHECK(segments() == 1);
+}
+
+TEST_CASE("gesture: an undo mid-drag rolls the drag back before it applies") {
+    // Finding 8, the drag arm: Undo mid-drag rolls the drag back rather than
+    // committing it, then does the undo. The undone step here moves no geometry,
+    // so the only thing that could move the pose is the drag — which must not.
+    Fixture f = buildFixture();
+    Session session(f.doc, f.journal);
+    session.setViewport(testViewport());
+
+    REQUIRE(session.newLayer());  // an undoable step that moves nothing
+    REQUIRE(session.canUndo());
+    const Point preDrag = *session.pose().point(f.free);
+
+    // Begin a drag and move past the threshold, without releasing.
+    const Eigen::Vector2d from = screenOf(session, f.free);
+    const Viewport &v = session.viewport();
+    session.handle(PointerEvent::at(PointerAction::Press, from, v.view, Button::Left));
+    session.handle(PointerEvent::at(PointerAction::Move, from + Eigen::Vector2d(70.0, 0.0), v.view,
+                                    Button::Left));
+    REQUIRE(session.presentation().dragging);
+    REQUIRE(session.pose().point(f.free)->x > preDrag.x + 10.0);  // genuinely moving
+
+    session.handle(Key::Undo);
+
+    // The drag rolled back: no drag in flight, and the free end is where it began.
+    CHECK_FALSE(session.presentation().dragging);
+    CHECK(session.pose().point(f.free)->x == doctest::Approx(preDrag.x));
+    CHECK(session.pose().point(f.free)->y == doctest::Approx(preDrag.y));
+    // And the undo applied: the layer it took is redoable and gone.
+    CHECK(session.canRedo());
+    CHECK(f.doc.layers().size() == 0);
+}
+
+TEST_CASE("gesture: a press on a segment body keeps its selection and moves nothing") {
+    // Finding 9: a segment owns no parameters, so grabbing its body finds nothing
+    // to drag. That failed drag must not fall through to a marquee, which would
+    // replace the connected run selected at press with whatever the box caught,
+    // usually nothing.
+    Fixture f = buildFixture();
+    const std::string before = serialize(f.doc);
+    Session session(f.doc, f.journal);
+    session.setViewport(testViewport());
+    const Viewport &v = session.viewport();
+
+    // Press on the segment body, away from either endpoint and from the
+    // midpoint's relation glyph.
+    const Eigen::Vector2d body = v.view.toScreen(Point{50.0, 0.0});
+    session.handle(PointerEvent::at(PointerAction::Press, body, v.view, Button::Left));
+    REQUIRE(session.selection().contains(f.segment));
+    REQUIRE(session.selection().contains(f.free));
+
+    // Move well past the drag threshold, then release. No marquee is raised.
+    session.handle(PointerEvent::at(PointerAction::Move, body + Eigen::Vector2d(90.0, 60.0), v.view,
+                                    Button::Left));
+    CHECK_FALSE(session.presentation().marqueeActive);
+    session.handle(PointerEvent::at(PointerAction::Release, body + Eigen::Vector2d(90.0, 60.0),
+                                    v.view, Button::Left));
+
+    // The selection made at press survived the failed drag, and nothing moved.
+    CHECK(session.selection().contains(f.anchor));
+    CHECK(session.selection().contains(f.free));
+    CHECK(session.selection().contains(f.segment));
+    CHECK_FALSE(session.selection().contains(f.lonely));
+    CHECK(serialize(f.doc) == before);
+}

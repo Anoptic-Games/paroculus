@@ -581,6 +581,40 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
     stroke.setStyle(SkPaint::kStroke_Style);
     stroke.setStrokeCap(SkPaint::kRound_Cap);
 
+    // A region's degradation diagnostic: the boundary it still refers to,
+    // stroked from the pose in the broken colour. Every kind that can bound, not
+    // only the straight ones — a circle-bounded fill's whole boundary is one
+    // curve, so asking Pose::segment alone drew nothing for it. A composite has
+    // no boundary of its own, so boundaryEdgesOf walks to the outlines
+    // underneath, which is what gives a broken composite something drawable.
+    //
+    // Shared by two callers: a region regionState already calls Broken, and a
+    // Whole region whose path fails to build (a pathops failure on a composite).
+    // The second is the same silent evaporation the state exists to prevent, so
+    // it takes the same diagnostic rather than a bare continue.
+    auto drawBrokenDiagnostic = [&](const RegionRecord &region) {
+        stroke.setColor(BROKEN);
+        stroke.setStrokeWidth(BROKEN_STROKE);
+        std::vector<EntityId> edges;
+        boundaryEdgesOf(pose.document(), region, edges);
+        for(EntityId edge : edges) {
+            if(const auto ends = pose.segment(edge)) {
+                canvas.drawLine(toPixel(ends->first), toPixel(ends->second), stroke);
+                continue;
+            }
+            if(const std::optional<Pose::ArcGeometry> g = pose.arc(edge)) {
+                strokeArc(canvas, view, stroke, g->centre, g->radius, g->startAngle, g->sweep);
+                continue;
+            }
+            const std::optional<double> radius = pose.radius(edge);
+            const std::optional<Point> centre = pose.curveCentre(edge);
+            if(radius && centre) {
+                strokeArc(canvas, view, stroke, *centre, *radius, 0.0,
+                          2.0 * 3.14159265358979323846);
+            }
+        }
+    };
+
     // One layer's fills, composited among themselves.
     //
     // A region has no geometry of its own. The path is walked from the boundary
@@ -590,15 +624,29 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
     // one level up — its area is a computation over live operands, evaluated
     // now, never a baked outline.
     //
-    // Inside a saved layer, because punch-through is an alpha overwrite and has
-    // to carve what this layer has accumulated rather than what the canvas has.
-    // Cutting through to the background would make a cut-out's effect depend on
-    // what happened to be underneath it, which is precisely the destructive
-    // reading of a boolean that the compositional one exists to replace.
+    // Inside a saved layer only when the order carries a punch. Punch-through is
+    // an alpha overwrite that must carve what this layer has accumulated rather
+    // than what the canvas has, and an offscreen is the only way to scope a
+    // kClear to that — cutting through to the canvas would make a cut-out's
+    // effect depend on what was underneath, the destructive reading of a boolean
+    // the compositional one replaces. With no punch present the offscreen is
+    // redundant and skipped: fills composite among themselves with kSrcOver,
+    // which is associative and takes a transparent layer as its identity, so
+    // accumulating them offscreen and compositing that back over the canvas is
+    // pixel-identical to drawing them straight onto it — coverage antialiasing
+    // included, since coverage modulates each source alone and never reads the
+    // destination. Only kClear breaks that identity, which is exactly what its
+    // presence gates.
     auto drawFills = [&](LayerId layer) {
         const std::vector<RegionId> order = regionOrder(pose.document(), layer);
         if(order.empty()) return;
-        canvas.saveLayer(nullptr, nullptr);
+
+        const bool anyPunch = std::any_of(order.begin(), order.end(), [&](RegionId id) {
+            const RegionRecord *r = pose.document().regions().find(id);
+            return r != nullptr && r->punch;
+        });
+        if(anyPunch) canvas.saveLayer(nullptr, nullptr);
+
         for(RegionId id : order) {
             const RegionRecord &region = *pose.document().regions().find(id);
 
@@ -607,39 +655,20 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
             // and one undo puts it back. A partial fill would show an area the
             // document does not bound; silence would let a fill evaporate.
             if(regionState(pose.document(), region) != RegionState::Whole) {
-                stroke.setColor(BROKEN);
-                stroke.setStrokeWidth(BROKEN_STROKE);
-                std::vector<EntityId> edges;
-                boundaryEdgesOf(pose.document(), region, edges);
-                for(EntityId edge : edges) {
-                    // Every kind that can bound, not only the straight ones.
-                    // Pose::segment declines anything that is not a segment, so
-                    // asking it alone drew nothing for a curved edge — and a
-                    // circle-bounded fill, whose whole boundary is one curve,
-                    // degraded to no diagnostic whatsoever. That is exactly the
-                    // silent evaporation the state exists to prevent, arriving
-                    // through the query written to prevent it.
-                    if(const auto ends = pose.segment(edge)) {
-                        canvas.drawLine(toPixel(ends->first), toPixel(ends->second), stroke);
-                        continue;
-                    }
-                    if(const std::optional<Pose::ArcGeometry> g = pose.arc(edge)) {
-                        strokeArc(canvas, view, stroke, g->centre, g->radius, g->startAngle,
-                                  g->sweep);
-                        continue;
-                    }
-                    const std::optional<double> radius = pose.radius(edge);
-                    const std::optional<Point> centre = pose.curveCentre(edge);
-                    if(radius && centre) {
-                        strokeArc(canvas, view, stroke, *centre, *radius, 0.0,
-                                  2.0 * 3.14159265358979323846);
-                    }
-                }
+                drawBrokenDiagnostic(region);
                 continue;
             }
 
             SkPath path;
-            if(!buildRegionPath(pose, view, region, path)) continue;
+            // A Whole region whose path fails to build is the same evaporation,
+            // one step later: a pathops failure on a composite leaves
+            // regionState calling it Whole while nothing can be drawn, so it
+            // falls through to the diagnostic rather than vanishing on a bare
+            // continue.
+            if(!buildRegionPath(pose, view, region, path)) {
+                drawBrokenDiagnostic(region);
+                continue;
+            }
             // Even-odd, so a boundary that crosses itself renders as the
             // alternating fill a user expects rather than as a solid blob.
             path.setFillType(SkPathFillType::kEvenOdd);
@@ -653,7 +682,7 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
             fill.setColor(fillColourOf(pose.document(), region, adornment));
             canvas.drawPath(path, fill);
         }
-        canvas.restore();
+        if(anyPunch) canvas.restore();
     };
 
     // One layer's strokes. Edges before arcs before circles, and vertices not
@@ -689,7 +718,8 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
             (view.toScreen(Point{g->centre.x + g->radius, g->centre.y}) -
              view.toScreen(g->centre))
                 .norm();
-        const int steps = std::clamp(static_cast<int>(onScreen * g->sweep * 0.5), 8, 240);
+        const int steps =
+            std::clamp(static_cast<int>(onScreen * std::abs(g->sweep) * 0.5), 8, 240);
         SkPoint previous = toPixel(Point{g->centre.x + g->radius * std::cos(g->startAngle),
                                          g->centre.y + g->radius * std::sin(g->startAngle)});
         for(int i = 1; i <= steps; i++) {

@@ -224,13 +224,16 @@ reaches a byte fixed point after one save rather than shuffling on every one.
 The format is frozen at version 0. The freeze changes what a breaking change
 costs, not whether one is allowed.
 
-- Additive change keeps version 0. A new record kind, or a new optional field on
-  an existing kind that older readers can ignore, does not bump the version: old
-  readers preserve the new records through the unknown mechanism and skip fields
-  they do not know. This is why the version has stayed 0 across the additions
-  that arrived through stages 4 through 7 — the nullable reference axis, the
-  tangent alternative, the region algebra, opacity — none of which an older
-  reader chokes on.
+- Additive change keeps version 0 only for a new record kind. A reader preserves
+  a record kind it does not know, verbatim, through the unknown mechanism, so a
+  newer file carrying one survives an older build's round-trip untouched. A new
+  optional *field* on an existing kind does not get this: a reader skips fields it
+  does not recognise but preserves only whole unknown *kinds*, so an old reader
+  drops the field on the next save. A field addition that must survive old readers
+  is therefore a breaking change and takes the version bump, not this path. The
+  field additions already in the format — the nullable reference axis, the tangent
+  alternative, opacity — landed before the freeze, when no file in the wild could
+  lose them; that era is what the freeze ends.
 - Breaking change bumps the version and ships a read shim. A change that
   reinterprets an existing field, removes one, or changes the meaning of a record
   is not something an old reader can be trusted to round-trip, so it raises the

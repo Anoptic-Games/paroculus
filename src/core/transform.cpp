@@ -73,6 +73,27 @@ bool anyLocked(const Document &doc, const std::vector<EntityId> &moved) {
     return false;
 }
 
+// Whether any frame-referenced relation binds an entity that would move.
+//
+// The kind means symmetry about the document frame through no operand, so it can
+// be neither retargeted — there is no operand to point elsewhere — nor rewritten,
+// since the frame is not the geometry moving. A transform about any centre but the
+// world origin moves the geometry out from under it and the re-solve slides the
+// pair back, which is the silent change the policy rules out. Refusing whole is
+// the same rule a lock follows, and deleting the relation is how the user frees
+// the cluster. Any binding entity counts, internal or straddling: either way the
+// rewrite fights the world frame. In record (ID) order, so the verdict is stable.
+bool anyFrameReferenced(const Document &doc, const std::vector<EntityId> &moved) {
+    for(const ConstraintRecord &c : doc.constraints().records()) {
+        if(!constraintInfo(c.kind).frameReferenced) continue;
+        const size_t bound = boundOperandCount(c);
+        for(size_t i = 0; i < bound; i++) {
+            if(contains(moved, c.operands[i])) return true;
+        }
+    }
+    return false;
+}
+
 // One entity's seeds rewritten by a map over positions and a factor over
 // lengths. Returns nullopt when the entity owns nothing, so the caller emits no
 // command rather than a set to an identical record.
@@ -143,6 +164,7 @@ const char *transformErrorName(TransformError e) {
         case TransformError::Degenerate: return "degenerate";
         case TransformError::NonUniform: return "non-uniform";
         case TransformError::Locked: return "locked";
+        case TransformError::FrameReferenced: return "frame-referenced";
     }
     return "none";
 }
@@ -204,6 +226,12 @@ TransformStep rewriteSeeds(const Document &doc, std::span<const EntityId> select
     }
     if(anyLocked(doc, moved)) {
         step.error = TransformError::Locked;
+        return step;
+    }
+    // Before any command is emitted, so a refused transform leaves the document
+    // byte-identical exactly as a lock refusal does.
+    if(anyFrameReferenced(doc, moved)) {
+        step.error = TransformError::FrameReferenced;
         return step;
     }
 
@@ -397,13 +425,6 @@ TransformStep nonUniformScaleStep(const Document &doc, std::span<const EntityId>
     (void)factorY;
     step.error = TransformError::NonUniform;
     return step;
-}
-
-TransformStep translateStep(const Document &doc, std::span<const EntityId> selection, double dx,
-                            double dy) {
-    const auto map = [&](Point p) { return Point{p.x + dx, p.y + dy}; };
-    std::vector<EntityId> moved;
-    return rewriteSeeds(doc, selection, map, 1.0, moved);
 }
 
 }  // namespace paroculus

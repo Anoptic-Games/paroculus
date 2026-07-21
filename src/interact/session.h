@@ -11,6 +11,7 @@
 #pragma once
 
 #include <functional>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -282,9 +283,17 @@ public:
     void enableAsyncSolving(size_t sizeThreshold, unsigned workers);
 
     // Applies whatever the workers have finished — whole results only — and
-    // rebuilds the derived indexes. Returns whether the pose changed. The shell
-    // calls it per frame; a test calls it until the pose settles. A no-op when
-    // async solving was never enabled.
+    // rebuilds the derived indexes. Returns whether the pose changed. A no-op
+    // when async solving was never enabled.
+    //
+    // The integration contract, stated plainly because getting it wrong freezes
+    // every off-thread pose: a threaded result lands only here. refresh() bumps
+    // the epoch before it drains, so a worker that finished under the prior epoch
+    // is discarded at the tag check and resubmitted — refresh() alone is
+    // perpetually one epoch behind, by design. So the UI must call this on a
+    // timer or idle hook, and must not bump the epoch doing so; a test calls it
+    // until the pose settles. Nothing but this drains, so nothing else applies a
+    // worker's answer.
     bool pumpAsync();
 
     // Whether a worker still owes a result. The shell uses it to keep pumping; a
@@ -750,6 +759,23 @@ private:
     void cancelDrag();
     void deleteSelection();
 
+    // Abandons the placement a creation tool has in flight, keeping the tool
+    // selected: clears the offers and pending snaps that belonged to that
+    // placement and resets the tool's own chain. Returns whether the tool has
+    // more to abandon — false once it is back to its opening state, which is
+    // where Escape leaves the tool rather than the placement. Shared by Escape's
+    // first press and by the gesture guard the document-editing keys run first.
+    bool endToolPlacement();
+
+    // Ends every gesture in flight, each the way Escape ends its kind, so a key
+    // that edits the document — Delete, Undo, Redo — never fires through a live
+    // numeric field, drag or placement and leaves it dangling. An undo mid-chain
+    // otherwise strands a tool's anchor so every later click is refused, and a
+    // mid-drag undo commits a surprising-but-valid step over the rolled-back
+    // pose. The tool stays selected: this is the first-Esc reset of the
+    // placement, not the second-Esc exit of the tool.
+    void endGesturesForEdit();
+
     Document *doc_;
     UndoJournal *journal_;
     Topology topology_;
@@ -779,9 +805,37 @@ private:
     // an edit can change which component an entity is in.
     uint64_t docEpoch_ = 0;
 
+    // The last applied async solve per component key: its degrees of freedom and
+    // status. A component solved off-thread contributes to the readout exactly as
+    // a synchronous one does — otherwise it reads as unsolved and its dof
+    // vanishes — so applyAsyncResults records it here and publishReadout folds it
+    // in beside the synchronous components. Pruned each refresh to the components
+    // still async, so one that dropped back under budget is counted once, by the
+    // synchronous loop. std::map keeps iteration ordered, hence deterministic.
+    struct AsyncOutcome {
+        int dof = -1;
+        SolveStatus status = SolveStatus::Unsolved;
+    };
+    std::map<uint64_t, AsyncOutcome> asyncOutcomes_;
+
+    // The synchronous half of the last refresh's readout, kept so a result the UI
+    // pumps in between refreshes can be folded into it without re-solving the
+    // synchronous components. publishReadout combines these with asyncOutcomes_.
+    int syncDof_ = 0;
+    SolveStatus syncWorst_ = SolveStatus::Okay;
+    bool syncSolvedAnything_ = false;
+    size_t componentCount_ = 0;
+
+    // Publishes presentation_.dof and .status by folding the stored async
+    // outcomes into the synchronous half. Shared by refresh() and pumpAsync so
+    // both paths count every solved component, the off-thread ones included.
+    void publishReadout();
+
     // Folds finished worker results into asyncPose_ and settled_ — whole, ok, and
     // current-epoch results only — leaving a failed or stale one to hold the last
-    // coherent pose. Shared by the end of refresh() and pumpAsync.
+    // coherent pose. Records each applied outcome in asyncOutcomes_ and notes the
+    // hidden influence a moved async component carries, so the readout follows it
+    // the way it follows a synchronous solve. Shared by refresh() and pumpAsync.
     void applyAsyncResults(const std::vector<SolveResult> &results);
     SpatialIndex index_;
     Selection selection_;

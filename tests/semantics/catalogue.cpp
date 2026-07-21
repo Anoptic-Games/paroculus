@@ -719,3 +719,51 @@ TEST_CASE("a reference measurement constrains nothing") {
     CHECK((vec(at(context, a)) - vec(at(context, b))).norm() == doctest::Approx(5.0));
     CHECK(outcome.dof == 4);
 }
+
+TEST_CASE("a lock that splits a circle from its centre cannot make it inconsistent") {
+    // A circle on a locked layer has its radius parameter frozen in the fixed
+    // base group; move its centre point to an unlocked layer and the centre
+    // floats free while the radius stays fixed. A Radius constraint reads only
+    // that frozen radius, so emitting it against a value the seed does not hold
+    // reports Inconsistent — a lock making a system contradictory, the one thing
+    // a lock must never do. The omission is decided per parameter, over the
+    // footprint the constraint actually reads, so the radius constraint drops and
+    // the lock wins rather than the circle freezing at a contradiction.
+    Document doc;
+    const EntityId circle = addCircle(doc, 1.0, 2.0, 5.0);
+    const EntityId centre = doc.entities().find(circle)->points[0];
+    REQUIRE(centre.valid());
+
+    LayerRecord frozen;
+    frozen.name = "frozen";
+    frozen.locked = true;
+    const LayerId locked(doc.apply(AddRecord<LayerRecord>{frozen}).allocated);
+    REQUIRE(locked.valid());
+
+    // The circle is locked; its centre stays on the unlocked base layer.
+    EntityRecord onLocked = *doc.entities().find(circle);
+    onLocked.layer = locked;
+    REQUIRE(doc.apply(SetRecord<EntityRecord>{onLocked}).ok());
+
+    // A driving radius the frozen seed (5) does not satisfy (12).
+    REQUIRE(addConstraint(doc, ConstraintKind::Radius, {circle}, Slot(12.0)).valid());
+
+    SolveContext context = SolveContext::forWholeDocument(doc);
+    const SolveOutcome outcome = solve(doc, context);
+    CHECK(outcome.status != SolveStatus::Inconsistent);
+    CHECK(outcome.ok());
+    // The radius held its locked seed rather than driving to the dimension.
+    CHECK(context.radius(circle).value_or(0.0) == doctest::Approx(5.0));
+
+    // Unlock the circle and the same constraint drives the radius: the omission
+    // keys on the frozen parameter, not on the kind, so a circle with a free
+    // radius takes its dimension exactly as before.
+    EntityRecord unlocked = *doc.entities().find(circle);
+    unlocked.layer = LayerId();
+    REQUIRE(doc.apply(SetRecord<EntityRecord>{unlocked}).ok());
+
+    SolveContext driven = SolveContext::forWholeDocument(doc);
+    const SolveOutcome outcomeDriven = solve(doc, driven);
+    CHECK(outcomeDriven.ok());
+    CHECK(driven.radius(circle).value_or(0.0) == doctest::Approx(12.0));
+}

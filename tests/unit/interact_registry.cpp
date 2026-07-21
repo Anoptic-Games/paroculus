@@ -108,6 +108,118 @@ TEST_CASE("every action is invocable headlessly") {
     }
 }
 
+TEST_CASE("applicable-equals-runnable holds under a locked layer") {
+    // Rotate and scale refuse whole on any lock in the transform closure, so the
+    // predicate has to dim them under a lock — otherwise they are the
+    // applicable-and-refusing the table forbids. Duplicate and mirror copy to
+    // new geometry the lock says nothing about and stay applicable. The sweep
+    // never locks a layer, so this is where applicable-equals-runnable is tested
+    // with a lock in force.
+    Bench b;
+    b.session->setTool(ToolKind::Line);
+    b.click(Point{-40.0, 0.0});
+    b.click(Point{40.0, 0.0});
+    b.session->setTool(ToolKind::Select);
+
+    // Select the whole run — points included — so it all moves onto the layer
+    // we lock. transformClosure reaches the points from the segment, but
+    // assignLayer moves exactly the selection, so the points have to be in it.
+    std::vector<EntityId> all;
+    for(const EntityRecord &r : b.doc.entities().records()) all.push_back(r.id);
+    b.session->select(all);
+
+    // Lock the geometry's layer through the session's own actions.
+    REQUIRE(invokeAction(*b.session, "layer.new"));
+    REQUIRE(invokeAction(*b.session, "layer.assign"));  // onto the new top layer
+    REQUIRE(invokeAction(*b.session, "layer.lock"));     // targets the selection's layer
+
+    const Action *rotate = findAction("transform.rotate");
+    const Action *scale = findAction("transform.scale");
+    const Action *duplicate = findAction("edit.duplicate");
+    REQUIRE(rotate != nullptr);
+    REQUIRE(scale != nullptr);
+    REQUIRE(duplicate != nullptr);
+
+    const ActionContext locked = contextOf(*b.session);
+    REQUIRE(locked.transformable > 0);
+    CHECK(locked.transformLocked);
+
+    // The rows dim, and the gate they mirror refuses when reached anyway.
+    CHECK_FALSE(rotate->applicable(locked, *rotate));
+    CHECK_FALSE(scale->applicable(locked, *scale));
+    ActionArguments rot;
+    rot.set("degrees", 90.0);
+    CHECK_FALSE(invokeAction(*b.session, "transform.rotate", rot));
+    ActionArguments sc;
+    sc.set("factor", 2.0);
+    CHECK_FALSE(invokeAction(*b.session, "transform.scale", sc));
+
+    // Duplicate stays applicable and actually runs over the lock.
+    CHECK(duplicate->applicable(locked, *duplicate));
+    ActionArguments offset;
+    offset.set("dx", 25.0);
+    offset.set("dy", -25.0);
+    CHECK(invokeAction(*b.session, "edit.duplicate", offset));
+
+    // The unlocked case is unchanged: all three apply.
+    Bench u;
+    u.session->setTool(ToolKind::Line);
+    u.click(Point{-40.0, 0.0});
+    u.click(Point{40.0, 0.0});
+    u.session->setTool(ToolKind::Select);
+    u.click(Point{40.0, 0.0});
+
+    const ActionContext unlocked = contextOf(*u.session);
+    REQUIRE(unlocked.transformable > 0);
+    CHECK_FALSE(unlocked.transformLocked);
+    CHECK(rotate->applicable(unlocked, *rotate));
+    CHECK(scale->applicable(unlocked, *scale));
+    CHECK(duplicate->applicable(unlocked, *duplicate));
+}
+
+TEST_CASE("a frame-referenced relation dims rotate and scale but not duplicate") {
+    // The registry half of finding 3's transform fix. Symmetric-horizontal means
+    // symmetry about the document frame through no operand, so rotate and scale
+    // refuse whole and their rows must dim — the same flag a lock sets, for the
+    // same reason, so applicable still equals runnable. Duplicate copies to new
+    // geometry the drop rules handle, so it stays applicable and runs.
+    Bench b;
+    const EntityId p0 = paroculus::test::addPoint(b.doc, -30.0, 20.0);
+    const EntityId p1 = paroculus::test::addPoint(b.doc, 30.0, 20.0);
+    paroculus::test::addConstraint(b.doc, ConstraintKind::SymmetricHorizontal, {p0, p1});
+    b.session->refresh();
+    b.session->select({p0, p1});
+
+    const ActionContext context = contextOf(*b.session);
+    REQUIRE(context.transformable > 0);
+    CHECK(context.transformLocked);
+
+    const Action *rotate = findAction("transform.rotate");
+    const Action *scale = findAction("transform.scale");
+    const Action *duplicate = findAction("edit.duplicate");
+    REQUIRE(rotate != nullptr);
+    REQUIRE(scale != nullptr);
+    REQUIRE(duplicate != nullptr);
+
+    // The rows dim, and the gate they mirror refuses when reached anyway.
+    CHECK_FALSE(rotate->applicable(context, *rotate));
+    CHECK_FALSE(scale->applicable(context, *scale));
+    ActionArguments rot;
+    rot.set("degrees", 90.0);
+    CHECK_FALSE(invokeAction(*b.session, "transform.rotate", rot));
+    ActionArguments sc;
+    sc.set("factor", 2.0);
+    CHECK_FALSE(invokeAction(*b.session, "transform.scale", sc));
+
+    // Duplicate stays applicable and actually runs — it drops-and-counts the
+    // relation rather than fighting the world frame.
+    CHECK(duplicate->applicable(context, *duplicate));
+    ActionArguments offset;
+    offset.set("dx", 25.0);
+    offset.set("dy", 0.0);
+    CHECK(invokeAction(*b.session, "edit.duplicate", offset));
+}
+
 TEST_CASE("an unknown action is refused") {
     Bench b;
     CHECK_FALSE(invokeAction(*b.session, "tool.nonesuch"));
@@ -347,6 +459,28 @@ TEST_CASE("an open field swallows the letters a tool is bound to") {
     const KeyBinding command = resolveKey(closed, charKey('r'));
     REQUIRE(command.kind == KeyBinding::Kind::Action);
     CHECK(command.action->name == "tool.rectangle");
+}
+
+TEST_CASE("a control chord resolves to no action") {
+    // resolveKey rejects a Control chord deliberately rather than relying on the
+    // letter guard: on a platform whose text() delivers the plain letter under
+    // Ctrl, ctrl+r must not alias into the rectangle tool. The ctrl+ binding
+    // grammar itself belongs to the production-UI stage.
+    ActionContext context;
+    context.tool = ToolKind::Select;
+
+    // As a platform might deliver ctrl+r: the plain letter, Control set.
+    CHECK(resolveKey(context, charKey('r', Modifier::Control)).kind == KeyBinding::Kind::None);
+    CHECK(resolveKey(context, charKey('z', Modifier::Control)).kind == KeyBinding::Kind::None);
+
+    // The bare and shift bindings still resolve.
+    const KeyBinding bare = resolveKey(context, charKey('r'));
+    REQUIRE(bare.kind == KeyBinding::Kind::Action);
+    CHECK(bare.action->name == "tool.rectangle");
+
+    const KeyBinding shifted = resolveKey(context, charKey('z', Modifier::Shift));
+    REQUIRE(shifted.kind == KeyBinding::Kind::Action);
+    CHECK(shifted.action->name == "edit.redo");
 }
 
 TEST_CASE("a digit means nothing with no tool running") {

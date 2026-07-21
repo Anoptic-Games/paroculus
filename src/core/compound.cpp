@@ -289,6 +289,11 @@ CompoundStep mirrorStep(const Document &doc, std::span<const EntityId> selection
         return step;
     }
     step.commands = copy.commands;
+    // The copy's drops are the mirror's drops: a reflection sheds the null-reference
+    // axis relations it cannot preserve, and that count is the user's to know.
+    step.droppedConstraints = copy.droppedConstraints;
+    step.droppedRegions = copy.droppedRegions;
+    step.droppedTags = copy.droppedTags;
 
     uint32_t nextConstraint = doc.constraints().allocator().next() +
                               static_cast<uint32_t>(copy.constraints.size());

@@ -41,6 +41,13 @@ int runExport(const char *path) {
         return 2;
     }
     out << paroculus::writeSvg(doc, pose);
+    // Close and check: a disk-full short write surfaces only on the flush, so
+    // testing that the stream opened is not testing that the bake landed.
+    out.close();
+    if(!out) {
+        std::fprintf(stderr, "failed writing %s\n", path);
+        return 2;
+    }
     std::printf("exported demo to %s\n", path);
     return 0;
 }
@@ -59,6 +66,12 @@ int runImport(const char *path) {
     const paroculus::SvgImport result = paroculus::readSvg(buffer.str());
     std::fprintf(stderr, "traced %zu elements, skipped %zu\n", result.traced, result.skipped);
     std::printf("%s", paroculus::serialize(result.document).c_str());
+    // The traced document goes to stdout, which a caller may have redirected to
+    // a file; a short write there is as silent as an unchecked export otherwise.
+    if(std::fflush(stdout) != 0) {
+        std::fprintf(stderr, "failed writing traced document to stdout\n");
+        return 2;
+    }
     return 0;
 }
 
@@ -99,11 +112,22 @@ int main(int argc, char *argv[]) {
             recordPath = argv[++i];
         }
     }
-    if(scriptPath != nullptr && recordPath != nullptr) {
-        // Recording a replay would only reproduce the file it was given, which
-        // the corpus already asserts and which nobody wants by hand.
-        std::fprintf(stderr, "--script and --record are mutually exclusive\n");
-        return 2;
+    // The five entry modes are mutually exclusive, and silently letting one beat
+    // the others hid three of the pairs. --record modifies the default
+    // interactive session; every other flag either exits before a window opens
+    // (--export, --import), runs and exits (--selftest), or replays a fixed
+    // script (--script) — none is a live session worth recording, and recording
+    // a replay only reproduces the file it was given.
+    {
+        const int modes = static_cast<int>(wantSelftest) + (scriptPath != nullptr) +
+                          (recordPath != nullptr) + (exportPath != nullptr) +
+                          (importPath != nullptr);
+        if(modes > 1) {
+            std::fprintf(
+                stderr,
+                "--selftest, --script, --record, --export and --import are mutually exclusive\n");
+            return 2;
+        }
     }
     // Export and import are headless projections that run and exit before any
     // window: no Qt is needed to bake a file or trace one.

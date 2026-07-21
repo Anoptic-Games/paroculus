@@ -1,5 +1,8 @@
 #include <doctest/doctest.h>
 
+#include <cmath>
+#include <string>
+
 #include "core/parameters.h"
 
 using paroculus::ExprOp;
@@ -113,4 +116,64 @@ TEST_CASE("evaluation terminates on a hand-edited loop") {
     REQUIRE(t.addAt(a));
     REQUIRE(t.addAt(b));
     CHECK_FALSE(evaluateParameter(t, ParameterId(1)).has_value());
+}
+
+TEST_CASE("a deep doubling chain evaluates in linear time") {
+    // Each parameter reads the one below it through two distinct nodes, so the
+    // per-slot forward pass resolves that reference twice. Without the
+    // cross-slot memo the work doubles at every level, and a depth-60 chain
+    // costs 2^60 — longer than the machine's lifetime — so the test completing
+    // at all is what pins the fix. The value is exact: doubling a power of two
+    // is exact in a double.
+    ParameterTable t;
+    ParameterId prev = addParam(t, "p0", Slot(1.0));
+    for(int k = 1; k <= 60; k++) {
+        const Slot doubled =
+            Slot::binary(ExprOp::Add, Slot::parameter(prev), Slot::parameter(prev));
+        prev = addParam(t, "p" + std::to_string(k), doubled);
+    }
+    const auto v = evaluateParameter(t, prev);
+    REQUIRE(v.has_value());
+    CHECK(*v == std::ldexp(1.0, 60));
+}
+
+TEST_CASE("a diamond resolves its shared parameter once and consistently") {
+    // base is reached through two arms of the same evaluation; the memo keys on
+    // its id, so both arms see the same value and the walk does not branch.
+    ParameterTable t;
+    const ParameterId base = addParam(t, "base", Slot(3.0));
+    const ParameterId left =
+        addParam(t, "left", Slot::binary(ExprOp::Multiply, Slot::parameter(base), Slot(2.0)));
+    const ParameterId right =
+        addParam(t, "right", Slot::binary(ExprOp::Add, Slot::parameter(base), Slot(1.0)));
+    const ParameterId top = addParam(
+        t, "top", Slot::binary(ExprOp::Add, Slot::parameter(left), Slot::parameter(right)));
+
+    // (3 * 2) + (3 + 1) == 10.
+    CHECK(*evaluateParameter(t, top) == doctest::Approx(10.0));
+}
+
+TEST_CASE("memoization does not defeat cycle termination") {
+    // A hand-edited 3-cycle a -> b -> c -> a. wouldCycle would refuse it, but a
+    // file can arrive holding it. A cycle never completes, so it never caches a
+    // value; the depth bound still terminates it to nullopt with the memo in
+    // place, and does not hang.
+    ParameterTable t;
+    ParameterRecord a;
+    a.id = ParameterId(1);
+    a.name = "a";
+    a.value = Slot::parameter(ParameterId(2));
+    ParameterRecord b;
+    b.id = ParameterId(2);
+    b.name = "b";
+    b.value = Slot::parameter(ParameterId(3));
+    ParameterRecord c;
+    c.id = ParameterId(3);
+    c.name = "c";
+    c.value = Slot::parameter(ParameterId(1));
+    REQUIRE(t.addAt(a));
+    REQUIRE(t.addAt(b));
+    REQUIRE(t.addAt(c));
+    CHECK_FALSE(evaluateParameter(t, ParameterId(1)).has_value());
+    CHECK_FALSE(evaluateParameter(t, ParameterId(2)).has_value());
 }

@@ -486,8 +486,10 @@ LoadResult deserialize(std::string_view text, Document &out) {
     if(!version) return fail("malformed format version", 1);
     // A newer major version is refused rather than half-read. Unknown *records*
     // survive; an unknown *format* is not something this build can claim to
-    // understand well enough to write back.
-    if(static_cast<int>(*version) > FORMAT_VERSION) {
+    // understand well enough to write back. Compared in the unsigned domain the
+    // header lives in: a cast to int makes every version at or above 2^31 read
+    // negative and load as version 0, the one outcome refuse-whole forbids.
+    if(*version > static_cast<uint32_t>(FORMAT_VERSION)) {
         return fail("document written by a newer version", 1);
     }
 
@@ -497,9 +499,16 @@ LoadResult deserialize(std::string_view text, Document &out) {
         const Fields f = split(line);
         const size_t lineNumber = i + 1;
 
+        // A record's leading bare token, refused when absent, unparseable, or the
+        // null id. Zero is the null sentinel no allocator issues and no live
+        // record carries, so a line claiming it is a record without a real id —
+        // caught here rather than at addAt, which would report a misleading
+        // "duplicate id" for an id no record can hold.
         auto requireId = [&](const Fields &fields) -> std::optional<uint32_t> {
             if(fields.tokens.empty()) return std::nullopt;
-            return toUint(fields.tokens.front());
+            const auto v = toUint(fields.tokens.front());
+            if(!v || *v == 0) return std::nullopt;
+            return v;
         };
 
         if(f.kind == "watermark") {
@@ -550,8 +559,19 @@ LoadResult deserialize(std::string_view text, Document &out) {
                 if(!s) return fail("malformed stroke width", lineNumber);
                 r.strokeWidth = *s;
             }
-            if(const auto v = field(f, "stroke")) r.strokeColor = toUint(*v).value_or(0);
-            if(const auto v = field(f, "fill")) r.fillColor = toUint(*v).value_or(0);
+            // Refused rather than coerced, like order= and z=: a colour that
+            // does not parse is corruption, and value_or(0) would turn a garbled
+            // stroke into invisible fully-transparent geometry with no error.
+            if(const auto v = field(f, "stroke")) {
+                const auto n = toUint(*v);
+                if(!n) return fail("malformed stroke colour", lineNumber);
+                r.strokeColor = *n;
+            }
+            if(const auto v = field(f, "fill")) {
+                const auto n = toUint(*v);
+                if(!n) return fail("malformed fill colour", lineNumber);
+                r.fillColor = *n;
+            }
             if(const auto v = field(f, "filled")) r.filled = (*v == "1");
             if(const auto v = field(f, "opacity")) {
                 const auto s = parseSlot(*v);
@@ -592,8 +612,19 @@ LoadResult deserialize(std::string_view text, Document &out) {
             if(const auto v = field(f, "role")) {
                 r.role = (*v == "construction") ? Role::Construction : Role::Normal;
             }
-            if(const auto v = field(f, "layer")) r.layer = LayerId(toUint(*v).value_or(0));
-            if(const auto v = field(f, "style")) r.style = StyleId(toUint(*v).value_or(0));
+            // Refused rather than coerced: layer=main would otherwise silently
+            // land on the base layer through the null id, skipping the
+            // dangling-reference check a wrong numeric id trips.
+            if(const auto v = field(f, "layer")) {
+                const auto n = toUint(*v);
+                if(!n) return fail("malformed entity layer", lineNumber);
+                r.layer = LayerId(*n);
+            }
+            if(const auto v = field(f, "style")) {
+                const auto n = toUint(*v);
+                if(!n) return fail("malformed entity style", lineNumber);
+                r.style = StyleId(*n);
+            }
 
             const EntityKindInfo &info = entityInfo(r.kind);
             if(const auto v = field(f, "points")) {
@@ -604,14 +635,22 @@ LoadResult deserialize(std::string_view text, Document &out) {
                 for(size_t k = 0; k < list->size(); k++) r.points[k] = (*list)[k];
             }
             if(const auto v = field(f, "seeds")) {
-                if(*v != "-") {
-                    // As many seeds as the kind owns and no more, mirroring the
-                    // point-count check above: a hand-edited over-long list would
-                    // otherwise be silently truncated rather than refused, which
-                    // FORMAT.md says the seed field never is.
+                if(*v == "-") {
+                    // The empty marker, written only for a kind that owns no
+                    // parameters. On any other kind it is an under-length list,
+                    // refused rather than left zero-filled.
+                    if(info.ownParamCount != 0) {
+                        return fail("entity seed count does not match its kind", lineNumber);
+                    }
+                } else {
+                    // Exactly as many seeds as the kind owns, in both directions,
+                    // mirroring the point-count check above: an over-long list
+                    // would otherwise truncate and an under-long one zero-fill,
+                    // and FORMAT.md says the seed field is exactly the kind's own
+                    // parameter count.
                     size_t provided = 1;
                     for(char c : *v) provided += (c == ',');
-                    if(provided > info.ownParamCount) {
+                    if(provided != info.ownParamCount) {
                         return fail("entity seed count does not match its kind", lineNumber);
                     }
                     size_t pos = 0, index = 0;
@@ -678,8 +717,17 @@ LoadResult deserialize(std::string_view text, Document &out) {
             if(!id) return fail("region without an id", lineNumber);
             RegionRecord r;
             r.id = RegionId(*id);
-            if(const auto v = field(f, "style")) r.style = StyleId(toUint(*v).value_or(0));
-            if(const auto v = field(f, "layer")) r.layer = LayerId(toUint(*v).value_or(0));
+            // Refused rather than coerced, matching the entity references above.
+            if(const auto v = field(f, "style")) {
+                const auto n = toUint(*v);
+                if(!n) return fail("malformed region style", lineNumber);
+                r.style = StyleId(*n);
+            }
+            if(const auto v = field(f, "layer")) {
+                const auto n = toUint(*v);
+                if(!n) return fail("malformed region layer", lineNumber);
+                r.layer = LayerId(*n);
+            }
             if(const auto v = field(f, "boundary")) {
                 const auto list = parseIdList<EntityId>(*v);
                 if(!list) return fail("malformed region boundary", lineNumber);
