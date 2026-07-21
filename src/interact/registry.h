@@ -149,6 +149,17 @@ struct Action {
     bool generated = false;
     ConstraintKind constraintKind = ConstraintKind::Coincident;
     Strength strength = Strength::Impose;
+
+    // Two more data columns, consumed by the surfaces the production shell adds:
+    // menus group by `category`, and tooltips and the palette's richer row show
+    // `description` beneath the name and binding. Both are presentation and free
+    // to change, exactly as `title` is; both are derived once when the catalogue
+    // is built. The conformance sweep asserts neither is ever empty, so an action
+    // that reaches a menu carries a group to sit in and a line to explain itself.
+    // A second grouping list in the shell would be the drifting copy the registry
+    // exists to prevent, which is why the column lives on the one table.
+    std::string_view category;
+    std::string_view description;
 };
 
 // The whole catalogue, in a stable order: the hand-written rows first, then one

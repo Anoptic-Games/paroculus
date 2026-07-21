@@ -331,6 +331,45 @@ TEST_CASE("property: redo-all reaches the final state exactly") {
     }
 }
 
+TEST_CASE("revision advances on every mutation and never falsely matches a saved point") {
+    // The dirty-tracking contract: the shell captures revision() at save and
+    // calls the document dirty when it no longer matches. A committed step, an
+    // undo and a redo each count as a mutation, and the tricky case a bare depth
+    // comparison gets wrong is proven directly.
+    Document doc;
+    UndoJournal journal;
+    EntityRecord p;
+    p.kind = EntityKind::Point;
+
+    CHECK(journal.revision() == 0);  // a fresh journal is a clean, unsaved point
+
+    REQUIRE(journal.applyStep(doc, "a", AddRecord<EntityRecord>{p}) == CommandError::None);
+    REQUIRE(journal.applyStep(doc, "b", AddRecord<EntityRecord>{p}) == CommandError::None);
+    REQUIRE(journal.applyStep(doc, "c", AddRecord<EntityRecord>{p}) == CommandError::None);
+    const uint64_t saved = journal.revision();  // "save" here
+
+    // Undo then redo returns to the same depth and the same document, but each
+    // move is a mutation, so revision has advanced past the saved point. Reading
+    // dirty there is the conservative error a data-loss prompt must make.
+    REQUIRE(journal.undo(doc));
+    CHECK(journal.revision() != saved);
+    REQUIRE(journal.redo(doc));
+    CHECK(journal.revision() != saved);
+
+    // The false-clean a depth comparison would produce: save, undo, then a new
+    // step truncates the redo tail and lands at the same depth with a different
+    // document. depth() matches the saved depth; revision() must not.
+    const size_t savedDepth = journal.depth();
+    const uint64_t savedRev = journal.revision();
+    REQUIRE(journal.undo(doc));
+    REQUIRE(journal.applyStep(doc, "d", AddRecord<EntityRecord>{p}) == CommandError::None);
+    CHECK(journal.depth() == savedDepth);       // same position...
+    CHECK(journal.revision() != savedRev);      // ...different document, correctly dirty
+
+    journal.clear();
+    CHECK(journal.revision() == 0);  // a cleared journal is a fresh start
+}
+
 TEST_CASE("property: an undone add never has its id reissued") {
     // Never-reuse outranks byte-identity: the redo record still names the id
     // the undone add took, so reissuing it would rebind that reference.

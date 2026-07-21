@@ -234,7 +234,27 @@ target_link_libraries(paroculus-interact PUBLIC paroculus-core paroculus-solve)
 
 #-----------------------------------------------------------------------------
 # paroculus — the Qt shell and entry point, the only Qt-aware compilation.
+#
+# The non-entry-point shell sources are shared between the app and its offscreen
+# test runner, so both compile the same Workspace, models and settings the QML
+# projects. Listed once here; sketchview.cpp stays listed per target because the
+# QML_ELEMENT registration is the app target's alone.
 #-----------------------------------------------------------------------------
+set(PAROCULUS_SHELL_SOURCES
+    src/shell/sidecar.cpp
+    src/shell/sidecar.h
+    src/shell/settings.cpp
+    src/shell/settings.h
+    src/shell/theme.cpp
+    src/shell/theme.h
+    src/shell/models/reports.cpp
+    src/shell/models/reports.h
+    src/shell/workspace.cpp
+    src/shell/workspace.h
+    src/shell/workspaces.cpp
+    src/shell/workspaces.h
+)
+
 qt_add_executable(paroculus
     src/app/main.cpp
     src/app/scriptplay.cpp
@@ -243,6 +263,7 @@ qt_add_executable(paroculus
     src/app/selftest.h
     src/shell/sketchview.cpp
     src/shell/sketchview.h
+    ${PAROCULUS_SHELL_SOURCES}
 )
 target_link_libraries(paroculus PRIVATE
     Qt6::Core Qt6::Gui Qt6::Quick Qt6::Qml
@@ -357,10 +378,13 @@ if(PAROCULUS_TESTS)
     # reason: compiling the whole TU pulls QQuickPaintedItem in.
     qt_add_executable(paroculus-shell-tests
         tests/shell/translation.cpp
+        tests/shell/sidecar.cpp
+        tests/shell/workspace.cpp
         src/shell/sketchview.cpp
         src/shell/sketchview.h
         src/app/scriptplay.cpp
         src/app/scriptplay.h
+        ${PAROCULUS_SHELL_SOURCES}
     )
     target_link_libraries(paroculus-shell-tests PRIVATE
         doctest::doctest

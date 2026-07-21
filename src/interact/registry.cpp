@@ -373,6 +373,75 @@ std::string nameOf(ConstraintKind kind, Strength strength) {
     return out;
 }
 
+// The one-line tooltip for a hand-written action, keyed by its stable name.
+//
+// A table rather than a derivation because these describe intent a title cannot
+// — "Move the selection to a layer" reads better than any transform of
+// "layer.assign". Generated rows are composed instead (below), since there the
+// title already carries the relation and the strength. Missing is empty, and the
+// conformance sweep turns empty into a red test, so a new hand-written action
+// cannot land undescribed.
+std::string_view descriptionFor(std::string_view name) {
+    if(name == "tool.select") return "Return to the selection tool";
+    if(name == "tool.line") return "Draw a line";
+    if(name == "tool.circle") return "Draw a circle";
+    if(name == "tool.arc") return "Draw an arc";
+    if(name == "tool.rectangle") return "Draw a rectangle";
+    if(name == "edit.delete") return "Delete the selection";
+    if(name == "edit.undo") return "Undo the last change";
+    if(name == "edit.redo") return "Redo the undone change";
+    if(name == "edit.duplicate") return "Duplicate the selection";
+    if(name == "inference.confirm") return "Confirm an offered relation";
+    if(name == "inference.decline") return "Decline the last declared relation";
+    if(name == "region.make-solid") return "Fill the closed outline";
+    if(name == "region.heal-and-fill") return "Close the gaps in the outline and fill it";
+    if(name == "region.union") return "Combine the selected regions by union";
+    if(name == "region.intersect") return "Combine the selected regions by intersection";
+    if(name == "region.subtract") return "Cut one selected region out of another";
+    if(name == "region.lift") return "Lift a composite back into its operands";
+    if(name == "region.punch") return "Punch the region through what is below it";
+    if(name == "region.raise") return "Raise the region in the stacking order";
+    if(name == "region.lower") return "Lower the region in the stacking order";
+    if(name == "relation.toggle-driving") return "Flip the relation between driving and reference";
+    if(name == "relation.walk-conflicts") return "Select the conflicting relations";
+    if(name == "relation.distribute") return "Distribute the selected points evenly";
+    if(name == "relation.mirror") return "Mirror the selection about a segment";
+    if(name == "layer.new") return "Create a new layer";
+    if(name == "layer.assign") return "Move the selection to a layer";
+    if(name == "layer.hide") return "Hide the layer";
+    if(name == "layer.show") return "Show the layer";
+    if(name == "layer.lock") return "Lock the layer against edits";
+    if(name == "layer.unlock") return "Unlock the layer";
+    if(name == "layer.raise") return "Raise the layer in the stacking order";
+    if(name == "layer.lower") return "Lower the layer in the stacking order";
+    if(name == "group.create") return "Group the selection to drag together";
+    if(name == "group.dissolve") return "Dissolve the selection's groupings";
+    if(name == "transform.rotate") return "Rotate the selection about its centre";
+    if(name == "transform.scale") return "Scale the selection uniformly about its centre";
+    if(name == "transform.scale-non-uniform") return "Non-uniform scale, available at the export bake only";
+    if(name == "tag.dissolve") return "Dissolve the selection's tags";
+    if(name == "tag.set-width") return "Set the tagged rectangle's width";
+    if(name == "tag.set-height") return "Set the tagged rectangle's height";
+    if(name == "export.bake") return "Flatten the visible drawing for export";
+    return {};
+}
+
+// The tooltip for a generated imposition row, composed from the relation and its
+// strength. The title already reads "Length ratio (reference)"; this says what
+// invoking it does.
+std::string describeImposition(ConstraintKind kind, Strength strength) {
+    std::string base(constraintInfo(kind).name);
+    for(char &c : base) {
+        if(c == '-') c = ' ';
+    }
+    switch(strength) {
+        case Strength::Impose:    return "Impose " + base + " on the selection";
+        case Strength::Reference: return "Add " + base + " as a reference measurement";
+        case Strength::Measure:   return "Measure " + base + " once, adding no relation";
+    }
+    return base;
+}
+
 // The whole table: the hand-written rows, then one triple per constraint kind.
 //
 // Generated rather than listed because the taxonomy is the single source. A
@@ -491,9 +560,9 @@ const Catalogue &catalogue() {
 
         constexpr std::array<Strength, 3> STRENGTHS = {Strength::Impose, Strength::Reference,
                                                        Strength::Measure};
-        // Two strings per generated row, reserved up front: a reallocation here
-        // would dangle every name already handed out.
-        c.storage.reserve(CONSTRAINT_KINDS.size() * STRENGTHS.size() * 2);
+        // Three strings per generated row — name, title, description — reserved up
+        // front: a reallocation here would dangle every view already handed out.
+        c.storage.reserve(CONSTRAINT_KINDS.size() * STRENGTHS.size() * 3);
         c.rows.reserve(c.rows.size() + CONSTRAINT_KINDS.size() * STRENGTHS.size());
         for(const ConstraintKindInfo &info : CONSTRAINT_KINDS) {
             for(Strength strength : STRENGTHS) {
@@ -501,6 +570,8 @@ const Catalogue &catalogue() {
                 const std::string &name = c.storage.back();
                 c.storage.push_back(titleOf(info.kind, strength));
                 const std::string &title = c.storage.back();
+                c.storage.push_back(describeImposition(info.kind, strength));
+                const std::string &description = c.storage.back();
 
                 Action a;
                 a.name = name;
@@ -516,8 +587,21 @@ const Catalogue &catalogue() {
                 a.generated = true;
                 a.constraintKind = info.kind;
                 a.strength = strength;
+                a.description = description;
                 c.rows.push_back(a);
             }
+        }
+
+        // The metadata finalize pass. Category is the prefix before the first
+        // dot, a view into the name's own stable storage — "tool.line" groups
+        // under "tool", every generated row under "constrain" — so the one
+        // grouping rule reads off the stable token every surface already agrees
+        // on rather than a second list. Hand-written descriptions come from the
+        // table above; generated ones were composed in the loop.
+        for(Action &a : c.rows) {
+            const size_t dot = a.name.find('.');
+            a.category = dot == std::string_view::npos ? a.name : a.name.substr(0, dot);
+            if(a.description.empty()) a.description = descriptionFor(a.name);
         }
         return c;
     }();

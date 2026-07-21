@@ -222,6 +222,30 @@ enum class Strength : uint8_t {
 // Stable token, used by action names and therefore format.
 std::string_view strengthName(Strength s);
 
+// The CAD-surface grouping of the imposition rows, for the constraints toolbar.
+// Presentation rather than solver semantics — it changes nothing about what a
+// constraint means — but data in the taxonomy all the same, so the toolbar is a
+// projection of one table rather than a shell-side list that drifts from the
+// catalogue, exactly as the registry's category column keeps the menus. The six
+// families are the ones the spec's constraints toolbar fixes.
+enum class ConstraintFamily : uint8_t {
+    Placement,
+    Direction,
+    Size,
+    Symmetry,
+    Curve,
+    Anchor,
+};
+
+// A stable lowercase token, for the surfaces that group by it.
+std::string_view familyName(ConstraintFamily family);
+
+// Which family a kind belongs to. The coverage test in core_taxonomy pins every
+// kind to a family and to the spec's per-family counts, so adding a kind without
+// placing it is a red test — the build itself does not warn, since the targets
+// carry no -Wswitch and the trailing return keeps an unplaced kind compiling.
+ConstraintFamily constraintFamily(ConstraintKind kind);
+
 // Horizontal and vertical are recorded as axis-referenced parallelism rather
 // than intrinsic properties, which is what makes the rotate-a-subset question
 // answerable at all. The reference is the nullable operand and the default is

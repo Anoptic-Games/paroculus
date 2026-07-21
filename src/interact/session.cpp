@@ -291,6 +291,22 @@ void Session::enableAsyncSolving(size_t sizeThreshold, unsigned workers) {
     // so the first submission is gated exactly like every later one.
 }
 
+void Session::disableAsyncSolving() {
+    // The symmetric teardown, so the shell can keep async on the active workspace
+    // alone: a scheduler per hidden tab is what the plan's active-workspace-only
+    // posture rules out until the cross-session gate audit is done. Resetting the
+    // unique_ptr joins the workers and drops the solver-sharing refcount through
+    // the scheduler's destructor, so a dropped in-flight result simply leaves the
+    // component on its last coherent pose. The carried async state is cleared so
+    // the next refresh re-solves it synchronously rather than reading a stale
+    // off-thread pose that no worker will ever refresh again.
+    scheduler_.reset();
+    asyncThreshold_ = 0;
+    asyncPose_.clear();
+    asyncMembers_.clear();
+    asyncOutcomes_.clear();
+}
+
 void Session::setAsyncSolveHook(std::function<void(uint64_t)> hook) {
     if(scheduler_) scheduler_->setSolveHook(std::move(hook));
 }

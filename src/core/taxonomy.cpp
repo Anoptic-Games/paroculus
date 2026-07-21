@@ -108,6 +108,52 @@ std::string_view strengthName(Strength s) {
     return "impose";
 }
 
+std::string_view familyName(ConstraintFamily family) {
+    switch(family) {
+        case ConstraintFamily::Placement: return "placement";
+        case ConstraintFamily::Direction: return "direction";
+        case ConstraintFamily::Size:      return "size";
+        case ConstraintFamily::Symmetry:  return "symmetry";
+        case ConstraintFamily::Curve:     return "curve";
+        case ConstraintFamily::Anchor:    return "anchor";
+    }
+    return "placement";
+}
+
+ConstraintFamily constraintFamily(ConstraintKind kind) {
+    switch(kind) {
+        case ConstraintKind::Coincident:
+        case ConstraintKind::PointOnLine:
+        case ConstraintKind::PointOnCircle:
+        case ConstraintKind::Midpoint:
+            return ConstraintFamily::Placement;
+        case ConstraintKind::Horizontal:
+        case ConstraintKind::Vertical:
+        case ConstraintKind::Parallel:
+        case ConstraintKind::Perpendicular:
+        case ConstraintKind::Angle:
+        case ConstraintKind::EqualAngle:
+            return ConstraintFamily::Direction;
+        case ConstraintKind::PointPointDistance:
+        case ConstraintKind::PointLineDistance:
+        case ConstraintKind::Radius:
+        case ConstraintKind::EqualRadius:
+        case ConstraintKind::EqualLength:
+        case ConstraintKind::LengthRatio:
+        case ConstraintKind::LengthDifference:
+            return ConstraintFamily::Size;
+        case ConstraintKind::SymmetricHorizontal:
+        case ConstraintKind::SymmetricVertical:
+        case ConstraintKind::SymmetricAboutLine:
+            return ConstraintFamily::Symmetry;
+        case ConstraintKind::Tangent:
+            return ConstraintFamily::Curve;
+        case ConstraintKind::Pin:
+            return ConstraintFamily::Anchor;
+    }
+    return ConstraintFamily::Placement;
+}
+
 bool signatureMatches(ConstraintKind k, std::span<const EntityKind> kinds) {
     const ConstraintKindInfo &info = constraintInfo(k);
     if(kinds.size() != info.operandCount) return false;

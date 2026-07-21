@@ -67,12 +67,26 @@ public:
     size_t depth() const { return depth_; }
     const std::vector<UndoRecord> &records() const { return records_; }
 
+    // A monotonic edit counter, advanced by every mutation through the journal —
+    // a committed step, an undo, or a redo. The shell captures it at save and
+    // calls the document dirty when it no longer matches, which is why it counts
+    // mutations rather than tracking the cursor: a bare depth comparison calls a
+    // document clean after redo above a saved position truncates the tail and
+    // appends a different step to the same depth, and a save prompt that misses
+    // that loses the difference silently. This never reports clean when the bytes
+    // differ — an undo back to the saved position advances the counter and reads
+    // dirty, which is the conservative direction a data-loss prompt must err in.
+    uint64_t revision() const { return revision_; }
+
     void clear();
 
 private:
     std::vector<UndoRecord> records_;
     // Records below the cursor are applied; records at and above are undone.
     size_t depth_ = 0;
+    // Never decreases while the journal lives; reset only by clear(), which is a
+    // fresh start indistinguishable from a new journal.
+    uint64_t revision_ = 0;
 };
 
 }  // namespace paroculus

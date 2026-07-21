@@ -44,6 +44,7 @@ CommandError UndoJournal::applyStep(Document &doc, std::string label,
     records_.resize(depth_);
     records_.push_back(std::move(record));
     depth_ = records_.size();
+    revision_++;
     return CommandError::None;
 }
 
@@ -67,6 +68,7 @@ bool UndoJournal::undo(Document &doc) {
         (void)result;
     }
     depth_--;
+    revision_++;
     return true;
 }
 
@@ -79,6 +81,7 @@ bool UndoJournal::redo(Document &doc) {
         (void)result;
     }
     depth_++;
+    revision_++;
     return true;
 }
 
@@ -86,6 +89,7 @@ bool UndoJournal::redo(Document &doc) {
 void UndoJournal::clear() {
     records_.clear();
     depth_ = 0;
+    revision_ = 0;
 }
 
 }  // namespace paroculus

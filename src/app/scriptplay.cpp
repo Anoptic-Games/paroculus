@@ -9,6 +9,7 @@ namespace {
 
 std::optional<GestureScript> pending;
 std::string recordPath;
+std::string openPath;
 
 }  // namespace
 
@@ -61,6 +62,14 @@ void setRecordPath(std::string path) { recordPath = std::move(path); }
 std::string takeRecordPath() {
     std::string out;
     out.swap(recordPath);
+    return out;
+}
+
+void setOpenPath(std::string path) { openPath = std::move(path); }
+
+std::string takeOpenPath() {
+    std::string out;
+    out.swap(openPath);
     return out;
 }
 

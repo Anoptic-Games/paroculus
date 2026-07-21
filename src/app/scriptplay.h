@@ -39,6 +39,12 @@ void setRecordPath(std::string path);
 // Returns the path and forgets it, or an empty string when none was set.
 std::string takeRecordPath();
 
+// The document a positional FILE argument names, to open once the workspace
+// manager exists. The same process-level handoff, for the same reason: argv is
+// parsed in main and QML instantiates nothing that carries it.
+void setOpenPath(std::string path);
+std::string takeOpenPath();
+
 }  // namespace pendingScript
 
 }  // namespace paroculus

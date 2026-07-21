@@ -61,6 +61,15 @@ TEST_CASE("the catalogue is well formed") {
 
         for(const ActionParameter &p : a.parameters) CHECK_FALSE(p.name.empty());
 
+        // The metadata sweep. Menus group by category and tooltips read the
+        // description, so an action carrying neither would reach a menu as an
+        // ungrouped, unexplained row — a surface born against a private hole
+        // rather than the one table. Category is the prefix, so it also matches
+        // the name it is derived from.
+        CHECK_FALSE(a.category.empty());
+        CHECK_FALSE(a.description.empty());
+        CHECK(a.name.substr(0, a.category.size()) == a.category);
+
         // Reachable by the name it publishes.
         CHECK(findAction(a.name) == &a);
     }

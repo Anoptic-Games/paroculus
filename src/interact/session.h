@@ -282,6 +282,13 @@ public:
     // same discard, on the calling thread. workers > 0 is the real pool.
     void enableAsyncSolving(size_t sizeThreshold, unsigned workers);
 
+    // Tears the async path back down: joins the workers, drops the process-global
+    // solver-sharing refcount, and clears the carried off-thread pose so the next
+    // refresh solves synchronously. The symmetric partner of enableAsyncSolving,
+    // so the shell can hold async on exactly the active workspace — one scheduler
+    // at a time — rather than accumulating a worker pool per tab ever shown.
+    void disableAsyncSolving();
+
     // Applies whatever the workers have finished — whole results only — and
     // rebuilds the derived indexes. Returns whether the pose changed. A no-op
     // when async solving was never enabled.

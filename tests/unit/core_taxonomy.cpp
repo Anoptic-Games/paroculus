@@ -1,12 +1,14 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <map>
 #include <set>
 #include <vector>
 
 #include "core/taxonomy.h"
 
 using paroculus::CONSTRAINT_KINDS;
+using paroculus::ConstraintFamily;
 using paroculus::ConstraintKind;
 using paroculus::ENTITY_KINDS;
 using paroculus::EntityKind;
@@ -14,10 +16,44 @@ using paroculus::Invariance;
 using paroculus::SNAP_KINDS;
 using paroculus::SnapTier;
 using paroculus::accepts;
+using paroculus::constraintFamily;
 using paroculus::constraintInfo;
 using paroculus::constraintKindFromName;
 using paroculus::entityKindFromName;
+using paroculus::familyName;
 using paroculus::signatureMatches;
+
+TEST_CASE("every constraint kind has a family, and the families match the spec's counts") {
+    // The constraints toolbar groups by family, so a kind with no family would be
+    // an imposition unreachable from that surface. The counts pin the spec's
+    // table: placement 4, direction 6, size 7, symmetry 3, curve 1, anchor 1.
+    std::map<ConstraintFamily, int> counts;
+    for(const auto &info : CONSTRAINT_KINDS) counts[constraintFamily(info.kind)]++;
+
+    CHECK(counts[ConstraintFamily::Placement] == 4);
+    CHECK(counts[ConstraintFamily::Direction] == 6);
+    CHECK(counts[ConstraintFamily::Size] == 7);
+    CHECK(counts[ConstraintFamily::Symmetry] == 3);
+    CHECK(counts[ConstraintFamily::Curve] == 1);
+    CHECK(counts[ConstraintFamily::Anchor] == 1);
+    // And that is the whole catalogue, so nothing is unplaced.
+    int total = 0;
+    for(const auto &[family, n] : counts) total += n;
+    CHECK(total == static_cast<int>(CONSTRAINT_KINDS.size()));
+
+    // A few anchor checks against the spec's table by name, and that every family
+    // token is non-empty.
+    CHECK(constraintFamily(ConstraintKind::Coincident) == ConstraintFamily::Placement);
+    CHECK(constraintFamily(ConstraintKind::Parallel) == ConstraintFamily::Direction);
+    CHECK(constraintFamily(ConstraintKind::PointPointDistance) == ConstraintFamily::Size);
+    CHECK(constraintFamily(ConstraintKind::Tangent) == ConstraintFamily::Curve);
+    CHECK(constraintFamily(ConstraintKind::Pin) == ConstraintFamily::Anchor);
+    for(ConstraintFamily f : {ConstraintFamily::Placement, ConstraintFamily::Direction,
+                              ConstraintFamily::Size, ConstraintFamily::Symmetry,
+                              ConstraintFamily::Curve, ConstraintFamily::Anchor}) {
+        CHECK_FALSE(familyName(f).empty());
+    }
+}
 
 TEST_CASE("serialization tokens are unique and round-trip") {
     // These tokens are written to files, so a collision or a drift silently

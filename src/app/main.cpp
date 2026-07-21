@@ -8,6 +8,7 @@
 //   paroculus --import FILE     trace geometry out of an SVG to stdout and exit
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
+#include <QQmlContext>
 
 #include <cstdio>
 #include <cstring>
@@ -19,6 +20,8 @@
 #include "core/persist.h"
 #include "core/pose.h"
 #include "core/svg.h"
+#include "shell/settings.h"
+#include "shell/workspaces.h"
 #include "solve/context.h"
 #include "solve/demosketch.h"
 #include "solve/solve.h"
@@ -83,6 +86,7 @@ int main(int argc, char *argv[]) {
     const char *recordPath = nullptr;
     const char *exportPath = nullptr;
     const char *importPath = nullptr;
+    const char *openPath = nullptr;
     for(int i = 1; i < argc; i++) {
         if(std::strcmp(argv[i], "--selftest") == 0) {
             wantSelftest = true;
@@ -110,6 +114,17 @@ int main(int argc, char *argv[]) {
                 return 2;
             }
             recordPath = argv[++i];
+        } else if(argv[i][0] != '-') {
+            // A positional argument is a document to open at launch. The flag
+            // values above are consumed with ++i, so nothing but a real
+            // positional reaches here. A second one is refused rather than
+            // silently dropped — opening one document and losing the mention of
+            // another is exactly the silent change the tool exists to avoid.
+            if(openPath != nullptr) {
+                std::fprintf(stderr, "only one document may be opened at launch\n");
+                return 2;
+            }
+            openPath = argv[i];
         }
     }
     // The five entry modes are mutually exclusive, and silently letting one beat
@@ -119,13 +134,24 @@ int main(int argc, char *argv[]) {
     // script (--script) — none is a live session worth recording, and recording
     // a replay only reproduces the file it was given.
     {
-        const int modes = static_cast<int>(wantSelftest) + (scriptPath != nullptr) +
-                          (recordPath != nullptr) + (exportPath != nullptr) +
-                          (importPath != nullptr);
-        if(modes > 1) {
-            std::fprintf(
-                stderr,
-                "--selftest, --script, --record, --export and --import are mutually exclusive\n");
+        // Two tiers. A batch mode either exits before a window (--export,
+        // --import), runs and exits (--selftest), or replays a fixed script
+        // (--script) — none is a live session, and only one can be chosen. A FILE
+        // to open and --record both modify the live interactive session, so they
+        // combine with each other (record the edits to an opened document) but not
+        // with any batch mode.
+        const int batch = static_cast<int>(wantSelftest) + (scriptPath != nullptr) +
+                          (exportPath != nullptr) + (importPath != nullptr);
+        const int interactive = (recordPath != nullptr) + (openPath != nullptr);
+        if(batch > 1) {
+            std::fprintf(stderr,
+                         "--selftest, --script, --export and --import are mutually exclusive\n");
+            return 2;
+        }
+        if(batch == 1 && interactive > 0) {
+            std::fprintf(stderr,
+                         "--record and a FILE argument modify the interactive session and cannot "
+                         "combine with --selftest, --script, --export or --import\n");
             return 2;
         }
     }
@@ -135,6 +161,7 @@ int main(int argc, char *argv[]) {
     if(importPath != nullptr) return runImport(importPath);
 
     if(recordPath != nullptr) paroculus::pendingScript::setRecordPath(recordPath);
+    if(openPath != nullptr) paroculus::pendingScript::setOpenPath(openPath);
 
     // Parsed before the window opens, so a bad script fails at the command line
     // rather than into an empty window the user has to interpret.
@@ -156,6 +183,9 @@ int main(int argc, char *argv[]) {
     }
 
     QGuiApplication app(argc, argv);
+    // Organization and application both name paroculus, so QSettings resolves to
+    // one un-nested config path under the platform config location.
+    QGuiApplication::setOrganizationName(QStringLiteral("paroculus"));
     QGuiApplication::setApplicationName(QStringLiteral("paroculus"));
 
     if(wantSelftest) return paroculus::selftest();
@@ -163,6 +193,17 @@ int main(int argc, char *argv[]) {
     QQmlApplicationEngine engine;
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app,
                      []() { QCoreApplication::exit(1); }, Qt::QueuedConnection);
+
+    // The application settings store and the open set, both handed to QML as
+    // context properties. The manager consumes the process-level handoffs (a
+    // pending script, a record path, the launch file) and stands the first
+    // workspace up, so argv is fully resolved before any workspace exists.
+    paroculus::Settings settings;
+    paroculus::WorkspaceManager manager(&settings);
+    manager.startup();
+    engine.rootContext()->setContextProperty(QStringLiteral("App"), &manager);
+    engine.rootContext()->setContextProperty(QStringLiteral("AppSettings"), &settings);
+
     engine.loadFromModule("Paroculus", "Main");
     return app.exec();
 }
