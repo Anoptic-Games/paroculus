@@ -509,7 +509,10 @@ Item {
                 onVisibleChanged: rightDock.savePanelLayout()
                 onCollapsedChanged: rightDock.savePanelLayout()
                 // The append-only memory of everything no-silent-changes logs,
-                // the same model the toast flashes the newest entry of.
+                // the same model the toast flashes the newest entry of. An entry
+                // that names records is click-to-select: clicking it lands the user
+                // on the geometry or relations it is about. One that names none
+                // (a deletion, an export) is plain text.
                 ListView {
                     width: parent.width
                     height: Math.min(contentHeight, 180)
@@ -519,9 +522,18 @@ Item {
                         required property var model
                         width: ListView.view.width
                         wrapMode: Text.WordWrap
-                        color: Theme.textSecondary; font.pixelSize: 11
+                        color: model.selectable ? Theme.textPrimary : Theme.textSecondary
+                        font.pixelSize: 11
+                        font.underline: model.selectable && entryHover.hovered
                         bottomPadding: 4
                         text: model.text
+                        HoverHandler { id: entryHover; enabled: model.selectable }
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: model.selectable
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: App.active.selectReported(model.entities, model.constraints)
+                        }
                     }
                 }
             }

@@ -9,6 +9,7 @@
 
 #include "app/scriptplay.h"
 #include "core/persist.h"
+#include "core/svg.h"
 #include "shell/settings.h"
 #include "shell/workspace.h"
 
@@ -227,6 +228,62 @@ bool WorkspaceManager::saveActiveTo(const QString &path) {
 QString WorkspaceManager::activePath() const {
     const Workspace *ws = active();
     return ws != nullptr ? ws->filePath() : QString();
+}
+
+bool WorkspaceManager::importSvg(const QString &path) {
+    std::ifstream in(path.toStdString());
+    if(!in) {
+        emit openFailed(path, QStringLiteral("cannot open file"), 0);
+        return false;
+    }
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    const SvgImport result = readSvg(buffer.str());
+
+    // Nothing traceable is a failed import, not a stray empty tab: an SVG of only
+    // unsupported elements (or an empty file) traces zero, and spawning a dirty
+    // blank workspace for it is the stray-tab discipline openFile refuses. Surfaced
+    // as a diagnostic, no tab touched.
+    if(result.traced == 0) {
+        emit openFailed(path,
+                        QStringLiteral("no supported geometry found (%1 elements skipped)")
+                            .arg(result.skipped),
+                        0);
+        return false;
+    }
+
+    // Reuse a pristine scratch tab exactly as Open does, so an untouched empty tab
+    // is not left beside the import; otherwise a new one. The traced document makes
+    // the workspace dirty, so it is not itself reused by a later Open.
+    Workspace *target = pristine(active()) ? active() : addWorkspace();
+    // Geometry arrives free and unconstrained, said in the report because a user
+    // who does not know import is a trace will blame the constraints they never had.
+    const QString report =
+        QStringLiteral("Traced %1 elements, skipped %2 — geometry arrives free and unconstrained")
+            .arg(result.traced)
+            .arg(result.skipped);
+    target->adoptTraced(result.document, report);
+
+    activate(static_cast<int>(workspaces_.indexOf(target)));
+    emit tabsChanged();
+    return true;
+}
+
+bool WorkspaceManager::replayScript(const QString &path) {
+    GestureScript script;
+    std::string error;
+    if(!loadScriptFile(path.toStdString(), script, error)) {
+        emit openFailed(path, QString::fromStdString(error), 0);
+        return false;
+    }
+    // A fresh workspace for the replay, reusing a pristine scratch tab as Open and
+    // Import do so no empty tab is left beside it; the replay fills it, so it is not
+    // itself a pristine tab a later Open would reuse.
+    Workspace *target = pristine(active()) ? active() : addWorkspace();
+    target->playScript(std::move(script));
+    activate(static_cast<int>(workspaces_.indexOf(target)));
+    emit tabsChanged();
+    return true;
 }
 
 QStringList WorkspaceManager::recentFiles() const {

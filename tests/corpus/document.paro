@@ -1,0 +1,27 @@
+paroculus 0
+watermark entity=26 constraint=1 region=1 tag=1 style=1 layer=1 group=1 parameter=1
+entity 1 kind=point role=normal layer=0 points=- seeds=10,-10
+entity 2 kind=point role=normal layer=0 points=- seeds=40,-10
+entity 3 kind=point role=normal layer=0 points=- seeds=40,-30
+entity 4 kind=point role=normal layer=0 points=- seeds=10,-30
+entity 5 kind=segment role=normal layer=0 points=1,2 seeds=-
+entity 6 kind=segment role=normal layer=0 points=2,3 seeds=-
+entity 7 kind=segment role=normal layer=0 points=3,4 seeds=-
+entity 8 kind=segment role=normal layer=0 points=4,1 seeds=-
+entity 9 kind=point role=normal layer=0 points=- seeds=50,-50
+entity 10 kind=point role=normal layer=0 points=- seeds=0,0
+entity 11 kind=segment role=normal layer=0 points=10,9 seeds=-
+entity 12 kind=point role=normal layer=0 points=- seeds=70,-70
+entity 13 kind=circle role=normal layer=0 points=12 seeds=15
+entity 14 kind=point role=normal layer=0 points=- seeds=80,-10
+entity 15 kind=point role=normal layer=0 points=- seeds=95,-10
+entity 16 kind=point role=normal layer=0 points=- seeds=95,-25
+entity 17 kind=segment role=normal layer=0 points=14,15 seeds=-
+entity 18 kind=segment role=normal layer=0 points=15,16 seeds=-
+entity 19 kind=segment role=normal layer=0 points=16,14 seeds=-
+entity 20 kind=point role=normal layer=0 points=- seeds=20,-95
+entity 21 kind=point role=normal layer=0 points=- seeds=5,-90
+entity 22 kind=segment role=normal layer=0 points=21,20 seeds=-
+entity 23 kind=point role=normal layer=0 points=- seeds=35,-90
+entity 24 kind=segment role=normal layer=0 points=20,23 seeds=-
+entity 25 kind=segment role=normal layer=0 points=23,21 seeds=-

@@ -1,14 +1,19 @@
 #include "shell/workspace.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <fstream>
 #include <map>
 
 #include <QColor>
+#include <QDir>
 #include <QFileInfo>
 #include <QStringList>
 
 #include "app/scriptplay.h"
+#include "core/bake.h"
 #include "core/persist.h"
+#include "core/svg.h"
 #include "interact/registry.h"
 #include "interact/surface.h"
 #include "shell/sidecar.h"
@@ -29,6 +34,34 @@ constexpr size_t kAsyncEntityThreshold = 256;
 // number — QML colour bindings want the string, the action wants the number.
 QString argbHex(uint32_t colour) {
     return QString::asprintf("#%08x", colour);
+}
+
+// The loss a bake would cost, in words, computed once and shared by the export
+// preview (the dialog, before the write) and the export report (the log, after
+// it), so the two surfaces cannot word the same loss differently. `survived` is
+// what reaches the file; `lost` is the parts that flattened or dropped, empty
+// when the export is lossless.
+struct ExportSummary {
+    QString survived;
+    QStringList lost;
+    bool lossy() const { return !lost.isEmpty(); }
+};
+
+ExportSummary summarizeBake(const Bake &bake) {
+    ExportSummary s;
+    s.survived = QStringLiteral("%1 strokes, %2 fills")
+                     .arg(bake.strokes.size())
+                     .arg(bake.fills.size());
+    if(bake.regionsFlattened > 0)
+        s.lost << QStringLiteral("%1 regions flattened to paths").arg(bake.regionsFlattened);
+    if(bake.constraintsDropped > 0)
+        s.lost << QStringLiteral("%1 constraints").arg(bake.constraintsDropped);
+    if(bake.parametersDropped > 0)
+        s.lost << QStringLiteral("%1 parameters").arg(bake.parametersDropped);
+    if(bake.tagsDropped > 0) s.lost << QStringLiteral("%1 tags").arg(bake.tagsDropped);
+    if(bake.regionsBroken > 0)
+        s.lost << QStringLiteral("%1 regions no longer enclose an area").arg(bake.regionsBroken);
+    return s;
 }
 
 // One surface entry, as QML sees it. A plain map: the list is short, rebuilt
@@ -90,7 +123,7 @@ QString Workspace::title() const {
                                 : QStringLiteral("untitled");
 }
 
-bool Workspace::dirty() const { return journal_.revision() != savedRevision_; }
+bool Workspace::dirty() const { return modified_ || journal_.revision() != savedRevision_; }
 
 bool Workspace::busy() const { return session_->asyncBusy(); }
 
@@ -157,10 +190,11 @@ void Workspace::playScript(GestureScript script) {
     // whatever was showing before does not carry into it.
     inspectMode_ = false;
     savedRevision_ = journal_.revision();
+    modified_ = false;  // a replay is the recorded session, clean until edited
     // The fresh session has async off; drop the flag so a later activate re-enables
-    // it, matching loadFrom. A recorder outlives the session, so re-attach it.
+    // it, matching loadFrom. A recorder outlives the session, so re-point it.
     asyncEnabled_ = false;
-    if(recorder_ != nullptr) session_->setRecorder(recorder_.get());
+    reattachRecorder();
     // Resync the report baseline to the new session's zeroed fields, so leftover
     // state from a prior session cannot be reported as the first edit's doing.
     lastReportSnapshot_ = snapshotReports();
@@ -195,6 +229,53 @@ void Workspace::startRecording(const QString &path) {
     recordedFrom_ = document_;
     recorder_ = std::make_unique<ScriptRecorder>();
     session_->setRecorder(recorder_.get());
+    emit changed();  // the Developer menu's recording state
+}
+
+void Workspace::reattachRecorder() {
+    if(recorder_ == nullptr) return;
+    // The session was replaced, so the recorder's accumulated steps belong to a
+    // document that is no longer here. A script carries one starting document;
+    // keeping the old steps under the new base would write a recording whose steps
+    // reference ids the base does not hold. Restart the recording from the arrived
+    // document instead — record-then-open keeps recording, of the opened document.
+    recorder_->clear();
+    recordedFrom_ = document_;
+    session_->setRecorder(recorder_.get());
+}
+
+void Workspace::stopRecording() {
+    if(recorder_ == nullptr) return;
+    // Write now rather than at teardown, and detach so the destructor writes
+    // nothing more — a stopped recording is a finished one. A recorder that was
+    // attached to a since-replaced session is detached from whatever session is
+    // current, which is the one it is attached to now (playScript/loadFrom
+    // re-attach it), so this is always the right handle to clear.
+    if(!recordPath_.isEmpty()) {
+        GestureScript script;
+        script.document = recordedFrom_;
+        script.steps = recorder_->steps();
+        std::string error;
+        if(saveScriptFile(recordPath_.toStdString(), script, error)) {
+            const QString text = QStringLiteral("Recorded %1 steps to %2")
+                                     .arg(script.steps.size())
+                                     .arg(QFileInfo(recordPath_).fileName());
+            reports_->append(text);
+            emit reportPosted(text);
+        } else {
+            // A file the user asked for that did not land is surfaced, not
+            // swallowed to stderr — the same policy the export failure follows.
+            std::fprintf(stderr, "%s\n", error.c_str());
+            const QString text =
+                QStringLiteral("Recording failed to write: %1").arg(QFileInfo(recordPath_).fileName());
+            reports_->append(text);
+            emit reportPosted(text);
+        }
+    }
+    session_->setRecorder(nullptr);
+    recorder_.reset();
+    recordPath_.clear();
+    emit changed();
 }
 
 LoadResult Workspace::loadFrom(const std::string &text, const QString &path) {
@@ -211,14 +292,16 @@ LoadResult Workspace::loadFrom(const std::string &text, const QString &path) {
     // otherwise land inert; a fresh document is a fresh editing session.
     inspectMode_ = false;
     savedRevision_ = journal_.revision();
+    modified_ = false;  // a loaded document is the file on disk, clean until edited
     filePath_ = path;
     // A fresh document asks for a re-fit: clear the latch so the next viewport
     // sync frames it. The sidecar, loaded next by the manager, layers pan and
     // zoom over that fitted base.
     view_ = ViewState{};
     asyncEnabled_ = false;
-    // A recorder outlives the session, so a record-then-open keeps recording.
-    if(recorder_ != nullptr) session_->setRecorder(recorder_.get());
+    // A recorder outlives the session, so a record-then-open keeps recording — of
+    // the opened document, from its start (reattachRecorder resets the steps).
+    reattachRecorder();
     // Resync the report baseline to the loaded session, so a report is never
     // attributed to the open.
     lastReportSnapshot_ = snapshotReports();
@@ -231,11 +314,41 @@ LoadResult Workspace::loadFrom(const std::string &text, const QString &path) {
     return result;
 }
 
+void Workspace::adoptTraced(Document traced, const QString &report) {
+    document_ = std::move(traced);
+    journal_.clear();
+    session_ = std::make_unique<Session>(document_, journal_);
+    applyGlyphPolicy();
+    inspectMode_ = false;
+    // No file: an import is new authored content, not a reopened one. Saving it
+    // routes through Save As, the same as any untitled document.
+    filePath_.clear();
+    savedRevision_ = journal_.revision();
+    // But not clean: the trace is unsaved geometry, and a clean untitled tab reads
+    // as a pristine scratch tab the next Open would reuse and discard. modified_
+    // holds dirty until the user saves, which is when it earns a file.
+    modified_ = true;
+    // A fresh document asks for a re-fit, exactly as loadFrom does.
+    view_ = ViewState{};
+    asyncEnabled_ = false;
+    reattachRecorder();
+    // Resync the report baseline to the traced session before the trace report is
+    // appended, so the import's own count is the only thing this operation logs.
+    lastReportSnapshot_ = snapshotReports();
+    reports_->append(report);
+    emit reportPosted(report);
+    emit viewReset();
+    emit changed();
+}
+
 std::string Workspace::serializeDocument() const { return serialize(document_); }
 
 void Workspace::markSaved(const QString &path) {
     filePath_ = path;
     savedRevision_ = journal_.revision();
+    // A save is what clears imported-but-never-on-disk content: it now has a file
+    // and a revision to be past, so ordinary journal-revision dirtiness takes over.
+    modified_ = false;
     emit changed();
 }
 
@@ -603,6 +716,9 @@ void Workspace::walkHistory(int position) {
     while(session_->historyPosition() < target && session_->canRedo() && guard++ < 1000000) {
         session_->handle(Key::Redo);
     }
+    // A walk is navigation, not an edit: resync so a report the landed state
+    // recomputes is not attributed to the walk. See undo()/redo().
+    lastReportSnapshot_ = snapshotReports();
     notifyChanged();
 }
 
@@ -690,14 +806,81 @@ void Workspace::selectRelation(int id, bool additive) {
     notifyChanged();
 }
 
+void Workspace::selectReported(const QVariantList &entities, const QVariantList &constraints) {
+    // select() clears the whole selection and sets the entities, so an empty list
+    // clears; the constraints are then added additively. A report names one
+    // vocabulary or the other in practice, but handling both keeps it honest.
+    std::vector<EntityId> ids;
+    for(const QVariant &v : entities) ids.push_back(EntityId(static_cast<uint32_t>(v.toInt())));
+    session_->select(std::move(ids));
+    for(const QVariant &v : constraints) {
+        session_->selectConstraint(ConstraintId(static_cast<uint32_t>(v.toInt())), /*additive=*/true);
+    }
+    notifyChanged();
+}
+
+QVariantMap Workspace::exportReport(double, int) const {
+    // The bake is what the loss is computed from — the same value the write turns
+    // into a file — so the report describes exactly what will be written. Margin
+    // and precision scale coordinates, not the loss, so they are not read here; the
+    // dialog collects them and hands them to exportSvg. The wording is built once,
+    // in summarizeBake, so the preview and the after-write log agree.
+    const ExportSummary s = summarizeBake(bakeForExport(document_, session_->pose()));
+    QVariantMap m;
+    m[QStringLiteral("survived")] = s.survived;
+    m[QStringLiteral("lost")] = s.lost.join(QStringLiteral(", "));
+    m[QStringLiteral("lossy")] = s.lossy();
+    return m;
+}
+
+bool Workspace::exportSvg(const QString &path, double margin, int precision) {
+    // Baked once, from the current pose: the background colour is not in the bake,
+    // so it never reaches the bytes — the viewing aid stays a viewing aid.
+    const Bake bake = bakeForExport(document_, session_->pose());
+    SvgOptions options;
+    options.margin = std::max(0.0, margin);  // a negative margin is not a framing
+    options.precision = precision;
+    const std::string svg = writeSvg(bake, options);
+
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    std::ofstream out(path.toStdString());
+    if(!out) {
+        emit exportFailed(path);
+        return false;
+    }
+    out << svg;
+    // Close and check: a disk-full short write surfaces only on the flush, so an
+    // export that only tested the open is not an export that landed.
+    out.close();
+    if(!out) {
+        emit exportFailed(path);
+        return false;
+    }
+
+    // The loss report, the same no-silent-changes surface every producer reaches:
+    // what survived and what the bake cost, worded by the shared summarizer so the
+    // log cannot disagree with the preview the dialog showed.
+    const ExportSummary s = summarizeBake(bake);
+    QString text = QStringLiteral("Exported %1 to %2").arg(s.survived).arg(QFileInfo(path).fileName());
+    if(s.lossy()) text += QStringLiteral(" · dropped ") + s.lost.join(QStringLiteral(", "));
+    reports_->append(text, QStringLiteral("export"));
+    emit reportPosted(text);
+    return true;
+}
+
 void Workspace::undo() {
     if(inspectMode_) return;  // no edit occurs in inspect mode, undo included
     session_->handle(Key::Undo);
+    // Navigation is not an edit: resync the baseline so a report the landed state
+    // recomputes (a hidden-influence present there, say) is not posted as though
+    // this undo caused it. The event was already reported when the edit first ran.
+    lastReportSnapshot_ = snapshotReports();
     notifyChanged();
 }
 void Workspace::redo() {
     if(inspectMode_) return;
     session_->handle(Key::Redo);
+    lastReportSnapshot_ = snapshotReports();
     notifyChanged();
 }
 void Workspace::deleteSelection() {
@@ -754,11 +937,15 @@ Workspace::ReportSnapshot Workspace::snapshotReports() const {
     const Presentation &p = session_->presentation();
     const Presentation::StructureReport &st = p.structure;
     ReportSnapshot s;
+    s.deletionSerial = p.deletionSerial;
+    s.structureSerial = p.structureSerial;
     s.deletedEntities = p.deletedEntities;
     s.deletedRelations = p.deletedRelations;
     s.degraded = p.degraded;
     s.transformError = static_cast<int>(st.transformError);
     s.compoundError = static_cast<int>(st.compoundError);
+    s.structureOp = static_cast<int>(st.op);
+    s.moved = st.moved;
     s.retargeted = st.retargeted;
     s.rescaled = st.rescaled;
     s.straddling = st.straddling;
@@ -766,10 +953,24 @@ Workspace::ReportSnapshot Workspace::snapshotReports() const {
     s.droppedRelations = st.droppedRelations;
     s.droppedRegions = st.droppedRegions;
     s.droppedTags = st.droppedTags;
+    s.frame = st.frame.value();
     if(p.crossing) {
         s.crossingA = p.crossing->first.value();
         s.crossingB = p.crossing->second.value();
     }
+    s.styleForked = p.styleForked;
+    s.forkedStyle = p.forkedStyle.value();
+    s.hiddenCount = p.hiddenInfluences.size();
+    for(EntityId id : p.hiddenInfluences) s.hiddenKey = s.hiddenKey * 1000003u + id.value();
+    // The downgrade offer is set only by the real impose and set-value paths, so a
+    // present optional here is always an edit that refused a driving imposition —
+    // the const preview query leaves it untouched.
+    s.downgraded = p.downgrade.has_value();
+    if(p.downgrade) {
+        s.downgradeKind = static_cast<int>(p.downgrade->kind);
+        s.downgradeAssignment = p.downgrade->assignment;
+    }
+    for(ConstraintId id : p.conflicting) s.conflictKey = s.conflictKey * 1000003u + id.value();
     return s;
 }
 
@@ -784,8 +985,14 @@ void Workspace::captureReports() {
     const Presentation &p = session_->presentation();
     const Presentation::StructureReport &st = p.structure;
     QStringList parts;
+    // The records an entry names, for click-to-select. Accumulated across the
+    // groups a single edit produced, so a click on the joined entry lands the user
+    // on everything it is about.
+    QVariantList entityIds;
+    QVariantList constraintIds;
 
-    // Deletion group: emitted only when its own fields changed.
+    // Deletion group: emitted only when its own fields changed. Its records are
+    // gone, so it names none — a deletion is not click-to-select.
     if(!lastReportSnapshot_.deletionEquals(now) &&
        (p.deletedEntities > 0 || p.deletedRelations > 0 || p.degraded > 0)) {
         QString s = QStringLiteral("Deleted %1 shapes, %2 relations")
@@ -809,12 +1016,26 @@ void Workspace::captureReports() {
         if(st.retargeted > 0) {
             parts << QStringLiteral("Retargeted %1 axis relations to a cluster frame")
                          .arg(st.retargeted);
+            // The frame the retarget created, named so the entry points at the
+            // construction geometry the cluster now belongs to.
+            if(st.frame.valid()) entityIds.append(static_cast<int>(st.frame.value()));
         }
         if(st.rescaled > 0) parts << QStringLiteral("Rescaled %1 dimensions").arg(st.rescaled);
         if(st.straddling > 0) {
             parts << QStringLiteral("%1 dimensions reach outside and will resist").arg(st.straddling);
         }
-        if(st.copied > 0) parts << QStringLiteral("Copied %1 shapes").arg(st.copied);
+        // A transform that only moved geometry still owes the log an entry. The
+        // copied count is named by the operation that produced it, because a
+        // distribute copied nothing — its records are the construction gaps it
+        // added — and reading "Copied N" off the count alone would be wrong.
+        if(st.moved > 0) parts << QStringLiteral("Moved %1 shapes").arg(st.moved);
+        if(st.op == Presentation::StructureOp::Distribute) {
+            parts << QStringLiteral("Distributed the selection evenly");
+        } else if(st.copied > 0) {
+            parts << (st.op == Presentation::StructureOp::Mirror
+                          ? QStringLiteral("Mirrored %1 shapes").arg(st.copied)
+                          : QStringLiteral("Copied %1 shapes").arg(st.copied));
+        }
         if(st.droppedRelations > 0 || st.droppedRegions > 0 || st.droppedTags > 0) {
             parts << QStringLiteral("Dropped %1 relations, %2 fills, %3 tags at the boundary")
                          .arg(st.droppedRelations)
@@ -824,15 +1045,44 @@ void Workspace::captureReports() {
     }
 
     // Crossing: keyed on the edge pair, so a crossing on a different pair reports
-    // even while an earlier one is still standing.
+    // even while an earlier one is still standing. It names the two edges.
     if(!lastReportSnapshot_.crossingEquals(now) && p.crossing) {
         parts << QStringLiteral("Edges cross: intersection points are needed to fill this");
+        entityIds.append(static_cast<int>(p.crossing->first.value()));
+        entityIds.append(static_cast<int>(p.crossing->second.value()));
+    }
+
+    // Forked style: the edit gave the selection its own style rather than mutating
+    // the shared one it was editing. The selection is already the affected
+    // geometry, so the entry names no extra record.
+    if(!lastReportSnapshot_.styleEquals(now) && p.styleForked > 0) {
+        parts << QStringLiteral("Forked style: this selection now has its own style");
+    }
+
+    // Hidden influence: invisible geometry moved something visible. The invisible
+    // operands are what the entry points at, so hidden structure can be found.
+    if(!lastReportSnapshot_.hiddenEquals(now) && !p.hiddenInfluences.empty()) {
+        parts << QStringLiteral("%1 hidden shapes influenced this edit")
+                     .arg(p.hiddenInfluences.size());
+        for(EntityId id : p.hiddenInfluences) entityIds.append(static_cast<int>(id.value()));
+    }
+
+    // Refused imposition: a driving relation could not hold, so the reference
+    // measurement is on offer. The conflicting relations are what it disagreed
+    // with, walkable from the entry.
+    if(!lastReportSnapshot_.downgradeEquals(now) && p.downgrade) {
+        QString s = QStringLiteral("Imposition refused: cannot hold as driving; reference on offer");
+        if(p.conflictAttributed && !p.conflicting.empty()) {
+            s += QStringLiteral(" · conflicts with %1").arg(p.conflicting.size());
+        }
+        parts << s;
+        for(ConstraintId id : p.conflicting) constraintIds.append(static_cast<int>(id.value()));
     }
 
     lastReportSnapshot_ = now;
     if(parts.isEmpty()) return;
     const QString text = parts.join(QStringLiteral("  ·  "));
-    reports_->append(text);
+    reports_->append(text, QString(), entityIds, constraintIds);
     emit reportPosted(text);
 }
 

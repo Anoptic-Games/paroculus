@@ -15,18 +15,26 @@ QVariant ReportsModel::data(const QModelIndex &index, int role) const {
         case TextRole:
         case Qt::DisplayRole: return entry.text;
         case KindRole:        return entry.kind;
+        case EntitiesRole:    return entry.entities;
+        case ConstraintsRole: return entry.constraints;
+        case SelectableRole:  return !entry.entities.isEmpty() || !entry.constraints.isEmpty();
         default:              return {};
     }
 }
 
 QHash<int, QByteArray> ReportsModel::roleNames() const {
-    return {{TextRole, "text"}, {KindRole, "kind"}};
+    return {{TextRole, "text"},
+            {KindRole, "kind"},
+            {EntitiesRole, "entities"},
+            {ConstraintsRole, "constraints"},
+            {SelectableRole, "selectable"}};
 }
 
-void ReportsModel::append(const QString &text, const QString &kind) {
+void ReportsModel::append(const QString &text, const QString &kind, const QVariantList &entities,
+                          const QVariantList &constraints) {
     beginInsertRows(QModelIndex(), static_cast<int>(entries_.size()),
                     static_cast<int>(entries_.size()));
-    entries_.push_back(Entry{text, kind});
+    entries_.push_back(Entry{text, kind, entities, constraints});
     endInsertRows();
     emit countChanged();
 }

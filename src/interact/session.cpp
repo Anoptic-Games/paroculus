@@ -1859,6 +1859,10 @@ void Session::deleteSelection() {
 
     if(journal_->applyStep(*doc_, "delete", std::move(step)) == CommandError::None) {
         selection_.clear();
+        // A deletion happened, whatever its counts came out to: bump the serial so
+        // a surface can tell this deletion from an identically-counted earlier one
+        // and not swallow the second as a no-op.
+        presentation_.deletionSerial++;
         // deleteSelection does not go through refreshSelectionOffers — and may run
         // with a tool up, which would short-circuit it — so the downgrade offer
         // the now-deleted selection named is cleared here.
@@ -2327,6 +2331,9 @@ Session::TransformPreview Session::previewScale(double factor, ValueAnswer value
 bool Session::applyTransform(const TransformStep &step, const char *label) {
     presentation_.structure.clear();
     presentation_.structure.transformError = step.error;
+    // A transform ran, refused or not: bump the serial so a refusal or an
+    // identically-counted repeat is a fresh event rather than a silent one.
+    presentation_.structureSerial++;
     if(!step.ok()) return false;
     if(step.commands.empty()) return false;
 
@@ -2429,10 +2436,12 @@ bool Session::duplicateSelection(double dx, double dy) {
     if(journal_->applyStep(*doc_, "duplicate", std::move(commands)) != CommandError::None) {
         return false;
     }
+    presentation_.structure.op = Presentation::StructureOp::Duplicate;
     presentation_.structure.copied = copy.entities.size();
     presentation_.structure.droppedRelations = copy.droppedConstraints;
     presentation_.structure.droppedRegions = copy.droppedRegions;
     presentation_.structure.droppedTags = copy.droppedTags;
+    presentation_.structureSerial++;
 
     // The copy becomes the selection, so a second duplicate offsets from it
     // rather than laying a third shape over the second. That is what makes this
@@ -2442,9 +2451,14 @@ bool Session::duplicateSelection(double dx, double dy) {
     return true;
 }
 
-bool Session::applyCompound(const CompoundStep &step, const char *label) {
+bool Session::applyCompound(const CompoundStep &step, const char *label,
+                            Presentation::StructureOp op) {
     presentation_.structure.clear();
+    presentation_.structure.op = op;
     presentation_.structure.compoundError = step.error;
+    // A compound ran, refused or not: bump so a refusal or a repeat is a fresh
+    // event, like the transform path.
+    presentation_.structureSerial++;
     if(!step.ok() || step.commands.empty()) return false;
     std::vector<Command> commands = step.commands;
     if(journal_->applyStep(*doc_, label, std::move(commands)) != CommandError::None) {
@@ -2463,7 +2477,8 @@ bool Session::applyCompound(const CompoundStep &step, const char *label) {
 
 bool Session::distributeSelection() {
     recordAction("relation.distribute");
-    return applyCompound(distributeStep(*doc_, selection_.items()), "distribute");
+    return applyCompound(distributeStep(*doc_, selection_.items()), "distribute",
+                         Presentation::StructureOp::Distribute);
 }
 
 bool Session::mirrorSelection() {
@@ -2474,7 +2489,8 @@ bool Session::mirrorSelection() {
         presentation_.structure.compoundError = CompoundError::NoAxis;
         return false;
     }
-    return applyCompound(mirrorStep(*doc_, selection_.items(), axis), "mirror");
+    return applyCompound(mirrorStep(*doc_, selection_.items(), axis), "mirror",
+                         Presentation::StructureOp::Mirror);
 }
 
 std::vector<TagId> Session::selectedTags() const {

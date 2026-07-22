@@ -11,10 +11,17 @@
 // append-only so there is no diffing: a new event is one inserted row and the
 // newest row is the toast's subject. Toolkit-bound and shell-only, referenced
 // from QML but constructed by its Workspace.
+//
+// An entry that names records carries them: the entity and constraint ids it is
+// about, so the panel can select them on a click — "where it names records,
+// click-to-select." An entry that names none (a deletion, whose records are
+// gone; an export loss, which names a file) carries empty lists and is not
+// selectable. The distinction is data on the row, not a second list.
 #pragma once
 
 #include <QAbstractListModel>
 #include <QString>
+#include <QVariantList>
 #include <QVector>
 #include <QtQml/qqmlregistration.h>
 
@@ -27,7 +34,13 @@ class ReportsModel : public QAbstractListModel {
     Q_PROPERTY(int count READ rowCount NOTIFY countChanged)
 
 public:
-    enum Roles { TextRole = Qt::UserRole + 1, KindRole };
+    enum Roles {
+        TextRole = Qt::UserRole + 1,
+        KindRole,
+        EntitiesRole,
+        ConstraintsRole,
+        SelectableRole
+    };
 
     explicit ReportsModel(QObject *parent = nullptr);
 
@@ -36,8 +49,11 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     // Appends one entry. `kind` is a coarse tag (deletion, structure, refusal)
-    // for later colouring and filtering; empty is fine at this stage.
-    void append(const QString &text, const QString &kind = QString());
+    // for later colouring and filtering; empty is fine at this stage. `entities`
+    // and `constraints` are the records the entry names, for click-to-select;
+    // both empty is an entry that names no live record and is not selectable.
+    void append(const QString &text, const QString &kind = QString(),
+                const QVariantList &entities = {}, const QVariantList &constraints = {});
 
     Q_INVOKABLE void clear();
 
@@ -51,6 +67,8 @@ private:
     struct Entry {
         QString text;
         QString kind;
+        QVariantList entities;
+        QVariantList constraints;
     };
     QVector<Entry> entries_;
 };

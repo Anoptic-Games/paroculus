@@ -127,6 +127,16 @@ class Workspace : public QObject {
     Q_PROPERTY(bool gridVisible READ gridVisible NOTIFY changed)
     Q_PROPERTY(bool inspectMode READ inspectMode NOTIFY changed)
 
+    // The U3 developer-surface projections. Whether a recording is being written,
+    // for the Developer menu's start/stop state, and the replay progress the
+    // overlay reads while a script plays into this workspace. All presentation:
+    // recording is teardown-written and replay is transient, neither touching the
+    // document or the journal.
+    Q_PROPERTY(bool recording READ recording NOTIFY changed)
+    Q_PROPERTY(bool replaying READ playing NOTIFY changed)
+    Q_PROPERTY(int replayStep READ replayStep NOTIFY changed)
+    Q_PROPERTY(int replayTotal READ replayTotal NOTIFY changed)
+
 public:
     explicit Workspace(QObject *parent = nullptr);
     ~Workspace() override;
@@ -198,6 +208,9 @@ public:
     bool extensions() const { return extensions_; }
     bool gridVisible() const { return gridVisible_; }
     bool inspectMode() const { return inspectMode_; }
+    bool recording() const { return recorder_ != nullptr; }
+    int replayStep() const { return static_cast<int>(scriptStep_); }
+    int replayTotal() const { return static_cast<int>(script_.steps.size()); }
     // The packed background for render, and the axis frames the canvas draws.
     // C++-facing, for SketchView: the canvas reads these to fill the Adornment.
     uint32_t backgroundColor() const { return background_; }
@@ -221,6 +234,36 @@ public:
     // and re-applied whenever the session is replaced, so a loaded or replayed
     // document honours it too.
     Q_INVOKABLE void setGlyphDensity(double multiplier);
+
+    // ---- Interchange (U3) ----
+    // The loss the bake would cost, computed from the bake and shown before a
+    // write so the lossy step is consented to rather than discovered. Const: a
+    // preview reads the document and touches no file. The map carries the geometry
+    // that survives (strokes, fills) and the structure that does not (constraints,
+    // parameters, flattened and broken regions, tags), the counts the bake already
+    // holds. Margin and precision are the SvgOptions the dialog collects; they
+    // scale coordinates, not the loss, and are carried so one call answers the
+    // whole dialog.
+    Q_INVOKABLE QVariantMap exportReport(double margin, int precision) const;
+    // Bakes the visible document at its current pose and writes the SVG to `path`,
+    // checked end to end — a short write is a failed export, surfaced loudly
+    // through exportFailed rather than a truncated file passed off as done. The
+    // background colour is never baked, so it never reaches the bytes. On success
+    // the loss report joins the reports model and flashes as a toast, the same
+    // no-silent-changes surface every producer reaches. Returns whether it landed.
+    Q_INVOKABLE bool exportSvg(const QString &path, double margin, int precision);
+
+    // Selects the records a reports entry names, so a click on it lands the user on
+    // the geometry it is about — "where it names records, click-to-select." Not
+    // recorded: a report is a recall surface over what an edit already did, the
+    // same seam selectRelation uses. Empty lists clear the selection.
+    Q_INVOKABLE void selectReported(const QVariantList &entities, const QVariantList &constraints);
+
+    // Stops an in-progress recording and writes the file now, rather than waiting
+    // for teardown — the Developer menu's Stop. Idempotent: a stop with nothing
+    // recording does nothing. After it, the destructor writes nothing, since the
+    // recorder is detached.
+    Q_INVOKABLE void stopRecording();
 
     // ---- QML entrances (the registry, and the state machine) ----
     Q_INVOKABLE QVariantList palette(const QString &query) const;
@@ -255,6 +298,15 @@ public:
     // on failure the workspace is untouched, exactly as the loader promises. The
     // path names where it came from and seeds title, dirty and the sidecar.
     LoadResult loadFrom(const std::string &text, const QString &path);
+    // Adopts a traced document into this workspace: the other half of import,
+    // where the manager has already read and traced the SVG. The document arrives
+    // free of any file — an import is new authored content, not a reopened file —
+    // so the workspace is left untitled and dirty, which keeps it from being taken
+    // for a pristine scratch tab the next Open would reuse and discard. `report`
+    // is the trace's count and the geometry-arrives-free statement, appended to the
+    // reports model and flashed. The view re-fits to frame the trace.
+    void adoptTraced(Document traced, const QString &report);
+
     // Serializes the current document. Const: a save is not an edit.
     std::string serializeDocument() const;
     // Marks the current revision as the saved one and records the path, so the
@@ -302,6 +354,11 @@ signals:
     // selected the anchor's operand, so the inspector's relation list is filtered
     // to it the moment it is shown.
     void revealInspector();
+    // An export could not be written — the destination did not open, or a short
+    // write left it truncated. Surfaced as a toast, never a silent half-file: a
+    // file the user asked for that did not land is exactly the no-silent-changes
+    // policy's business.
+    void exportFailed(const QString &path);
 
 private:
     void stepScript();
@@ -313,6 +370,11 @@ private:
     void captureReports();
     void pump();
     void kickPumpIfBusy();
+    // Re-points an active recorder at the current session after a document swap.
+    // A script has one starting document, so a recording that spanned an open
+    // would replay its steps against the wrong geometry — the recorder is reset
+    // and its base re-captured, restarting the recording from the arrived document.
+    void reattachRecorder();
 
     Document document_;
     UndoJournal journal_;
@@ -323,6 +385,12 @@ private:
     // The revision the document was last saved at. dirty() is revision != this.
     // Zero for a fresh empty document, which reads clean until the first edit.
     uint64_t savedRevision_ = 0;
+    // Content that has no journal revision to be past — a traced import is new
+    // authored geometry with an empty journal — is still unsaved. This forces
+    // dirty until a save clears it, so an import is not mistaken for a pristine
+    // scratch tab and reused away by the next Open. Cleared by markSaved and by
+    // any lifecycle that installs a saved-from-disk document (loadFrom, replay).
+    bool modified_ = false;
     // The ordinal for an untitled document's tab label, assigned by the manager.
     int untitledOrdinal_ = 0;
 
@@ -366,28 +434,62 @@ private:
     // is therefore per group, and the crossing carries its edge-pair identity
     // rather than a bool, so a crossing on a different pair is a new event.
     struct ReportSnapshot {
+        // A monotonic per-operation serial keys deletion and structure rather than
+        // their count fields, so an identically-counted repeat (delete a lone
+        // point, then another) is still a fresh event and not swallowed as a no-op.
+        // The count fields ride along for the text only.
+        size_t deletionSerial = 0, structureSerial = 0;
         size_t deletedEntities = 0, deletedRelations = 0, degraded = 0;
-        int transformError = 0, compoundError = 0;
+        int transformError = 0, compoundError = 0, structureOp = 0;
+        size_t moved = 0;
         size_t retargeted = 0, rescaled = 0, straddling = 0, copied = 0;
         size_t droppedRelations = 0, droppedRegions = 0, droppedTags = 0;
+        uint32_t frame = 0;
         uint64_t crossingA = 0, crossingB = 0;
+        // Forked style: the count and the record, so an edit that forks a
+        // different style than the last one reports again.
+        size_t styleForked = 0;
+        uint32_t forkedStyle = 0;
+        // Hidden influence: how many invisible operands moved something visible,
+        // folded with their ids so a different set is a new event. The ids
+        // themselves ride the report for click-to-select and are snapshotted here
+        // only to decide whether to emit.
+        size_t hiddenCount = 0;
+        uint64_t hiddenKey = 0;
+        // A refused driving imposition with the reference measurement on offer.
+        // The downgrade is set only by the real impose and set-value paths — the
+        // const preview query never touches it — so a transition to present is an
+        // edit that refused, never a hover. Keyed with the conflicting set so a
+        // refusal against different relations reports again.
+        bool downgraded = false;
+        int downgradeKind = 0;
+        size_t downgradeAssignment = 0;
+        uint64_t conflictKey = 0;
 
+        // Keyed on the serial: a deletion op with the same counts as the last one
+        // still differs here, so the second is reported rather than swallowed.
         bool deletionEquals(const ReportSnapshot &o) const {
-            return deletedEntities == o.deletedEntities &&
-                   deletedRelations == o.deletedRelations && degraded == o.degraded;
+            return deletionSerial == o.deletionSerial;
         }
         bool structureEquals(const ReportSnapshot &o) const {
-            return transformError == o.transformError && compoundError == o.compoundError &&
-                   retargeted == o.retargeted && rescaled == o.rescaled &&
-                   straddling == o.straddling && copied == o.copied &&
-                   droppedRelations == o.droppedRelations && droppedRegions == o.droppedRegions &&
-                   droppedTags == o.droppedTags;
+            return structureSerial == o.structureSerial;
         }
         bool crossingEquals(const ReportSnapshot &o) const {
             return crossingA == o.crossingA && crossingB == o.crossingB;
         }
+        bool styleEquals(const ReportSnapshot &o) const {
+            return styleForked == o.styleForked && forkedStyle == o.forkedStyle;
+        }
+        bool hiddenEquals(const ReportSnapshot &o) const {
+            return hiddenCount == o.hiddenCount && hiddenKey == o.hiddenKey;
+        }
+        bool downgradeEquals(const ReportSnapshot &o) const {
+            return downgraded == o.downgraded && downgradeKind == o.downgradeKind &&
+                   downgradeAssignment == o.downgradeAssignment && conflictKey == o.conflictKey;
+        }
         bool operator==(const ReportSnapshot &o) const {
-            return deletionEquals(o) && structureEquals(o) && crossingEquals(o);
+            return deletionEquals(o) && structureEquals(o) && crossingEquals(o) &&
+                   styleEquals(o) && hiddenEquals(o) && downgradeEquals(o);
         }
     };
     ReportSnapshot lastReportSnapshot_;

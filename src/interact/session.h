@@ -84,6 +84,14 @@ struct Presentation {
     // named and the geometry doing it can be pointed at.
     std::vector<EntityId> hiddenInfluences;
 
+    // Which structure operation produced the report, so a surface can name it
+    // rather than infer it from the fields. A copy sets `copied` and so does a
+    // mirror and a distribute, but a distribute copied nothing — its added
+    // records are the construction gap segments — so a report that read "Copied N
+    // shapes" off the count alone would be actively wrong. None for the transforms
+    // (rotate/scale), whose report is carried by `moved` and the others.
+    enum class StructureOp : uint8_t { None, Duplicate, Mirror, Distribute };
+
     // What the last structure operation did beyond moving geometry.
     //
     // Counted rather than confirmed, for the same reason deletion is: a
@@ -91,6 +99,7 @@ struct Presentation {
     // bring three, has done something the user is entitled to know about without
     // being asked to approve it. Cleared by the next one, never accumulated.
     struct StructureReport {
+        StructureOp op = StructureOp::None;
         size_t moved = 0;
         size_t retargeted = 0;
         size_t rescaled = 0;
@@ -114,6 +123,16 @@ struct Presentation {
         void clear() { *this = StructureReport(); }
     };
     StructureReport structure;
+
+    // Monotonic tallies of how many deletion and structure operations have run,
+    // bumped once per operation regardless of what the operation's counts came out
+    // to. A surface that watched the count fields alone could not tell an identical
+    // operation repeated (delete one lone point, then delete another) from no
+    // operation at all, and would report the first and swallow the second — the
+    // silent change the whole surface exists to rule out. These live outside
+    // StructureReport so its clear() does not reset them; they only ever rise.
+    size_t deletionSerial = 0;
+    size_t structureSerial = 0;
 
     // Regions and tags that no longer have the parts to mean what they say.
     // Recomputed per refresh from the document, never accumulated: a region is
@@ -904,7 +923,7 @@ private:
     // One place per family, because rotate, scale and translate owe the user the
     // same report and a second copy of it is a report that drifts.
     bool applyTransform(const TransformStep &step, const char *label);
-    bool applyCompound(const CompoundStep &step, const char *label);
+    bool applyCompound(const CompoundStep &step, const char *label, Presentation::StructureOp op);
     bool setRectangleSide(TagId tag, bool width, double value);
 
     // One styleable record the selection reaches: a non-construction entity or a

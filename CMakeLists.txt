@@ -301,6 +301,7 @@ qt_add_qml_module(paroculus
         src/shell/qml/SlotField.qml
         src/shell/qml/StyleSection.qml
         src/shell/qml/StyleBar.qml
+        src/shell/qml/ExportDialog.qml
 )
 
 install(TARGETS paroculus BUNDLE DESTINATION . RUNTIME DESTINATION bin)
@@ -401,6 +402,7 @@ if(PAROCULUS_TESTS)
         tests/shell/sidecar.cpp
         tests/shell/workspace.cpp
         tests/shell/panels.cpp
+        tests/shell/reports.cpp
         src/shell/sketchview.cpp
         src/shell/sketchview.h
         src/app/scriptplay.cpp
@@ -420,6 +422,11 @@ if(PAROCULUS_TESTS)
     target_include_directories(paroculus-shell-tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/shell")
+    # The import-parity test traces the checked-in corpus SVG, found in the source
+    # tree whatever directory CTest runs from — the same reason paroculus-tests
+    # carries this definition.
+    target_compile_definitions(paroculus-shell-tests PRIVATE
+        PAROCULUS_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus")
     # Offscreen QPA for the same reason the selftest needs it: QKeyEvent's device
     # default and QGuiApplication both resolve through a platform plugin, and the
     # sandbox has no display server. The checkPhase already exports QT_PLUGIN_PATH.
@@ -454,15 +461,34 @@ if(PAROCULUS_TESTS)
     # reason and in case a path ever grows a Qt dependency.
     add_test(NAME cli-export
              COMMAND paroculus --export "${CMAKE_CURRENT_BINARY_DIR}/cli-export.svg")
+    # Export a named document rather than the demo: the positional argument is the
+    # bake's input. document.paro is the corpus SVG traced to a document, a real
+    # drawing with strokes and a circle to bake.
+    add_test(NAME cli-export-doc
+             COMMAND paroculus "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/document.paro"
+                     --export "${CMAKE_CURRENT_BINARY_DIR}/cli-export-doc.svg")
     add_test(NAME cli-import
              COMMAND paroculus --import "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/import.svg")
     add_test(NAME cli-conflicting-flags
              COMMAND paroculus --selftest --export "${CMAKE_CURRENT_BINARY_DIR}/cli-unused.svg")
+    # A named document that does not exist is a failed export, not a demo bake.
+    add_test(NAME cli-export-missing
+             COMMAND paroculus "${CMAKE_CURRENT_BINARY_DIR}/no-such-document.paro"
+                     --export "${CMAKE_CURRENT_BINARY_DIR}/cli-unused-export.svg")
+    # An SVG that does not exist is a failed import.
+    add_test(NAME cli-import-missing
+             COMMAND paroculus --import "${CMAKE_CURRENT_BINARY_DIR}/no-such-image.svg")
+    # A document argument beside --import is refused: import names its own input.
+    add_test(NAME cli-import-with-doc
+             COMMAND paroculus "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/document.paro"
+                     --import "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/import.svg")
     add_test(NAME cli-bad-script
              COMMAND paroculus --script "${CMAKE_CURRENT_BINARY_DIR}/no-such-file.paro")
-    set_tests_properties(cli-export cli-import cli-conflicting-flags cli-bad-script
+    set_tests_properties(cli-export cli-export-doc cli-import cli-conflicting-flags
+        cli-export-missing cli-import-missing cli-import-with-doc cli-bad-script
         PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    set_tests_properties(cli-conflicting-flags cli-bad-script PROPERTIES WILL_FAIL TRUE)
+    set_tests_properties(cli-conflicting-flags cli-export-missing cli-import-missing
+        cli-import-with-doc cli-bad-script PROPERTIES WILL_FAIL TRUE)
 
     # Link-boundary canaries. Each is a translation unit that links one layer
     # target and then reaches for a header belonging to a layer that target must

@@ -5,6 +5,7 @@
 //   paroculus --script FILE    replay a recorded session in the window
 //   paroculus --record FILE    write everything this session does to a script
 //   paroculus --export FILE    bake the demo to SVG and exit (headless)
+//   paroculus DOC --export FILE bake document DOC to SVG and exit (headless)
 //   paroculus --import FILE     trace geometry out of an SVG to stdout and exit
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
@@ -28,19 +29,41 @@
 
 namespace {
 
-// Bakes the demo document to SVG. Headless — no window, no Qt — so it is the
-// small end-to-end demo the exit criterion asks be recorded, and a file a user
-// can open in an external viewer to check the bake against the screen.
-int runExport(const char *path) {
-    paroculus::Document doc = paroculus::demoDocument(1.0);
+// Bakes a document to SVG. Headless — no window, no Qt — so it is the small
+// end-to-end demo the exit criterion asks be recorded, and a file a user can open
+// in an external viewer to check the bake against the screen.
+//
+// `inPath` names the document to bake, or is null for the demo — the round-trip
+// demo (bake the demo, re-import it) stays reachable with no argument, while a
+// named document lets the CLI bake a real drawing rather than only the fixture.
+// A named document is loaded through the same parse-or-refuse discipline the shell
+// uses, so a malformed one is a failed export rather than a half-baked file.
+int runExport(const char *outPath, const char *inPath) {
+    paroculus::Document doc;
+    if(inPath != nullptr) {
+        std::ifstream in(inPath);
+        if(!in) {
+            std::fprintf(stderr, "cannot open %s\n", inPath);
+            return 2;
+        }
+        std::stringstream buffer;
+        buffer << in.rdbuf();
+        const paroculus::LoadResult result = paroculus::deserialize(buffer.str(), doc);
+        if(!result) {
+            std::fprintf(stderr, "%s (line %zu)\n", result.error.c_str(), result.line);
+            return 2;
+        }
+    } else {
+        doc = paroculus::demoDocument(1.0);
+    }
     paroculus::SolveContext context = paroculus::SolveContext::forWholeDocument(doc);
     paroculus::solve(doc, context);
     paroculus::Pose pose(doc);
     pose.overlay(context.params());
 
-    std::ofstream out(path);
+    std::ofstream out(outPath);
     if(!out) {
-        std::fprintf(stderr, "cannot write %s\n", path);
+        std::fprintf(stderr, "cannot write %s\n", outPath);
         return 2;
     }
     out << paroculus::writeSvg(doc, pose);
@@ -48,10 +71,10 @@ int runExport(const char *path) {
     // testing that the stream opened is not testing that the bake landed.
     out.close();
     if(!out) {
-        std::fprintf(stderr, "failed writing %s\n", path);
+        std::fprintf(stderr, "failed writing %s\n", outPath);
         return 2;
     }
-    std::printf("exported demo to %s\n", path);
+    std::printf("exported %s to %s\n", inPath != nullptr ? inPath : "demo", outPath);
     return 0;
 }
 
@@ -140,12 +163,25 @@ int main(int argc, char *argv[]) {
         // to open and --record both modify the live interactive session, so they
         // combine with each other (record the edits to an opened document) but not
         // with any batch mode.
+        //
+        // The one exception: a positional FILE beside --export is that export's
+        // input document, not an interactive open — the CLI baking a real drawing
+        // rather than the demo. So the positional does not count as interactive
+        // when --export consumes it, and it is refused beside --import, whose input
+        // is the SVG it already names.
         const int batch = static_cast<int>(wantSelftest) + (scriptPath != nullptr) +
                           (exportPath != nullptr) + (importPath != nullptr);
-        const int interactive = (recordPath != nullptr) + (openPath != nullptr);
+        const bool exportConsumesFile = (exportPath != nullptr && openPath != nullptr);
+        const int interactive =
+            (recordPath != nullptr) + ((openPath != nullptr && !exportConsumesFile) ? 1 : 0);
         if(batch > 1) {
             std::fprintf(stderr,
                          "--selftest, --script, --export and --import are mutually exclusive\n");
+            return 2;
+        }
+        if(importPath != nullptr && openPath != nullptr) {
+            std::fprintf(stderr, "--import names its own input; a document argument cannot combine "
+                                 "with it\n");
             return 2;
         }
         if(batch == 1 && interactive > 0) {
@@ -156,8 +192,9 @@ int main(int argc, char *argv[]) {
         }
     }
     // Export and import are headless projections that run and exit before any
-    // window: no Qt is needed to bake a file or trace one.
-    if(exportPath != nullptr) return runExport(exportPath);
+    // window: no Qt is needed to bake a file or trace one. Export takes its input
+    // from a positional document argument, or the demo when none is given.
+    if(exportPath != nullptr) return runExport(exportPath, openPath);
     if(importPath != nullptr) return runImport(importPath);
 
     if(recordPath != nullptr) paroculus::pendingScript::setRecordPath(recordPath);

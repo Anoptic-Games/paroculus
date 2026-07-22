@@ -91,6 +91,21 @@ public:
     // on a plain Save.
     Q_INVOKABLE QString activePath() const;
 
+    // ---- Interchange and developer surface (U3) ----
+    // Traces an SVG into a new workspace, activated: geometry arrives free and
+    // unconstrained, and the traced and skipped counts land in that workspace's
+    // reports panel. Reuses a pristine scratch tab exactly as Open does, so an
+    // untouched empty tab is not left beside the import. On a read failure nothing
+    // opens and openFailed carries the diagnostic. Returns whether it traced.
+    Q_INVOKABLE bool importSvg(const QString &path);
+
+    // Replays a recorded session into a fresh workspace, activated, with the
+    // progress overlay the workspace projects. A new tab always — a replay is a
+    // performance of another session, not an edit to the current document — so it
+    // never disturbs the active one. On a parse failure nothing opens and
+    // openFailed carries the diagnostic. Returns whether it started.
+    Q_INVOKABLE bool replayScript(const QString &path);
+
     // The recent files, most recent first, and the default directory for the
     // open and save dialogs. Projections of settings; empty without one.
     Q_INVOKABLE QStringList recentFiles() const;

@@ -143,6 +143,9 @@ ApplicationWindow {
         // A ⋯ overflow pick reveals the inspector — the session already selected
         // the anchor's operand, so the panel opens filtered to that crowd.
         function onRevealInspector() { rightDock.inspectorVisible = true }
+        // A file the user asked for that did not land, surfaced loudly rather than
+        // as a silent half-file.
+        function onExportFailed(path) { toast.show(qsTr("Export failed: %1").arg(path)) }
     }
 
     // ---- Menu bar ----
@@ -158,6 +161,9 @@ ApplicationWindow {
             MenuSeparator {}
             Action { text: qsTr("Save"); shortcut: "Ctrl+S"; onTriggered: root.doSave() }
             Action { text: qsTr("Save As…"); shortcut: "Ctrl+Shift+S"; onTriggered: { saveDialog.closeAfterSave = false; saveDialog.open() } }
+            MenuSeparator {}
+            Action { text: qsTr("Export SVG…"); enabled: App.active; onTriggered: exportDialog.openFresh() }
+            Action { text: qsTr("Import SVG…"); onTriggered: importDialog.open() }
             MenuSeparator {}
             Action { text: qsTr("Close Tab"); shortcut: "Ctrl+W"; onTriggered: root.requestClose(App.activeIndex) }
             Action { text: qsTr("Quit"); shortcut: "Ctrl+Q"; onTriggered: root.close() }
@@ -223,6 +229,24 @@ ApplicationWindow {
             MenuSeparator {}
             Action { text: qsTr("Command Palette…"); shortcut: "Ctrl+P"; onTriggered: commandPalette.visible ? commandPalette.close() : commandPalette.open() }
         }
+        // The developer instrument this whole surface is tested with: record a
+        // session to a file, and replay one into a fresh workspace. First-class
+        // rather than hidden — hiding them would be self-sabotage — but grouped
+        // apart from the editing menus. Record and Stop are one row that tracks the
+        // active workspace's recording state.
+        Menu {
+            title: qsTr("Developer")
+            MenuItem {
+                text: App.active && App.active.recording ? qsTr("Stop Recording")
+                                                         : qsTr("Start Recording…")
+                enabled: App.active
+                onTriggered: {
+                    if (App.active.recording) App.active.stopRecording()
+                    else recordDialog.open()
+                }
+            }
+            MenuItem { text: qsTr("Replay Script…"); onTriggered: replayDialog.open() }
+        }
     }
 
     // Ctrl+Tab cycles the active tab. Kept as an application shortcut behind the
@@ -246,6 +270,35 @@ ApplicationWindow {
             open()
         }
         onAccepted: if (App.active) App.active.setBackground(selectedColor.toString())
+    }
+
+    // ---- Interchange and developer dialogs ----
+    // The export dialog shows the loss before it writes; the write is exportSvg's,
+    // checked end to end. Import opens a new workspace with the trace and reports
+    // its counts in the reports panel. Record and replay are the developer surface.
+    ExportDialog { id: exportDialog }
+    FileDialog {
+        id: importDialog
+        title: qsTr("Import SVG")
+        nameFilters: ["SVG images (*.svg)", "All files (*)"]
+        currentFolder: "file://" + App.defaultDirectory()
+        onAccepted: App.importSvg(root.pathOf(selectedFile))
+    }
+    FileDialog {
+        id: recordDialog
+        title: qsTr("Record session to")
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "paro"
+        nameFilters: ["Paroculus scripts (*.paro)", "All files (*)"]
+        currentFolder: "file://" + App.defaultDirectory()
+        onAccepted: if (App.active) App.active.startRecording(root.pathOf(selectedFile))
+    }
+    FileDialog {
+        id: replayDialog
+        title: qsTr("Replay script")
+        nameFilters: ["Paroculus scripts (*.paro)", "All files (*)"]
+        currentFolder: "file://" + App.defaultDirectory()
+        onAccepted: App.replayScript(root.pathOf(selectedFile))
     }
 
     // The glyph-density preference is application-wide: the manager stores it and
@@ -480,6 +533,23 @@ ApplicationWindow {
                         text: qsTr("inspect — Esc to exit")
                     }
                     MouseArea { anchors.fill: parent; onClicked: if (App.active) App.active.setInspectMode(false) }
+                }
+
+                // The replay progress overlay: a calm band while a recorded session
+                // plays into this workspace, the developer instrument's feedback.
+                // A last-coherent-pose is always on screen; this only says which
+                // step the replay has reached.
+                Rectangle {
+                    visible: App.active && App.active.replaying
+                    anchors { bottom: parent.bottom; horizontalCenter: parent.horizontalCenter; bottomMargin: 24 }
+                    width: replayLabel.width + 28; height: 28; radius: 14
+                    color: Theme.surfaceRaised; border.color: Theme.border
+                    Text {
+                        id: replayLabel; anchors.centerIn: parent
+                        color: Theme.textBright; font.pixelSize: 11; font.family: "monospace"
+                        text: App.active ? qsTr("▶ replaying  step %1 of %2")
+                                              .arg(App.active.replayStep).arg(App.active.replayTotal) : ""
+                    }
                 }
 
                 // The canvas context menu: the presentation toggles the View menu
