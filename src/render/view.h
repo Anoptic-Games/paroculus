@@ -136,7 +136,10 @@ struct ViewState {
     //
     // sizeIsReal: the caller's word that this viewport is one worth keeping a
     //   framing from. A shell item has no size during construction, and a
-    //   framing fitted against 1x1 must stay provisional rather than latch.
+    //   framing fitted against 1x1 must stay provisional rather than latch. Not
+    //   sufficient on its own: a layout pass can report a real-but-tiny viewport
+    //   a few pixels tall, so frameOnce also holds off latching below an internal
+    //   floor — otherwise a transient crushes the framing and freezes it.
     void frameOnce(const Pose &pose, int width, int height, bool sizeIsReal);
 
     // Zooms to `factor`, holding the document point under `cursor` where it is

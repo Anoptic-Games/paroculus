@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -483,6 +484,31 @@ TEST_CASE("a provisional framing does not latch") {
     const Eigen::Vector2d corner = state.transform(W, H).toScreen(Point{100.0, 100.0});
     CHECK(corner.x() > W * 0.5);
     CHECK(corner.x() < W);
+}
+
+TEST_CASE("a real-but-tiny viewport does not latch a framing") {
+    // A layout pass hands the item a real-sized-but-still-settling viewport a few
+    // pixels tall, with sizeIsReal true. Fitting the empty new-tab document into
+    // three pixels of height is a scale so small the first drag spanned tens of
+    // thousands of document units, and latching it froze that view — the canvas
+    // reported 1x zoom while a subset-of-the-surface drag ran off to 60000, and
+    // only resetView escaped. The framing must stay provisional until the
+    // viewport is one worth keeping.
+    Document doc;  // empty: the new-tab case, where the fit follows the viewport
+                   // and a degenerate one is catastrophic.
+
+    ViewState state;
+    state.frameOnce(Pose(doc), 800, 3, true);
+    CHECK(!state.framed);
+
+    state.frameOnce(Pose(doc), W, H, true);
+    CHECK(state.framed);
+    // Half the viewport maps to a modest document span, not the tens of thousands
+    // the crushed scale produced.
+    const ViewTransform view = state.transform(W, H);
+    const Point left = view.toDocument(Eigen::Vector2d(W * 0.25, H * 0.5));
+    const Point right = view.toDocument(Eigen::Vector2d(W * 0.75, H * 0.5));
+    CHECK(std::abs(right.x - left.x) < 5000.0);
 }
 
 TEST_CASE("fitView frames a circle by its rim, not by its centre") {

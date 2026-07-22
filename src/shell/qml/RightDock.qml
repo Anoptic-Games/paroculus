@@ -7,8 +7,8 @@ import Paroculus
 // window lock freezes the affordances. Owns the lock (locked) and the reserved
 // bottom zone's visibility (bottomDockVisible); the frame's View menu drives
 // those and the per-panel visibility aliases, and the frame's bottom dock binds
-// its visibility here. The dock hides when every panel is closed, so the canvas
-// is the largest thing on screen at every default.
+// its visibility here. The dock collapses to nothing when every panel is closed,
+// so the canvas is the largest thing on screen at every default.
 ColumnLayout {
     id: rightDock
     property bool locked: false
@@ -16,11 +16,18 @@ ColumnLayout {
     property alias layersVisible: layersPanel.visible
     property alias inspectorVisible: inspectorPanel.visible
     property alias reportsVisible: reportsPanel.visible
+    // Empty means zero width, never hidden. A Layout that toggles its own
+    // visibility does not give a re-shown child its size back — a reopened panel
+    // stayed a true visible property with no pixels, so a user clicking twice to
+    // "fix" it landed on closed and saved it closed, which is why displaying a
+    // closed panel had become impossible across runs. Collapsing the width
+    // instead keeps the container laid out the whole time.
+    readonly property bool anyOpen: layersPanel.visible || inspectorPanel.visible
+                                    || reportsPanel.visible
     Layout.fillHeight: true
-    Layout.preferredWidth: 224
-    Layout.margins: 8
+    Layout.preferredWidth: anyOpen ? 224 : 0
+    Layout.margins: anyOpen ? 8 : 0
     spacing: 8
-    visible: layersPanel.visible || inspectorPanel.visible || reportsPanel.visible
 
     // The default layout, in code, so reset works with no settings file at all.
     function resetPanels() {

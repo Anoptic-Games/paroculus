@@ -56,6 +56,15 @@ constexpr float GLYPH_STROKE = 1.6f;
 
 constexpr double CONTENT_WIDTH = 120.0;
 
+// The smallest viewport worth latching a framing from. A construction 0x0 clamps
+// to 1x1 and a layout pass can hand the item a viewport a few pixels tall before
+// it settles — both arrive with the caller's word that the size is real. Fitting
+// the default content into a handful of pixels is a scale so small the first drag
+// spans tens of thousands of document units, and latching it freezes that
+// degenerate view until resetView clears it. The real canvas is hundreds of
+// pixels, so any dimension below this floor is Qt still settling.
+constexpr int VIEWPORT_FLOOR = 32;
+
 // A fill with no style of its own. Stage 6 gives regions their styling; until
 // then a region reads as the outline it belongs to, translucent enough that
 // what is underneath still shows — which is the honest look for a fill that is
@@ -461,7 +470,11 @@ ViewTransform ViewState::transform(double width, double height) const {
 void ViewState::frameOnce(const Pose &pose, int width, int height, bool sizeIsReal) {
     if(framed) return;
     base = fitView(pose, width, height);
-    framed = sizeIsReal;
+    // Latch only against a viewport large enough to be the real editing surface.
+    // sizeIsReal alone let a layout transient a few pixels tall — which passes
+    // the caller's width>0 test — freeze a crushed framing that reported 1x zoom
+    // while a small drag spanned tens of thousands of units. See VIEWPORT_FLOOR.
+    framed = sizeIsReal && width >= VIEWPORT_FLOOR && height >= VIEWPORT_FLOOR;
 }
 
 void ViewState::zoomAt(const Eigen::Vector2d &cursor, double factor, double width,
