@@ -1,6 +1,7 @@
 #include "render/view.h"
 
 #include "core/composition.h"
+#include "core/direction.h"
 #include "core/measure.h"
 #include "core/tags.h"
 #include "render/typeface.h"
@@ -49,6 +50,19 @@ constexpr float SELECTED_STROKE_WIDTH = 3.0f;
 constexpr SkColor GLYPH = SkColorSetARGB(0xcc, 0x9a, 0xb0, 0xc8);
 constexpr SkColor GLYPH_FRESH = SkColorSetRGB(0x7c, 0xe0, 0xa8);
 constexpr SkColor GLYPH_GHOST = SkColorSetARGB(0x88, 0x7c, 0xe0, 0xa8);
+// The mnemonic beside an unvalued mark when the budget is loose, dimmer than the
+// dimension text so a value still reads as the louder label.
+constexpr SkColor GLYPH_LABEL = SkColorSetARGB(0xaa, 0x9a, 0xb0, 0xc8);
+constexpr float GLYPH_LABEL_SIZE = 9.0f;
+
+// A segment's extended carrier line, and the brighter draw for the hovered
+// segment's declared-direction class. Dimmer than construction, because an
+// extension is a reference the eye consults rather than geometry it reads.
+constexpr SkColor EXTENSION = SkColorSetARGB(0x2e, 0x8a, 0x93, 0xa6);
+constexpr SkColor EXTENSION_CLASS = SkColorSetARGB(0x88, 0x8a, 0x93, 0xa6);
+// A reference frame's axes — the document frame or a cluster frame — drawn as
+// construction, because that is what a frame is.
+constexpr SkColor AXIS_FRAME = SkColorSetARGB(0x66, 0x8a, 0x93, 0xa6);
 
 // Adorner sizes, in logical pixels: a glyph is a glyph at every magnification.
 constexpr float GLYPH_SIZE = 4.5f;
@@ -487,6 +501,21 @@ void ViewState::zoomAt(const Eigen::Vector2d &cursor, double factor, double widt
     pan += cursor - transform(width, height).toScreen(anchor);
 }
 
+void ViewState::resize(double oldWidth, double oldHeight, double newWidth, double newHeight) {
+    // Before the framing latches the base is provisional and the pan means
+    // nothing, so there is nothing to preserve; a degenerate size has no centre.
+    if(!framed) return;
+    if(!(oldWidth > 0.0) || !(oldHeight > 0.0) || !(newWidth > 0.0) || !(newHeight > 0.0)) return;
+
+    const Eigen::Vector2d oldCentre(oldWidth * 0.5, oldHeight * 0.5);
+    const Eigen::Vector2d newCentre(newWidth * 0.5, newHeight * 0.5);
+    // The document point under the old viewport centre must land under the new
+    // one. Same arithmetic as zoomAt: pan is outermost, so the difference between
+    // where it lands and where it must is the correction.
+    const Point anchor = transform(oldWidth, oldHeight).toDocument(oldCentre);
+    pan += newCentre - transform(newWidth, newHeight).toScreen(anchor);
+}
+
 void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment &adornment,
                     uint8_t *pixels, int width, int height, size_t rowBytes,
                     double deviceScale) {
@@ -499,7 +528,10 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
     if(!bitmap.installPixels(info, pixels, rowBytes)) return;
 
     SkCanvas canvas(bitmap);
-    canvas.clear(BACKGROUND);
+    // The per-workspace background, or the compiled-in default when the caller
+    // names none. Zero is that "names none": a real background is opaque.
+    canvas.clear(adornment.background != 0 ? static_cast<SkColor>(adornment.background)
+                                           : BACKGROUND);
 
     // One canvas scale carries the whole device-pixel story. Everything below
     // draws in logical pixels — including the cosmetic constants, which is what
@@ -534,6 +566,94 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
         }
         for(double y = std::floor(lowY / gridStep) * gridStep; y <= highY; y += gridStep) {
             canvas.drawLine(toPixel({lowX, y}), toPixel({highX, y}), grid);
+        }
+    }
+
+    // The infinite line through two document points, clipped to the viewport
+    // rectangle. Clipped rather than drawn as a long finite segment centred on
+    // the anchor, because a carrier whose anchor projects far off-screen would
+    // then span entirely off-canvas and vanish — exactly the distant-alignment
+    // case the overlay exists for. Screen-space so the line is straight whatever
+    // the pose does, and shared by the extension overlay and the axis frames
+    // because both draw carrier lines. Liang-Barsky over the two slabs.
+    auto drawCarrier = [&](Point a, Point b, const SkPaint &paint) {
+        const Eigen::Vector2d pa = view.toScreen(a);
+        const Eigen::Vector2d pb = view.toScreen(b);
+        Eigen::Vector2d dir = pb - pa;
+        if(dir.norm() < 1e-9) return;
+        dir.normalize();
+        double lo = -1e30, hi = 1e30;
+        bool empty = false;
+        auto slab = [&](double p, double d, double low, double high) {
+            if(std::abs(d) < 1e-12) {
+                // Parallel to this axis: the whole line is in the slab, or none.
+                if(p < low || p > high) empty = true;
+                return;
+            }
+            double ta = (low - p) / d, tb = (high - p) / d;
+            if(ta > tb) std::swap(ta, tb);
+            lo = std::max(lo, ta);
+            hi = std::min(hi, tb);
+        };
+        slab(pa.x(), dir.x(), 0.0, logicalWidth);
+        slab(pa.y(), dir.y(), 0.0, logicalHeight);
+        if(empty || lo > hi) return;  // the line does not cross the viewport
+        const Eigen::Vector2d p0 = pa + lo * dir;
+        const Eigen::Vector2d p1 = pa + hi * dir;
+        canvas.drawLine(SkPoint::Make(static_cast<SkScalar>(p0.x()),
+                                      static_cast<SkScalar>(p0.y())),
+                        SkPoint::Make(static_cast<SkScalar>(p1.x()),
+                                      static_cast<SkScalar>(p1.y())),
+                        paint);
+    };
+
+    // The extension overlay, under the geometry: every segment's carrier line to
+    // the viewport edges, the hovered segment's declared-direction class drawn
+    // brighter. The class comes from the query, not from measuring the angles, so
+    // two segments that only look parallel stay in two classes — the diagnostic.
+    if(adornment.extensions) {
+        const DirectionClasses classes = directionClasses(pose.document());
+        const std::vector<EntityId> hoveredClass =
+            adornment.hovered.valid() ? classes.classMembers(adornment.hovered)
+                                      : std::vector<EntityId>{};
+        SkPaint extension;
+        extension.setAntiAlias(true);
+        extension.setStyle(SkPaint::kStroke_Style);
+        for(const EntityRecord &e : pose.document().entities().records()) {
+            if(e.kind != EntityKind::Segment) continue;
+            if(!layerVisible(pose.document(), e.layer)) continue;
+            const auto ends = pose.segment(e.id);
+            if(!ends) continue;
+            const bool inClass = contains(hoveredClass, e.id);
+            extension.setColor(inClass ? EXTENSION_CLASS : EXTENSION);
+            extension.setStrokeWidth(inClass ? 1.4f : 1.0f);
+            drawCarrier(ends->first, ends->second, extension);
+        }
+    }
+
+    // The reference frames, under the geometry and construction-tinted. The
+    // document frame is the world origin's two axes; a cluster frame is its
+    // segment's carrier plus the perpendicular through the segment's midpoint —
+    // the two axes a rotated cluster's horizontal and vertical mean.
+    if(adornment.documentFrame || !adornment.axisFrames.empty()) {
+        SkPaint axis;
+        axis.setAntiAlias(true);
+        axis.setStyle(SkPaint::kStroke_Style);
+        axis.setColor(AXIS_FRAME);
+        axis.setStrokeWidth(1.0f);
+        if(adornment.documentFrame) {
+            drawCarrier(Point{0.0, 0.0}, Point{1.0, 0.0}, axis);
+            drawCarrier(Point{0.0, 0.0}, Point{0.0, 1.0}, axis);
+        }
+        for(EntityId id : adornment.axisFrames) {
+            const auto ends = pose.segment(id);
+            if(!ends) continue;
+            const Point mid{0.5 * (ends->first.x + ends->second.x),
+                            0.5 * (ends->first.y + ends->second.y)};
+            const double dx = ends->second.x - ends->first.x;
+            const double dy = ends->second.y - ends->first.y;
+            drawCarrier(ends->first, ends->second, axis);
+            drawCarrier(mid, Point{mid.x - dy, mid.y + dx}, axis);
         }
     }
 
@@ -702,9 +822,13 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
     // at all — those go last over every layer, because a handle is an adorner
     // and adorners sit above the drawing rather than inside it, which is also
     // what the hit priority says.
+    // Inspect mode is what an export would mean, and construction geometry is
+    // excluded from export exactly as it is from regions, so document-only
+    // rendering skips it in every geometry loop.
     auto drawStrokes = [&](LayerId layer) {
         for(const EntityRecord &e : pose.document().entities().records()) {
             if(e.layer != layer) continue;
+            if(adornment.documentOnly && e.role == Role::Construction) continue;
             const auto ends = pose.segment(e.id);
             if(!ends) continue;
 
@@ -719,6 +843,7 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
     // way of converting is a second way of being wrong about zoom.
     for(const EntityRecord &e : pose.document().entities().records()) {
         if(e.layer != layer) continue;
+        if(adornment.documentOnly && e.role == Role::Construction) continue;
         const std::optional<Pose::ArcGeometry> g = pose.arc(e.id);
         if(!g) continue;
 
@@ -747,6 +872,7 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
     // Circles.
     for(const EntityRecord &e : pose.document().entities().records()) {
         if(e.layer != layer) continue;
+        if(adornment.documentOnly && e.role == Role::Construction) continue;
         const std::optional<double> radius = pose.radius(e.id);
         if(!radius) continue;
         const std::optional<Point> centre = pose.point(e.points[0]);
@@ -772,20 +898,25 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
         drawStrokes(layer);
     }
 
-    // Vertices, in screen space at a fixed size, over every layer.
+    // Vertices, in screen space at a fixed size, over every layer. A vertex is a
+    // handle, and inspect mode shows the document as output — no handles — so
+    // document-only rendering draws none. `dot` stays defined below regardless:
+    // the ghost pass reuses it.
     SkPaint dot;
     dot.setAntiAlias(true);
     dot.setStyle(SkPaint::kFill_Style);
-    for(const EntityRecord &e : pose.document().entities().records()) {
-        if(!layerVisible(pose.document(), e.layer)) continue;
-        const std::optional<Point> p = pose.point(e.id);
-        if(!p) continue;
+    if(!adornment.documentOnly) {
+        for(const EntityRecord &e : pose.document().entities().records()) {
+            if(!layerVisible(pose.document(), e.layer)) continue;
+            const std::optional<Point> p = pose.point(e.id);
+            if(!p) continue;
 
-        dot.setColor(tintOf(e));
-        canvas.drawCircle(toPixel(*p),
-                          contains(adornment.selected, e.id) ? SELECTED_POINT_RADIUS
-                                                             : POINT_RADIUS,
-                          dot);
+            dot.setColor(tintOf(e));
+            canvas.drawCircle(toPixel(*p),
+                              contains(adornment.selected, e.id) ? SELECTED_POINT_RADIUS
+                                                                 : POINT_RADIUS,
+                              dot);
+        }
     }
 
     // Tag affordances, above the vertices, because a handle is an adorner over
@@ -978,15 +1109,48 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
         // pick them exactly where this draws them, so the arithmetic is shared
         // rather than written twice and kept in agreement.
         // The bundled face, for the marks that carry a number rather than a
-        // shape. Built lazily and only when something valued is on screen.
+        // shape, and for the mnemonic labels. Built lazily and only when text is
+        // actually on screen. Two sizes: the value is the louder label.
         SkFont font;
+        SkFont labelFont;
         bool haveFont = false;
+        auto ensureFont = [&]() {
+            if(haveFont) return true;
+            const sk_sp<SkTypeface> face = bundledTypeface();
+            if(face == nullptr) return false;
+            font = SkFont(face, DIMENSION_TEXT_SIZE);
+            font.setSubpixel(true);
+            labelFont = SkFont(face, GLYPH_LABEL_SIZE);
+            labelFont.setSubpixel(true);
+            haveFont = true;
+            return true;
+        };
+        auto drawCentred = [&](const SkFont &f, const std::string &text, SkPoint at,
+                               SkColor colour, float baseline) {
+            SkPaint label;
+            label.setAntiAlias(true);
+            label.setColor(colour);
+            const SkScalar width = f.measureText(text.data(), text.size(), SkTextEncoding::kUTF8);
+            canvas.drawSimpleText(text.data(), text.size(), SkTextEncoding::kUTF8,
+                                  at.fX - width * 0.5f, at.fY + baseline, f, label);
+        };
 
         const std::vector<Eigen::Vector2d> places = layOutGlyphs(adornment.glyphs, view);
         for(size_t i = 0; i < adornment.glyphs.size() && i < places.size(); i++) {
             const GlyphMark &m = adornment.glyphs[i];
             const SkPoint at{static_cast<SkScalar>(places[i].x()),
                              static_cast<SkScalar>(places[i].y())};
+
+            // A per-anchor overflow ⋯: the fan cap collapsed the crowd here into
+            // one pickable mark. Three dots rather than a font glyph, so it draws
+            // whether or not the face parsed and reads the same everywhere.
+            if(m.overflow) {
+                dot.setColor(GLYPH);
+                canvas.drawCircle({at.fX - 3.0f, at.fY}, 1.1f, dot);
+                canvas.drawCircle({at.fX, at.fY}, 1.1f, dot);
+                canvas.drawCircle({at.fX + 3.0f, at.fY}, 1.1f, dot);
+                continue;
+            }
 
             glyph.setColor(m.ghost ? GLYPH_GHOST : (m.fresh ? GLYPH_FRESH : GLYPH));
             if(m.selected || m.hovered) glyph.setColor(SELECTED);
@@ -1000,30 +1164,27 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
                 m.ghost ? nullptr : pose.document().constraints().find(m.constraint);
             if(record != nullptr) text = dimensionText(pose, *record);
 
-            if(!text.empty()) {
-                if(!haveFont) {
-                    if(const sk_sp<SkTypeface> face = bundledTypeface()) {
-                        font = SkFont(face, DIMENSION_TEXT_SIZE);
-                        font.setSubpixel(true);
-                        haveFont = true;
-                    }
-                }
-                if(haveFont) {
-                    SkPaint label;
-                    label.setAntiAlias(true);
-                    label.setColor(m.selected || m.hovered ? SELECTED : DIMENSION_TEXT);
-                    // Centred on the mark's place, so the number sits where the
-                    // shape would have and the fan-out keeps two dimensions on
-                    // one vertex apart.
-                    const SkScalar width =
-                        font.measureText(text.data(), text.size(), SkTextEncoding::kUTF8);
-                    canvas.drawSimpleText(text.data(), text.size(), SkTextEncoding::kUTF8,
-                                          at.fX - width * 0.5f,
-                                          at.fY + DIMENSION_TEXT_SIZE * 0.35f, font, label);
-                    continue;
-                }
+            if(!text.empty() && ensureFont()) {
+                // Centred on the mark's place, so the number sits where the shape
+                // would have and the fan-out keeps two dimensions on one vertex
+                // apart.
+                drawCentred(font, text, at, m.selected || m.hovered ? SELECTED : DIMENSION_TEXT,
+                            DIMENSION_TEXT_SIZE * 0.35f);
+                continue;
             }
             drawGlyph(canvas, glyph, m.kind, at);
+
+            // The mnemonic below an unvalued mark, when the budget left room for
+            // it. The shape stays the primary reading; the label is the aid the
+            // overlay drops first as it tightens.
+            if(m.showLabel) {
+                const std::string_view mnemonic = glyphMnemonic(m.kind);
+                if(!mnemonic.empty() && ensureFont()) {
+                    drawCentred(labelFont, std::string(mnemonic), at,
+                                m.selected || m.hovered ? SELECTED : GLYPH_LABEL,
+                                GLYPH_SIZE + GLYPH_LABEL_SIZE);
+                }
+            }
         }
     }
 

@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "interact/glyphs.h"
+#include "interact/hit.h"
 #include "interact/registry.h"
 #include "interact/session.h"
 #include "support/build.h"
@@ -128,7 +129,7 @@ TEST_CASE("the overlay has a budget, and spends it on what matters") {
     GlyphContext context;
 
     const std::vector<GlyphMark> marks =
-        visibleGlyphs(doc, pose, glyphView(), W, H, context, policy);
+        visibleGlyphs(doc, pose, glyphView(), W, H, context, policy).marks;
     CHECK(marks.size() <= 10);
     CHECK_FALSE(marks.empty());
 
@@ -139,7 +140,7 @@ TEST_CASE("the overlay has a budget, and spends it on what matters") {
     const std::vector<EntityId> selected{last->operands[0]};
     context.selected = selected;
     const std::vector<GlyphMark> withSelection =
-        visibleGlyphs(doc, pose, glyphView(), W, H, context, policy);
+        visibleGlyphs(doc, pose, glyphView(), W, H, context, policy).marks;
     CHECK(withSelection.size() <= 10);
     CHECK(marksOf(withSelection, all.back()) == 1);
 }
@@ -163,7 +164,7 @@ TEST_CASE("a fresh relation outranks an ordinary one") {
     context.fresh = fresh;
 
     const std::vector<GlyphMark> marks =
-        visibleGlyphs(doc, pose, glyphView(), W, H, context, policy);
+        visibleGlyphs(doc, pose, glyphView(), W, H, context, policy).marks;
     CHECK(marksOf(marks, all.back()) == 1);
     for(const GlyphMark &m : marks) {
         if(m.constraint == all.back()) CHECK(m.fresh);
@@ -189,7 +190,7 @@ TEST_CASE("off-screen marks do not compete for the budget") {
     const Pose pose(doc);
     const GlyphContext context;
     const std::vector<GlyphMark> marks =
-        visibleGlyphs(doc, pose, glyphView(), W, H, context, GlyphPolicy());
+        visibleGlyphs(doc, pose, glyphView(), W, H, context, GlyphPolicy()).marks;
     CHECK(marksOf(marks, visible) == 1);
     CHECK(marksOf(marks, hidden) == 0);
 }
@@ -207,8 +208,8 @@ TEST_CASE("the visible set is deterministic") {
     policy.density = 15.0;
     const GlyphContext context;
 
-    const std::vector<GlyphMark> a = visibleGlyphs(doc, pose, glyphView(), W, H, context, policy);
-    const std::vector<GlyphMark> b = visibleGlyphs(doc, pose, glyphView(), W, H, context, policy);
+    const std::vector<GlyphMark> a = visibleGlyphs(doc, pose, glyphView(), W, H, context, policy).marks;
+    const std::vector<GlyphMark> b = visibleGlyphs(doc, pose, glyphView(), W, H, context, policy).marks;
     REQUIRE(a.size() == b.size());
     for(size_t i = 0; i < a.size(); i++) {
         CHECK(a[i].constraint == b[i].constraint);
@@ -424,4 +425,171 @@ TEST_CASE("a mark does not swallow the press that starts a drag") {
     session.handle(PointerEvent::at(PointerAction::Press, onVertex, viewport.view, Button::Left));
     CHECK(session.selection().contains(b));
     CHECK(session.selection().constraints().empty());
+}
+
+TEST_CASE("a crowded anchor caps its fan and adds one overflow mark") {
+    // The per-anchor fan cap: beyond the cap the marks collapse into one ⋯ that
+    // stands for the crowd and opens the inspector on the anchor's operand.
+    Document doc;
+    const EntityId centre = paroculus::test::addPoint(doc, 0.0, 0.0);
+    std::vector<ConstraintId> coincidences;
+    for(int i = 0; i < 8; i++) {
+        const EntityId q = paroculus::test::addPoint(doc, 20.0 + i, 30.0 + i);
+        coincidences.push_back(
+            paroculus::test::addConstraint(doc, ConstraintKind::Coincident, {centre, q}));
+    }
+
+    const Pose pose(doc);
+    GlyphPolicy policy;  // fanLimit 5, density 90 — no global truncation here
+    const GlyphContext context;
+    const VisibleGlyphs vg =
+        visibleGlyphs(doc, pose, glyphView(), W, H, context, policy);
+
+    // Exactly one ⋯, sitting on the crowded anchor's operand.
+    const size_t overflow = static_cast<size_t>(
+        std::count_if(vg.marks.begin(), vg.marks.end(),
+                      [](const GlyphMark &m) { return m.overflow; }));
+    CHECK(overflow == 1);
+    const auto it = std::find_if(vg.marks.begin(), vg.marks.end(),
+                                 [](const GlyphMark &m) { return m.overflow; });
+    REQUIRE(it != vg.marks.end());
+    CHECK(it->on == centre);
+    // At most fanLimit non-overflow marks sit on the centre.
+    const size_t onCentre = static_cast<size_t>(std::count_if(
+        vg.marks.begin(), vg.marks.end(),
+        [&](const GlyphMark &m) { return !m.overflow && m.on == centre; }));
+    CHECK(onCentre == policy.fanLimit);
+}
+
+TEST_CASE("hit testing picks the overflow mark where the shared layout draws it") {
+    // One-layout-two-readers: the ⋯ is placed by layOutGlyphs and picked through
+    // the same layOutGlyphs, so a click lands on it exactly where it is drawn.
+    Document doc;
+    const EntityId centre = paroculus::test::addPoint(doc, 0.0, 0.0);
+    for(int i = 0; i < 8; i++) {
+        const EntityId q = paroculus::test::addPoint(doc, 20.0 + i, 30.0 + i);
+        paroculus::test::addConstraint(doc, ConstraintKind::Coincident, {centre, q});
+    }
+    const Pose pose(doc);
+    const VisibleGlyphs vg =
+        visibleGlyphs(doc, pose, glyphView(), W, H, GlyphContext(), GlyphPolicy());
+
+    const std::vector<Eigen::Vector2d> places = layOutGlyphs(vg.marks, glyphView());
+    size_t overflowIndex = vg.marks.size();
+    for(size_t i = 0; i < vg.marks.size(); i++) {
+        if(vg.marks[i].overflow) overflowIndex = i;
+    }
+    REQUIRE(overflowIndex < vg.marks.size());
+
+    const std::optional<GlyphHit> hit =
+        hitGlyph(vg.marks, glyphView(), places[overflowIndex]);
+    REQUIRE(hit.has_value());
+    CHECK(hit->overflow);
+    CHECK(hit->on == centre);
+    CHECK_FALSE(hit->constraint.valid());
+}
+
+TEST_CASE("visibleGlyphs reports how many relations it showed of how many exist") {
+    // Honest truncation: the global budget drops whole relations, and the counts
+    // say so rather than the overlay vanishing them silently.
+    Document doc;
+    std::vector<ConstraintId> all;
+    for(int i = 0; i < 40; i++) {
+        const EntityId a = paroculus::test::addPoint(doc, -100.0 + i * 3.0, -100.0);
+        const EntityId b = paroculus::test::addPoint(doc, -100.0 + i * 3.0, 100.0);
+        const EntityId s = paroculus::test::addSegment(doc, a, b);
+        all.push_back(paroculus::test::addConstraint(doc, ConstraintKind::Vertical, {s}));
+    }
+    const Pose pose(doc);
+    GlyphPolicy policy;
+    policy.density = 20.0;  // 0.48 megapixels -> budget 9
+    const VisibleGlyphs vg =
+        visibleGlyphs(doc, pose, glyphView(), W, H, GlyphContext(), policy);
+    CHECK(vg.total == 40);
+    CHECK(vg.shown < vg.total);
+    CHECK(vg.shown == 9);
+}
+
+TEST_CASE("mnemonic labels ride the budget: on when loose, off when tight, never on values") {
+    SUBCASE("a loose overlay labels its unvalued marks") {
+        Document doc;
+        for(int i = 0; i < 3; i++) {
+            const EntityId a = paroculus::test::addPoint(doc, -60.0 + i * 40.0, 0.0);
+            const EntityId b = paroculus::test::addPoint(doc, -40.0 + i * 40.0, 0.0);
+            const EntityId s = paroculus::test::addSegment(doc, a, b);
+            paroculus::test::addConstraint(doc, ConstraintKind::Horizontal, {s});
+        }
+        const Pose pose(doc);
+        const VisibleGlyphs vg =
+            visibleGlyphs(doc, pose, glyphView(), W, H, GlyphContext(), GlyphPolicy());
+        REQUIRE(vg.marks.size() == 3);
+        for(const GlyphMark &m : vg.marks) CHECK(m.showLabel);
+    }
+
+    SUBCASE("a tight overlay drops the labels before the marks") {
+        Document doc;
+        for(int i = 0; i < 22; i++) {
+            const EntityId a = paroculus::test::addPoint(doc, -120.0 + i * 10.0, -20.0);
+            const EntityId b = paroculus::test::addPoint(doc, -110.0 + i * 10.0, -20.0);
+            const EntityId s = paroculus::test::addSegment(doc, a, b);
+            paroculus::test::addConstraint(doc, ConstraintKind::Horizontal, {s});
+        }
+        const Pose pose(doc);
+        const VisibleGlyphs vg =
+            visibleGlyphs(doc, pose, glyphView(), W, H, GlyphContext(), GlyphPolicy());
+        // Many marks survive, but the density is now above the label threshold,
+        // so the mnemonics are the first thing gone.
+        REQUIRE(vg.marks.size() > 10);
+        for(const GlyphMark &m : vg.marks) CHECK_FALSE(m.showLabel);
+    }
+
+    SUBCASE("a valued mark never carries a mnemonic — its value is its label") {
+        Document doc;
+        const EntityId a = paroculus::test::addPoint(doc, -30.0, 0.0);
+        const EntityId b = paroculus::test::addPoint(doc, 30.0, 0.0);
+        paroculus::test::addConstraint(doc, ConstraintKind::PointPointDistance, {a, b},
+                                       Slot(60.0));
+        const Pose pose(doc);
+        const VisibleGlyphs vg =
+            visibleGlyphs(doc, pose, glyphView(), W, H, GlyphContext(), GlyphPolicy());
+        for(const GlyphMark &m : vg.marks) CHECK_FALSE(m.showLabel);
+    }
+}
+
+TEST_CASE("pressing the overflow mark selects the anchor and asks to reveal the inspector") {
+    // The ⋯ opens the crowd: it selects its anchor's operand — so the inspector's
+    // unbudgeted list is filtered to that anchor — and flags the shell to reveal
+    // the panel. It selects geometry, never a constraint.
+    Document doc;
+    const EntityId centre = paroculus::test::addPoint(doc, 0.0, 0.0);
+    for(int i = 0; i < 8; i++) {
+        const EntityId q = paroculus::test::addPoint(doc, 20.0 + i, 30.0 + i);
+        paroculus::test::addConstraint(doc, ConstraintKind::Coincident, {centre, q});
+    }
+    UndoJournal journal;
+    Session session(doc, journal);
+    Viewport viewport;
+    viewport.view = glyphView();
+    viewport.width = W;
+    viewport.height = H;
+    session.setViewport(viewport);
+
+    const std::vector<GlyphMark> marks = session.glyphs();
+    const std::vector<Eigen::Vector2d> places = layOutGlyphs(marks, viewport.view);
+    size_t overflowIndex = marks.size();
+    for(size_t i = 0; i < marks.size(); i++) {
+        if(marks[i].overflow) overflowIndex = i;
+    }
+    REQUIRE(overflowIndex < marks.size());
+
+    session.handle(PointerEvent::at(PointerAction::Press, places[overflowIndex], viewport.view,
+                                    Button::Left));
+    CHECK(session.selection().contains(centre));
+    CHECK(session.selection().constraints().empty());
+    CHECK(session.presentation().overflowPicked);
+
+    // And a subsequent event clears the one-shot flag.
+    session.handle(PointerEvent::at(PointerAction::Move, Eigen::Vector2d(1.0, 1.0), viewport.view,
+                                    Button::None));
+    CHECK_FALSE(session.presentation().overflowPicked);
 }

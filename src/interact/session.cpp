@@ -6,6 +6,7 @@
 #include <set>
 #include <unordered_set>
 
+#include "core/direction.h"
 #include "core/expression.h"
 #include "interact/loops.h"
 #include "interact/registry.h"
@@ -462,7 +463,8 @@ std::vector<GlyphMark> Session::glyphs() const {
 
     const Pose current = pose();
     std::vector<GlyphMark> out = visibleGlyphs(*doc_, current, viewport_.view, viewport_.width,
-                                               viewport_.height, context, glyphPolicy_);
+                                               viewport_.height, context, glyphPolicy_)
+                                     .marks;
 
     // Ghosts ride above the budget: a relation about to be declared is exactly
     // the one the user needs to see, and there are only ever a handful.
@@ -838,6 +840,7 @@ bool Session::runTool(ToolOutput output, std::vector<ConstraintId> inferred) {
 void Session::handle(const PointerEvent &event) {
     if(recorder_ != nullptr) recorder_->pointer(event);
     presentation_.rippledOffScreen = false;
+    presentation_.overflowPicked = false;
 
     if(tool_) {
         // A creation tool owns the pointer outright: no hit testing, no
@@ -957,6 +960,23 @@ void Session::handle(const PointerEvent &event) {
                 hitGlyph(marks, viewport_.view, event.screen);
             if(mark && (!hit || mark->distance < hit->distance)) {
                 const bool additive = has(event.modifiers, Modifier::Shift);
+                // An overflow ⋯ opens the crowd: it selects its anchor's operand,
+                // so the inspector's relation list — constraintRows() over the
+                // selection — is the fan the cap dropped, in full. A geometry
+                // selection rather than a constraint one, because the ⋯ stands
+                // for no single relation.
+                if(mark->overflow) {
+                    if(additive) selection_.add(mark->on);
+                    else selection_.set(mark->on);
+                    refreshSelectionOffers();
+                    presentation_.downgrade.reset();
+                    // Ask the shell to reveal the inspector: the ⋯ stands for the
+                    // crowd the fan cap dropped, and the inspector's unbudgeted
+                    // list is where that crowd is legible in full.
+                    presentation_.overflowPicked = true;
+                    pressed_ = EntityId();
+                    return;
+                }
                 // Geometry goes first, then the relation — Selection::set
                 // clears both lists, so selecting the relation before clearing
                 // the geometry would clear the relation too.
@@ -1351,6 +1371,8 @@ void Session::endGesturesForEdit() {
         refreshToolPresentation();
     }
 }
+
+void Session::cancelInFlight() { endGesturesForEdit(); }
 
 // The handle's half of the bargain: the drag ran with these dimensions
 // suppressed so the geometry could move freely, and now the values follow it.
@@ -3253,6 +3275,61 @@ std::vector<Session::AxisReference> Session::axisReferences() const {
         ref.frame = referenced ? r->operands[1] : EntityId();
         ref.frameName = ref.frame.valid() ? "cluster frame" : "document frame";
         out.push_back(std::move(ref));
+    }
+    return out;
+}
+
+Session::GlyphReadout Session::glyphReadout() const {
+    GlyphContext context;
+    context.selected = selection_.items();
+    context.hovered = presentation_.hovered;
+    context.fresh = presentation_.inferred;
+    context.cursor = lastCursor_;
+    context.haveCursor = haveLastCursor_;
+    // The same budget the overlay drew by, so the readout can never claim a mark
+    // was shown that the overlay dropped. Ghosts are excluded on both sides:
+    // glyphs() appends them after this, and they are not relations the document
+    // holds. The pose is recomputed rather than shared with glyphs() because the
+    // two are separate call sites (paint and the HUD projection) and a drag has
+    // moved nothing between them.
+    const VisibleGlyphs vg = visibleGlyphs(*doc_, pose(), viewport_.view, viewport_.width,
+                                           viewport_.height, context, glyphPolicy_);
+    return GlyphReadout{vg.total, vg.shown};
+}
+
+size_t Session::directionClassCount() const { return directionClasses(*doc_).count(); }
+
+Session::AxisFrames Session::axisFrames(bool all) const {
+    AxisFrames out;
+    auto consider = [&](const ConstraintRecord &r) {
+        if(r.kind != ConstraintKind::Horizontal && r.kind != ConstraintKind::Vertical) return;
+        const bool referenced = boundOperandCount(r) > constraintInfo(r.kind).operandCount;
+        if(!referenced) {
+            out.documentFrame = true;
+            return;
+        }
+        const EntityId frame = r.operands[1];
+        if(frame.valid() &&
+           std::find(out.clusterFrames.begin(), out.clusterFrames.end(), frame) ==
+               out.clusterFrames.end()) {
+            out.clusterFrames.push_back(frame);
+        }
+    };
+
+    if(all) {
+        for(const ConstraintRecord &r : doc_->constraints().records()) consider(r);
+        return out;
+    }
+
+    // Selection-only: the frames the selected axis relations reference, so a
+    // frame is drawn beside the geometry it orients rather than everywhere.
+    std::vector<ConstraintId> ids;
+    if(!selection_.items().empty()) ids = constraintsOn(*doc_, selection_.items());
+    for(ConstraintId id : selection_.constraints()) {
+        if(std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
+    }
+    for(ConstraintId id : ids) {
+        if(const ConstraintRecord *r = doc_->constraints().find(id)) consider(*r);
     }
     return out;
 }

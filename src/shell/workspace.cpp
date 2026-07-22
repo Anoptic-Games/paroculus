@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <map>
 
+#include <QColor>
 #include <QFileInfo>
 #include <QStringList>
 
@@ -52,6 +53,7 @@ QVariantMap entryOf(const SurfaceEntry &entry) {
 Workspace::Workspace(QObject *parent) : QObject(parent) {
     reports_ = new ReportsModel(this);
     session_ = std::make_unique<Session>(document_, journal_);
+    applyGlyphPolicy();
 
     // Roughly a frame per step, so a recorded drag replays at about the speed it
     // was performed: fast enough to read as a gesture, slow enough to watch.
@@ -95,6 +97,10 @@ bool Workspace::busy() const { return session_->asyncBusy(); }
 void Workspace::notifyChanged() {
     kickPumpIfBusy();
     captureReports();
+    // A ⋯ overflow pick asks the shell to reveal the inspector. Emitted before
+    // changed() so the frame shows the panel, then the projection it reads is the
+    // selection the pick just made.
+    if(session_->presentation().overflowPicked) emit revealInspector();
     // Drop any imposition ghost: it previews what committing would do to the
     // geometry as it was, so an edit makes it stale, and — the reason this is
     // here rather than left to the hovering surface's onExited — a changed()
@@ -146,6 +152,10 @@ void Workspace::playScript(GestureScript script) {
     document_ = script_.document;
     journal_ = UndoJournal();
     session_ = std::make_unique<Session>(document_, journal_);
+    applyGlyphPolicy();
+    // A replay is a fresh presentation of the recorded session; inspect mode from
+    // whatever was showing before does not carry into it.
+    inspectMode_ = false;
     savedRevision_ = journal_.revision();
     // The fresh session has async off; drop the flag so a later activate re-enables
     // it, matching loadFrom. A recorder outlives the session, so re-attach it.
@@ -195,6 +205,11 @@ LoadResult Workspace::loadFrom(const std::string &text, const QString &path) {
     document_ = std::move(loaded);
     journal_.clear();
     session_ = std::make_unique<Session>(document_, journal_);
+    applyGlyphPolicy();
+    // Inspect mode is transient and belongs to the session being replaced, not to
+    // the document arriving. A file opened into a tab left in inspect mode would
+    // otherwise land inert; a fresh document is a fresh editing session.
+    inspectMode_ = false;
     savedRevision_ = journal_.revision();
     filePath_ = path;
     // A fresh document asks for a re-fit: clear the latch so the next viewport
@@ -233,6 +248,17 @@ void Workspace::loadSidecarFrom(const std::string &path) {
     const Sidecar s = loadSidecar(path);
     view_.pan = Eigen::Vector2d(s.panX, s.panY);
     view_.zoom = s.zoom;
+    background_ = s.background;
+    showAllFrames_ = s.showAllFrames;
+    extensions_ = s.extensions;
+    gridVisible_ = s.gridVisible;
+    // The saved framing only reaches the canvas when the viewport is rebuilt, and
+    // that happens in SketchView::syncViewport, which the canvas runs on
+    // viewReset. loadFrom already emitted a viewReset, but against the fitted base
+    // it set before this — so without a second one here the pan and zoom just
+    // loaded never take, and the tab opens at the fit rather than the saved view.
+    emit viewReset();
+    emit changed();
 }
 
 void Workspace::writeSidecarTo(const std::string &path) const {
@@ -240,6 +266,10 @@ void Workspace::writeSidecarTo(const std::string &path) const {
     s.panX = view_.pan.x();
     s.panY = view_.pan.y();
     s.zoom = view_.zoom;
+    s.background = background_;
+    s.showAllFrames = showAllFrames_;
+    s.extensions = extensions_;
+    s.gridVisible = gridVisible_;
     saveSidecar(path, s);
 }
 
@@ -469,13 +499,99 @@ QString Workspace::undoLabel() const { return QString::fromStdString(session_->u
 QString Workspace::redoLabel() const { return QString::fromStdString(session_->redoLabel()); }
 int Workspace::activeLayer() const { return static_cast<int>(session_->activeLayer().value()); }
 
+// ---- U2 canvas-depth projections and presentation toggles ----
+
+QVariantMap Workspace::glyphReadout() const {
+    // Computed once here — the whole overlay layout — rather than through two
+    // properties each running it, because the coarse changed() cadence fires on
+    // every hover-move and the HUD reads this in both a visibility and a text
+    // binding.
+    const Session::GlyphReadout r = session_->glyphReadout();
+    QVariantMap m;
+    m[QStringLiteral("shown")] = static_cast<int>(r.shown);
+    m[QStringLiteral("total")] = static_cast<int>(r.total);
+    return m;
+}
+int Workspace::directionClassCount() const {
+    return static_cast<int>(session_->directionClassCount());
+}
+
+QString Workspace::backgroundHex() const {
+    return background_ != 0 ? argbHex(background_) : QString();
+}
+
+void Workspace::setBackground(const QString &hex) {
+    const QColor colour(hex);
+    if(!colour.isValid()) return;
+    // Packed 0xAARRGGBB, the same layout render and the style colours use. An
+    // opaque pick is forced opaque so it can never collide with the zero
+    // sentinel that means "theme default".
+    const uint32_t alpha = colour.alpha() == 0 ? 0xffu : static_cast<uint32_t>(colour.alpha());
+    const uint32_t packed = (alpha << 24) | (static_cast<uint32_t>(colour.red()) << 16) |
+                            (static_cast<uint32_t>(colour.green()) << 8) |
+                            static_cast<uint32_t>(colour.blue());
+    if(packed == background_) return;
+    background_ = packed;
+    emit changed();
+}
+
+void Workspace::clearBackground() {
+    if(background_ == 0) return;
+    background_ = 0;
+    emit changed();
+}
+
+void Workspace::setShowAllFrames(bool on) {
+    if(showAllFrames_ == on) return;
+    showAllFrames_ = on;
+    emit changed();
+}
+
+void Workspace::setExtensions(bool on) {
+    if(extensions_ == on) return;
+    extensions_ = on;
+    emit changed();
+}
+
+void Workspace::setGridVisible(bool on) {
+    if(gridVisible_ == on) return;
+    gridVisible_ = on;
+    emit changed();
+}
+
+void Workspace::setInspectMode(bool on) {
+    if(inspectMode_ == on) return;
+    inspectMode_ = on;
+    // Entering the mode ends any gesture in flight, keeping the tool: a drag or
+    // placement begun a moment before would otherwise have its release swallowed
+    // by the mode's input inertness and dangle.
+    if(on) session_->cancelInFlight();
+    emit changed();
+}
+
+void Workspace::toggleInspectMode() { setInspectMode(!inspectMode_); }
+
+void Workspace::applyGlyphPolicy() {
+    // A multiplier over the policy default rather than an absolute, so the
+    // default lives in one place — the policy struct — and the setting only
+    // scales it.
+    session_->glyphPolicy().density = GlyphPolicy{}.density * glyphDensity_;
+}
+
+void Workspace::setGlyphDensity(double multiplier) {
+    if(!(multiplier > 0.0) || multiplier == glyphDensity_) return;
+    glyphDensity_ = multiplier;
+    applyGlyphPolicy();
+    emit changed();
+}
+
 bool Workspace::parameterWouldCycle(int id, const QString &expression) const {
     return session_->wouldParameterCycle(ParameterId(static_cast<uint32_t>(id)),
                                          expression.toStdString());
 }
 
 void Workspace::walkHistory(int position) {
-    if(position < 0) return;
+    if(position < 0 || inspectMode_) return;  // walking the journal is undo/redo
     const size_t target = static_cast<size_t>(position);
     // Repeated single steps through the ordinary undo/redo path, so branch
     // fidelity holds — a jump would bypass the mechanism that keeps it. The guard
@@ -498,6 +614,13 @@ QVariantList Workspace::palette(const QString &query) const {
 }
 
 bool Workspace::run(const QString &name, const QVariantMap &arguments) {
+    // Inspect mode is document-as-output, and the spec's premise is that no edit
+    // can occur inside it — that premise is what makes it unrecorded presentation
+    // state. run() is the one entrance every editing surface dispatches through
+    // (toolbars, palette, inspector, context menus), so refusing here makes the
+    // mode genuinely edit-proof rather than only inert to canvas input. The
+    // presentation toggles and navigation do not come through run().
+    if(inspectMode_) return false;
     // Routed by the action's own schema rather than by what the QVariant happens
     // to coerce to: a rename whose new name spells a number ("2024") is a string,
     // not a value, and only the parameter table can say which channel it reads.
@@ -568,14 +691,17 @@ void Workspace::selectRelation(int id, bool additive) {
 }
 
 void Workspace::undo() {
+    if(inspectMode_) return;  // no edit occurs in inspect mode, undo included
     session_->handle(Key::Undo);
     notifyChanged();
 }
 void Workspace::redo() {
+    if(inspectMode_) return;
     session_->handle(Key::Redo);
     notifyChanged();
 }
 void Workspace::deleteSelection() {
+    if(inspectMode_) return;
     session_->handle(Key::Delete);
     notifyChanged();
 }

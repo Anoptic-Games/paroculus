@@ -27,6 +27,30 @@ bool readDouble(std::string_view token, double &value) {
     return result.ec == std::errc() && result.ptr == token.data() + token.size();
 }
 
+// An unsigned integer, for the packed background colour. Integer to_chars is
+// locale-independent by definition, so there is no comma-decimal hazard, but the
+// rule is the same as the double one: parse-or-keep-the-default.
+void writeUint(std::string &out, uint32_t value) {
+    char buffer[16];
+    const std::to_chars_result result = std::to_chars(buffer, buffer + sizeof(buffer), value);
+    out.append(buffer, result.ptr);
+}
+
+bool readUint(std::string_view token, uint32_t &value) {
+    const std::from_chars_result result =
+        std::from_chars(token.data(), token.data() + token.size(), value);
+    return result.ec == std::errc() && result.ptr == token.data() + token.size();
+}
+
+// A boolean field, written as 0 or 1 and read leniently: any non-"0" that parses
+// as an integer is true, and a malformed token keeps the default.
+bool readBool(std::string_view token, bool &value) {
+    uint32_t n = 0;
+    if(!readUint(token, n)) return false;
+    value = n != 0;
+    return true;
+}
+
 }  // namespace
 
 std::string sidecarPathFor(std::string_view documentPath) {
@@ -48,6 +72,18 @@ std::string writeSidecar(const Sidecar &sidecar) {
     out += ' ';
     writeDouble(out, sidecar.zoom);
     out += '\n';
+    out += "background ";
+    writeUint(out, sidecar.background);
+    out += '\n';
+    out += "frames ";
+    writeUint(out, sidecar.showAllFrames ? 1 : 0);
+    out += '\n';
+    out += "extensions ";
+    writeUint(out, sidecar.extensions ? 1 : 0);
+    out += '\n';
+    out += "grid ";
+    writeUint(out, sidecar.gridVisible ? 1 : 0);
+    out += '\n';
     return out;
 }
 
@@ -59,16 +95,32 @@ Sidecar readSidecar(std::string_view text) {
         std::istringstream words(line);
         std::string key;
         if(!(words >> key)) continue;
-        // "view" is the only content line at version 0. The header line and any
-        // line this build does not know are skipped, which is how a version-0
-        // reader survives the additive fields U2 writes above it: they parse as
-        // unknown keys and are left at their defaults.
+        // "view" is the version-0 line; the rest were added at U2. The header
+        // line and any line a build does not know are skipped, which is how a
+        // reader that predates a field survives it and how a newer field with an
+        // unparseable value costs that field and no more.
         if(key == "view") {
             std::string x, y, z;
             words >> x >> y >> z;
             readDouble(x, out.panX);
             readDouble(y, out.panY);
             readDouble(z, out.zoom);
+        } else if(key == "background") {
+            std::string v;
+            words >> v;
+            readUint(v, out.background);
+        } else if(key == "frames") {
+            std::string v;
+            words >> v;
+            readBool(v, out.showAllFrames);
+        } else if(key == "extensions") {
+            std::string v;
+            words >> v;
+            readBool(v, out.extensions);
+        } else if(key == "grid") {
+            std::string v;
+            words >> v;
+            readBool(v, out.gridVisible);
         }
     }
     return out;

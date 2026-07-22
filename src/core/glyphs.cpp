@@ -2,7 +2,32 @@
 
 #include <cmath>
 
+#include "core/taxonomy.h"
+
 namespace paroculus {
+
+std::string_view glyphMnemonic(ConstraintKind kind) {
+    // Valued kinds label with their number, drawn by render from the pose, so
+    // they name nothing here. The rest get a terse convention glyph.
+    switch(kind) {
+        case ConstraintKind::Coincident:          return "≡";
+        case ConstraintKind::PointOnLine:         return "on";
+        case ConstraintKind::PointOnCircle:       return "on";
+        case ConstraintKind::Midpoint:            return "mid";
+        case ConstraintKind::Horizontal:          return "H";
+        case ConstraintKind::Vertical:            return "V";
+        case ConstraintKind::Parallel:            return "∥";
+        case ConstraintKind::Perpendicular:       return "⊥";
+        case ConstraintKind::EqualLength:         return "eq";
+        case ConstraintKind::SymmetricHorizontal: return "sym";
+        case ConstraintKind::SymmetricVertical:   return "sym";
+        case ConstraintKind::SymmetricAboutLine:  return "sym";
+        case ConstraintKind::Tangent:             return "tan";
+        case ConstraintKind::EqualRadius:         return "eq";
+        case ConstraintKind::Pin:                 return "pin";
+        default:                                  return {};
+    }
+}
 
 std::vector<Eigen::Vector2d> layOutGlyphs(std::span<const GlyphMark> marks,
                                           const ViewTransform &view,

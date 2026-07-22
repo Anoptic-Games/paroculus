@@ -108,6 +108,35 @@ TEST_CASE("retarget to a new cluster frame is rotate at zero degrees") {
     CHECK(worstResidual(afterRetarget) == doctest::Approx(0.0).epsilon(1e-12));
 }
 
+TEST_CASE("relation.retarget-to-document applies only to a clustered selection and sheds it") {
+    // The second inspector target: back to the document frame. It dims when there
+    // is nothing clustered to shed and applies exactly when there is, so a row
+    // that reads runnable is runnable.
+    Document doc;
+    UndoJournal journal;
+    Session session(doc, journal);
+    const EntityId p0 = addPoint(doc, 0.0, 0.0);
+    const EntityId p1 = addPoint(doc, 40.0, 0.0);
+    const EntityId seg = addSegment(doc, p0, p1);
+    const ConstraintId h = addConstraint(doc, ConstraintKind::Horizontal, {seg});
+    session.refresh();
+    session.select({seg});
+
+    const Action *toDoc = findAction("relation.retarget-to-document");
+    REQUIRE(toDoc != nullptr);
+    // Document-framed: nothing to shed, so the row is dimmed.
+    CHECK_FALSE(toDoc->applicable(contextOf(session), *toDoc));
+
+    // Cluster it via the new-frame retarget, then re-select the segment.
+    REQUIRE(invokeAction(session, "relation.retarget-axes"));
+    session.select({seg});
+    // Now there is a clustered relation to shed, so the row is live and runs.
+    CHECK(toDoc->applicable(contextOf(session), *toDoc));
+    REQUIRE(invokeAction(session, "relation.retarget-to-document"));
+    CHECK(boundOperandCount(*doc.constraints().find(h)) ==
+          constraintInfo(ConstraintKind::Horizontal).operandCount);
+}
+
 TEST_CASE("retarget back to the document frame sheds the reference") {
     // Round-trip: to a cluster frame and back to the document frame leaves the
     // relations document-framed again.

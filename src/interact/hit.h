@@ -83,6 +83,11 @@ struct GlyphHit {
     // relation the user reached it from.
     EntityId on;
     double distance = 0.0;  // pixels
+    // Whether the pick landed on a per-anchor ⋯ overflow mark rather than a
+    // relation's own. It stands for the relations the fan cap dropped at `on`,
+    // so a caller opens the inspector on that operand instead of selecting a
+    // constraint — `constraint` is null on an overflow hit.
+    bool overflow = false;
 };
 
 // The constraint mark nearest the cursor, or nullopt when none is within reach.

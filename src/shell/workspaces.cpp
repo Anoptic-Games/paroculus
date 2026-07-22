@@ -19,9 +19,21 @@ WorkspaceManager::WorkspaceManager(Settings *settings, QObject *parent)
 
 WorkspaceManager::~WorkspaceManager() = default;
 
+void WorkspaceManager::setGlyphDensity(double multiplier) {
+    if(settings_ != nullptr) settings_->setGlyphDensity(multiplier);
+    // Every open workspace, not only the active one: the preference is
+    // application-wide, so a hidden tab must read at the same density the moment
+    // it is chosen rather than keeping its own until it is next activated.
+    for(Workspace *workspace : workspaces_) workspace->setGlyphDensity(multiplier);
+}
+
 Workspace *WorkspaceManager::addWorkspace() {
     Workspace *ws = new Workspace(this);
     ws->untitledOrdinal_ = nextUntitled_++;
+    // The glyph-density preference is application-wide, so every workspace is
+    // born honouring it — a new or opened tab reads at the same density as the
+    // rest without the user re-setting it.
+    if(settings_ != nullptr) ws->setGlyphDensity(settings_->glyphDensity());
     workspaces_.append(ws);
     return ws;
 }

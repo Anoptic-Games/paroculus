@@ -20,6 +20,7 @@
 // business and land in it at U2, each an additive field a version-0 reader skips.
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -35,6 +36,25 @@ struct Sidecar {
     double panX = 0.0;
     double panY = 0.0;
     double zoom = 1.0;
+
+    // The U2 presentation preferences, each an additive line a version-0 reader
+    // skips. None reaches document bytes — that is the whole point of the tier —
+    // so the determinism property holds however they are set.
+
+    // The canvas background, packed 0xAARRGGBB, or zero for the theme default.
+    // Zero is the sentinel because a real background is opaque.
+    uint32_t background = 0;
+    // The axis all-frames toggle: draw every reference frame, not only the
+    // selection's, for orientation-heavy work.
+    bool showAllFrames = false;
+    // The line-extension overlay: every segment's carrier extended to the
+    // viewport edges, with the direction-class count in the HUD.
+    bool extensions = false;
+    // Whether the placement grid is drawn. Separate from grid snapping, which is
+    // recorded session state — the two share the step, so the drawn grid can
+    // never lie about where a click lands, but showing it and snapping to it are
+    // different questions.
+    bool gridVisible = true;
 };
 
 // The sidecar path for a document path. A ".paro" extension becomes ".paro-view"

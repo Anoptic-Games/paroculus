@@ -37,6 +37,42 @@ TEST_CASE("the sidecar round-trips pan and zoom exactly") {
     CHECK(out.zoom == in.zoom);
 }
 
+TEST_CASE("the sidecar round-trips the U2 presentation fields") {
+    Sidecar in;
+    in.panX = 12.5;
+    in.background = 0xff2a3d55u;
+    in.showAllFrames = true;
+    in.extensions = true;
+    in.gridVisible = false;
+    const Sidecar out = readSidecar(writeSidecar(in));
+    CHECK(out.panX == 12.5);
+    CHECK(out.background == 0xff2a3d55u);
+    CHECK(out.showAllFrames);
+    CHECK(out.extensions);
+    CHECK_FALSE(out.gridVisible);
+}
+
+TEST_CASE("a version-0 sidecar reader survives the U2 fields, keeping their defaults") {
+    // The additive-fields discipline: a reader that predates the fields skips
+    // them, so a document round-trips through an old build with its view intact
+    // and only the newer preferences shed.
+    const Sidecar out = readSidecar("paro-view 0\nview 3.0 4.0 1.5\n");
+    CHECK(out.panX == 3.0);
+    CHECK(out.zoom == 1.5);
+    // The defaults, since the lines are absent.
+    CHECK(out.background == 0u);
+    CHECK_FALSE(out.showAllFrames);
+    CHECK_FALSE(out.extensions);
+    CHECK(out.gridVisible);
+}
+
+TEST_CASE("a malformed presentation field keeps its default") {
+    const Sidecar out =
+        readSidecar("paro-view 0\nbackground not-a-number\ngrid also-bad\n");
+    CHECK(out.background == 0u);
+    CHECK(out.gridVisible);  // unchanged from its true default
+}
+
 TEST_CASE("a malformed sidecar keeps defaults rather than coercing to zero") {
     // Droppable field by field: a preference that will not parse costs that
     // preference and no more. A coerced zero zoom would be a collapsed view, a

@@ -117,6 +117,12 @@ struct ActionContext {
     // relations" is what turns the choice into an informed one.
     size_t axisConstraints = 0;
     size_t absoluteDimensions = 0;
+    // Axis relations already on a cluster frame in the moved set, which
+    // axisConstraints (from axisReferencedIn) deliberately skips. This is what
+    // retarget-to-document dims by: it has something to shed exactly when a
+    // clustered relation is present, and one predicate cannot serve both that
+    // target and the new-cluster-frame default the menu invokes.
+    size_t clusteredAxisConstraints = 0;
     // Points selected outright, for the compound that is a rhythm over points.
     size_t selectedPoints = 0;
     // Exactly one segment is selected and there is something besides it and its

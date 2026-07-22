@@ -12,6 +12,10 @@
 #include <QVariantMap>
 
 #include "core/document.h"
+#include "core/pose.h"
+#include "core/svg.h"
+#include "interact/drag.h"
+#include "render/view.h"
 #include "shell/workspace.h"
 
 using namespace paroculus;
@@ -147,4 +151,71 @@ TEST_CASE("the layers projection carries the active layer and per-row counts") {
     CHECK(ws.run(QStringLiteral("layer.activate"), activate));
     CHECK(ws.activeLayer() == layerId);
     CHECK(ws.layers()[0].toMap()[QStringLiteral("active")].toBool());
+}
+
+TEST_CASE("U2 presentation toggles mutate no document and record no step") {
+    // Inspect mode, extensions, frames, grid and background are presentation:
+    // they never reach the document or the journal, so a script is unaffected and
+    // the determinism property holds. This is the byte-level guarantee.
+    Workspace ws;
+    buildSegment(ws);
+    const quint64 revision = ws.journal().revision();
+    const std::string before = ws.serializeDocument();
+
+    ws.toggleInspectMode();
+    ws.setExtensions(true);
+    ws.setShowAllFrames(true);
+    ws.setGridVisible(false);
+    ws.setBackground(QStringLiteral("#ff2a3d55"));
+    ws.setGlyphDensity(2.0);
+
+    CHECK(ws.inspectMode());
+    CHECK(ws.extensions());
+    CHECK(ws.hasBackground());
+    CHECK(ws.journal().revision() == revision);
+    CHECK(ws.serializeDocument() == before);
+}
+
+TEST_CASE("the background colour never reaches the exported bytes") {
+    Workspace ws;
+    buildSegment(ws);
+    ws.setBackground(QStringLiteral("#ff803010"));
+    REQUIRE(ws.hasBackground());
+    // The bake and the SVG writer never see the background — it is a viewing aid.
+    const std::string svg = writeSvg(ws.document(), ws.session().pose());
+    CHECK(svg.find("803010") == std::string::npos);
+}
+
+TEST_CASE("the HUD projections read the overlay and the direction classes") {
+    Workspace ws;
+    const EntityId seg = buildSegment(ws);
+    ws.run(QStringLiteral("constrain.horizontal"), {});
+    (void)seg;
+
+    // A viewport, since the glyph readout is against the viewport the overlay
+    // draws into — a headless workspace has none until one is set.
+    Viewport viewport;
+    viewport.view = defaultView(800, 600);
+    viewport.width = 800;
+    viewport.height = 600;
+    ws.session().setViewport(viewport);
+
+    // One segment is one direction class; the horizontal it now carries is a
+    // relation the overlay can show.
+    CHECK(ws.directionClassCount() == 1);
+    const QVariantMap readout = ws.glyphReadout();
+    CHECK(readout[QStringLiteral("total")].toInt() >= 1);
+    CHECK(readout[QStringLiteral("shown")].toInt() <= readout[QStringLiteral("total")].toInt());
+}
+
+TEST_CASE("opening a document clears transient inspect mode") {
+    // Inspect mode belongs to the session being replaced, not the document
+    // arriving: a file opened into a tab left in inspect mode must land editable.
+    Workspace ws;
+    buildSegment(ws);
+    const std::string text = ws.serializeDocument();
+    ws.setInspectMode(true);
+    REQUIRE(ws.inspectMode());
+    ws.loadFrom(text, QStringLiteral("/tmp/inspect-reset.paro"));
+    CHECK_FALSE(ws.inspectMode());
 }

@@ -114,6 +114,9 @@ void SketchView::mousePressEvent(QMouseEvent *event) {
         panFrom_ = Eigen::Vector2d(event->position().x(), event->position().y());
         return;
     }
+    // Inspect mode is navigation-only: the pan above still works, but a pointer
+    // edit is inert — not queued, not reinterpreted.
+    if(workspace_->inspectMode()) return;
     workspace_->session().handle(translate(event->position(), event->button(), event->modifiers(),
                                            PointerAction::Press));
     workspace_->notifyChanged();
@@ -125,6 +128,7 @@ void SketchView::mousePressEvent(QMouseEvent *event) {
 void SketchView::mouseDoubleClickEvent(QMouseEvent *event) {
     forceActiveFocus();
     if(workspace_ == nullptr) return;
+    if(workspace_->inspectMode()) return;
     workspace_->session().handle(translate(event->position(), event->button(), event->modifiers(),
                                            PointerAction::Press, 2));
     workspace_->notifyChanged();
@@ -142,6 +146,7 @@ void SketchView::mouseMoveEvent(QMouseEvent *event) {
         workspace_->notifyChanged();
         return;
     }
+    if(workspace_->inspectMode()) return;
     workspace_->session().handle(translate(event->position(), event->buttons(), event->modifiers(),
                                            PointerAction::Move));
     workspace_->notifyChanged();
@@ -155,6 +160,7 @@ void SketchView::mouseReleaseEvent(QMouseEvent *event) {
         panning_ = false;
         return;
     }
+    if(workspace_->inspectMode()) return;
     workspace_->session().handle(translate(event->position(), event->button(), event->modifiers(),
                                            PointerAction::Release));
     workspace_->notifyChanged();
@@ -162,6 +168,7 @@ void SketchView::mouseReleaseEvent(QMouseEvent *event) {
 
 void SketchView::hoverMoveEvent(QHoverEvent *event) {
     if(workspace_ == nullptr) return;
+    if(workspace_->inspectMode()) return;
     workspace_->session().handle(
         translate(event->position(), Qt::NoButton, event->modifiers(), PointerAction::Move));
     workspace_->notifyChanged();
@@ -258,6 +265,13 @@ void SketchView::keyPressEvent(QKeyEvent *event) {
         QQuickPaintedItem::keyPressEvent(event);
         return;
     }
+    // Inspect mode swallows edit keystrokes — inert, not queued — and exits on
+    // Esc, the same key the toggle offers. Navigation (wheel, middle-pan) is
+    // unaffected because it never reaches here.
+    if(workspace_->inspectMode()) {
+        if(event->key() == Qt::Key_Escape) workspace_->setInspectMode(false);
+        return;
+    }
     paroculus::Session &session = workspace_->session();
     const bool typing = session.presentation().numericActive;
 
@@ -301,8 +315,21 @@ void SketchView::keyPressEvent(QKeyEvent *event) {
 
 void SketchView::geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) {
     QQuickPaintedItem::geometryChange(newGeometry, oldGeometry);
+    // A resize holds the document point at the viewport centre at the centre, so
+    // the thing being examined stays put rather than sliding as the pixels
+    // around it change. Beside syncViewport, which then rebuilds the transform at
+    // the new size; a script owns its own viewport, so leave it be while playing.
+    if(workspace_ != nullptr && !workspace_->playing()) {
+        workspace_->view().resize(oldGeometry.width(), oldGeometry.height(), newGeometry.width(),
+                                  newGeometry.height());
+    }
     syncTextureSize();
     syncViewport();
+    // The viewport-dependent readouts — the glyph N-of-M the overlay budget
+    // recomputes against the new size — refresh only on changed(), which a resize
+    // does not otherwise emit. The paint below is fresh regardless; this keeps the
+    // HUD from lagging it.
+    if(workspace_ != nullptr) workspace_->notifyChanged();
 }
 
 void SketchView::itemChange(ItemChange change, const ItemChangeData &value) {
@@ -339,39 +366,58 @@ void SketchView::paint(QPainter *painter) {
     paroculus::Session &session = workspace_->session();
     const paroculus::Presentation &p = session.presentation();
     paroculus::Adornment adornment;
-    adornment.selected = session.selection().items();
-    adornment.hovered = p.hovered;
-    adornment.resisting = p.resisting;
-    adornment.marqueeActive = p.marqueeActive;
-    adornment.marqueeFrom = p.marqueeFrom;
-    adornment.marqueeTo = p.marqueeTo;
-    adornment.glyphs = session.glyphs();
-    adornment.handledTags = session.selectedTags();
-    adornment.ghostPose = workspace_->ghostPose();
-    const paroculus::SnapPolicy &snap = session.snapPolicy();
-    adornment.gridStep = snap.gridEnabled ? snap.gridStep : 0.0;
-    adornment.ghostActive = p.toolPreview.active;
-    adornment.ghostFrom = p.toolPreview.from;
-    adornment.ghostTo = p.toolPreview.to;
-    switch(p.tool) {
-        case paroculus::ToolKind::Circle:
-            adornment.ghostShape = paroculus::Adornment::GhostShape::Circle;
-            break;
-        case paroculus::ToolKind::Rectangle:
-            adornment.ghostShape = paroculus::Adornment::GhostShape::Rectangle;
-            break;
-        case paroculus::ToolKind::Arc:
-            adornment.ghostShape = p.toolPreview.arcActive
-                                       ? paroculus::Adornment::GhostShape::Arc
-                                       : paroculus::Adornment::GhostShape::Line;
-            adornment.ghostCentre = p.toolPreview.arcCentre;
-            adornment.ghostRadius = p.toolPreview.arcRadius;
-            adornment.ghostStart = p.toolPreview.arcStart;
-            adornment.ghostSweep = p.toolPreview.arcSweep;
-            break;
-        default:
-            adornment.ghostShape = paroculus::Adornment::GhostShape::Line;
-            break;
+    // The background applies in every mode, inspect included — it is the one
+    // presentation preference that survives the WYSIWYG toggle.
+    adornment.background = workspace_->backgroundColor();
+
+    if(workspace_->inspectMode()) {
+        // Document as output: no adorners, no construction, no grid, no tint. The
+        // adorner lists stay empty and documentOnly governs the vertices and the
+        // construction geometry drawn from the document regardless of them.
+        adornment.documentOnly = true;
+    } else {
+        adornment.selected = session.selection().items();
+        adornment.hovered = p.hovered;
+        adornment.resisting = p.resisting;
+        adornment.marqueeActive = p.marqueeActive;
+        adornment.marqueeFrom = p.marqueeFrom;
+        adornment.marqueeTo = p.marqueeTo;
+        adornment.glyphs = session.glyphs();
+        adornment.handledTags = session.selectedTags();
+        adornment.ghostPose = workspace_->ghostPose();
+        const paroculus::SnapPolicy &snap = session.snapPolicy();
+        // Grid display follows the sidecar preference, not grid snapping: the two
+        // share the step so the drawn grid can never lie about where a click
+        // lands, but showing it and snapping to it are separate questions.
+        adornment.gridStep = workspace_->gridVisible() ? snap.gridStep : 0.0;
+        adornment.extensions = workspace_->extensions();
+        const paroculus::Session::AxisFrames frames =
+            session.axisFrames(workspace_->showAllFrames());
+        adornment.documentFrame = frames.documentFrame;
+        adornment.axisFrames = frames.clusterFrames;
+        adornment.ghostActive = p.toolPreview.active;
+        adornment.ghostFrom = p.toolPreview.from;
+        adornment.ghostTo = p.toolPreview.to;
+        switch(p.tool) {
+            case paroculus::ToolKind::Circle:
+                adornment.ghostShape = paroculus::Adornment::GhostShape::Circle;
+                break;
+            case paroculus::ToolKind::Rectangle:
+                adornment.ghostShape = paroculus::Adornment::GhostShape::Rectangle;
+                break;
+            case paroculus::ToolKind::Arc:
+                adornment.ghostShape = p.toolPreview.arcActive
+                                           ? paroculus::Adornment::GhostShape::Arc
+                                           : paroculus::Adornment::GhostShape::Line;
+                adornment.ghostCentre = p.toolPreview.arcCentre;
+                adornment.ghostRadius = p.toolPreview.arcRadius;
+                adornment.ghostStart = p.toolPreview.arcStart;
+                adornment.ghostSweep = p.toolPreview.arcSweep;
+                break;
+            default:
+                adornment.ghostShape = paroculus::Adornment::GhostShape::Line;
+                break;
+        }
     }
 
     paroculus::renderDocument(session.pose(), session.viewport().view, adornment, surface_.bits(),

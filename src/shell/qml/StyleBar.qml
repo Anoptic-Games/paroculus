@@ -10,7 +10,9 @@ import Paroculus
 Rectangle {
     id: root
     readonly property var ap: (App.active && App.active.appearance) ? App.active.appearance : ({})
-    visible: root.ap.any === true
+    // Hidden in inspect mode, where the canvas presents the document as output
+    // and the style toolbar is editing chrome.
+    visible: root.ap.any === true && !(App.active && App.active.inspectMode)
     implicitWidth: bar.implicitWidth + 16
     implicitHeight: 28
     radius: 4

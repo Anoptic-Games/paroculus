@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <set>
 
 #include "core/composition.h"
+#include "core/taxonomy.h"
 
 namespace paroculus {
 namespace {
@@ -74,9 +76,9 @@ void marksFor(const Document &doc, const Pose &pose, const ConstraintRecord &con
     }
 }
 
-std::vector<GlyphMark> visibleGlyphs(const Document &doc, const Pose &pose,
-                                     const ViewTransform &view, double width, double height,
-                                     const GlyphContext &context, const GlyphPolicy &policy) {
+VisibleGlyphs visibleGlyphs(const Document &doc, const Pose &pose, const ViewTransform &view,
+                            double width, double height, const GlyphContext &context,
+                            const GlyphPolicy &policy) {
     std::vector<GlyphMark> marks;
     for(const ConstraintRecord &c : doc.constraints().records()) {
         marksFor(doc, pose, c, marks);
@@ -92,6 +94,12 @@ std::vector<GlyphMark> visibleGlyphs(const Document &doc, const Pose &pose,
                                           s.y() > height;
                                }),
                 marks.end());
+
+    // Distinct relations with a mark on screen: the M of "N of M". Counted over
+    // constraints rather than marks, because a two-operand relation drawing two
+    // marks is one relation, and the readout is about relations.
+    std::set<ConstraintId> onScreen;
+    for(const GlyphMark &m : marks) onScreen.insert(m.constraint);
 
     std::vector<std::pair<double, size_t>> ranked;
     ranked.reserve(marks.size());
@@ -131,10 +139,82 @@ std::vector<GlyphMark> visibleGlyphs(const Document &doc, const Pose &pose,
     budget = std::min(budget, policy.hardCap);
     if(ranked.size() > budget) ranked.resize(budget);
 
-    std::vector<GlyphMark> out;
-    out.reserve(ranked.size());
-    for(const auto &[score, index] : ranked) out.push_back(marks[index]);
-    return out;
+    // The per-anchor fan cap, applied to the ranked survivors: the highest-ranked
+    // marks at each anchor fan, and the excess collapses into one ⋯. Grouped by
+    // screen position the way layOutGlyphs fans — half a pixel is one joint — so
+    // the cap and the placement agree about which marks share an anchor. The ⋯ is
+    // synthesized here rather than in the layout because whether a fan overflows
+    // is a budget question, while where its ⋯ sits is a placement one.
+    struct Anchor {
+        Eigen::Vector2d screen;
+        Point at;
+        EntityId on;
+        size_t kept = 0;
+        bool overflowed = false;
+    };
+    std::vector<Anchor> anchors;
+
+    VisibleGlyphs result;
+    result.total = onScreen.size();
+    result.marks.reserve(ranked.size());
+    std::set<ConstraintId> shownConstraints;
+
+    for(const auto &[score, index] : ranked) {
+        const GlyphMark &m = marks[index];
+        const Eigen::Vector2d screen = view.toScreen(m.anchor);
+        Anchor *bucket = nullptr;
+        for(Anchor &a : anchors) {
+            if((a.screen - screen).norm() < 0.5) {
+                bucket = &a;
+                break;
+            }
+        }
+        if(bucket == nullptr) {
+            anchors.push_back(Anchor{screen, m.anchor, m.on, 0, false});
+            bucket = &anchors.back();
+        }
+        if(bucket->kept >= policy.fanLimit) {
+            // The first drop at this anchor is what earns it a ⋯; the rest are
+            // silently folded into that one mark.
+            bucket->overflowed = true;
+            continue;
+        }
+        bucket->kept++;
+        result.marks.push_back(m);
+        shownConstraints.insert(m.constraint);
+    }
+
+    // One ⋯ per overflowing anchor, appended after the kept marks so it lands at
+    // fan index fanLimit — layOutGlyphs counts the fanLimit marks that precede it
+    // on the same anchor and fans it into the next slot, wherever in the list it
+    // sits. It carries the anchor's operand so a pick opens the crowd there.
+    for(const Anchor &a : anchors) {
+        if(!a.overflowed) continue;
+        GlyphMark mark;
+        mark.on = a.on;
+        mark.anchor = a.at;
+        mark.overflow = true;
+        result.marks.push_back(mark);
+    }
+
+    result.shown = shownConstraints.size();
+
+    // Mnemonic labels ride the same budget: they appear only while the overlay is
+    // loose and are the first thing to drop as it tightens. A single density
+    // gate over the whole overlay rather than a per-mark rule, because per-glyph
+    // rules cannot see each other. Valued marks are untouched — their label is
+    // their number, which is not a budget's to withhold.
+    const double shownDensity = megapixels > 0.0 ? result.shown / megapixels : 0.0;
+    if(shownDensity < policy.labelDensity) {
+        for(GlyphMark &m : result.marks) {
+            if(m.overflow) continue;
+            if(constraintInfo(m.kind).valueArity == 1) continue;
+            if(glyphMnemonic(m.kind).empty()) continue;
+            m.showLabel = true;
+        }
+    }
+
+    return result;
 }
 
 std::vector<GlyphMark> ghostGlyphs(std::span<const SnapCandidate> candidates, Point placement,

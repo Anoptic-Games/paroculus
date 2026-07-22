@@ -91,6 +91,37 @@ struct Adornment {
     // draws nothing, which is the right answer for a caller that says nothing:
     // no grid is honest, a default one is a guess about someone else's policy.
     double gridStep = 0.0;
+
+    // The canvas background, packed 0xAARRGGBB, or zero for the compiled-in
+    // default. A per-workspace presentation preference handed down like the
+    // grid — render draws no guess of its own beyond the fallback — and never
+    // seen by the bake, so a background is a viewing aid that never reaches
+    // export. Zero is the sentinel because a real background is opaque, so a
+    // fully transparent one is never a value the user meant.
+    uint32_t background = 0;
+
+    // Document-only rendering: inspect mode. What an export would mean — no
+    // vertex handles and no construction geometry. The adorner lists (glyphs,
+    // handled tags, marquee, ghost) are left empty by the caller and the grid
+    // step zero, so this flag governs only the two things drawn from the
+    // document regardless of the adornment: the vertices and the construction
+    // geometry.
+    bool documentOnly = false;
+
+    // Every segment's carrier line, extended thin and dim to the viewport edges,
+    // so undeclared near-parallels read by eye. Off by default, a per-workspace
+    // toggle. `hovered` names the segment whose declared-direction class draws
+    // brighter — render reads the class from the direction-class query, so the
+    // highlight is by declaration, not by looking parallel.
+    bool extensions = false;
+
+    // The reference frames to draw, construction-tinted: `documentFrame` as axes
+    // through the world origin, each of `axisFrames` as a carrier and its
+    // perpendicular through a cluster's frame segment. The shell decides which
+    // frames belong on screen — the selection's, or all under the all-frames
+    // toggle — and render draws them where the pose puts the segments.
+    bool documentFrame = false;
+    std::vector<EntityId> axisFrames;
 };
 
 // A framing that fits everything the pose can place, with a margin. Stage 3's
@@ -148,6 +179,16 @@ struct ViewState {
     // so reaching it costs a zoom and then a pan. No-op for a factor that does
     // not change the zoom, which is what a wheel event at the clamp produces.
     void zoomAt(const Eigen::Vector2d &cursor, double factor, double width, double height);
+
+    // Holds the document point at the old viewport centre at the new viewport
+    // centre across a resize, adjusting the pan to pay for it. A window grown or
+    // shrunk is not a request to look somewhere else, so the thing being
+    // examined stays put rather than sliding as the pixels around it change.
+    // Beside zoomAt and by the same arithmetic: pan is the composition's
+    // outermost term, so holding a point fixed is a subtraction — where the
+    // point lands under the new size against where it must. A no-op before the
+    // framing latches, since an unframed view has nothing to preserve.
+    void resize(double oldWidth, double oldHeight, double newWidth, double newHeight);
 };
 
 // Paints the document into a caller-owned BGRA8888 premultiplied buffer.

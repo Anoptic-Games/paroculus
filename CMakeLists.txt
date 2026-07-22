@@ -89,6 +89,8 @@ add_library(paroculus-core STATIC
     src/core/compound.h
     src/core/copy.cpp
     src/core/copy.h
+    src/core/direction.cpp
+    src/core/direction.h
     src/core/document.cpp
     src/core/document.h
     src/core/expression.cpp
@@ -316,6 +318,7 @@ if(PAROCULUS_TESTS)
         tests/support/build.cpp
         tests/support/build.h
         tests/unit/core_composition.cpp
+        tests/unit/core_direction.cpp
         tests/unit/core_document.cpp
     tests/unit/core_expression.cpp
         tests/unit/core_geom.cpp

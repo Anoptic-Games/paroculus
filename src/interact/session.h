@@ -61,6 +61,12 @@ struct Presentation {
     // The solve moved something the user cannot see. The shell pings the edge.
     bool rippledOffScreen = false;
 
+    // The last pointer event picked a per-anchor ⋯ overflow mark, so the shell
+    // reveals the inspector filtered to that anchor's operand — "detailed
+    // inspection is one click from the crowd." Set only by that pick and cleared
+    // at the start of the next event, so a surface reading it acts once.
+    bool overflowPicked = false;
+
     // Counted, not confirmed: deletion reports what it took with it rather than
     // asking permission. Degraded is separate from deleted because a region,
     // tag or group that lost a member is still there — visibly, in its broken
@@ -270,6 +276,13 @@ public:
     // Rebuilds the derived indexes after the document changed underneath.
     void refresh();
 
+    // Ends any gesture in flight — a numeric field, a drag, a placement — each
+    // the way the first Escape ends its kind, keeping the tool selected. The
+    // shell calls it when entering inspect mode, whose input inertness would
+    // otherwise swallow the release of a drag begun a moment before and leave it
+    // dangling. Non-recording, like the cores Escape and the edit keys reuse.
+    void cancelInFlight();
+
     // -----------------------------------------------------------------------
     // Asynchronous solving
     // -----------------------------------------------------------------------
@@ -331,6 +344,34 @@ public:
     // on the pose, which a drag changes every frame, and a stale overlay would
     // put marks where the geometry no longer is.
     std::vector<GlyphMark> glyphs() const;
+
+    // How many relations the overlay could draw and how many it did, so the HUD
+    // can say "N of M relations shown" whenever the budget or a per-anchor fan
+    // dropped some. The honest half of truncation: a dropped relation is counted
+    // rather than vanishing. Excludes ghosts — a relation about to exist is not
+    // one the document holds.
+    struct GlyphReadout {
+        size_t total = 0;
+        size_t shown = 0;
+    };
+    GlyphReadout glyphReadout() const;
+
+    // The distinct declared-direction classes among the document's segments, for
+    // the extension overlay's HUD count. Two segments that merely look parallel
+    // count twice — the count reads the declarations, not the pixels, which is
+    // the diagnostic the overlay exists to surface.
+    size_t directionClassCount() const;
+
+    // The reference frames the axis overlay draws. `documentFrame` is set when
+    // any axis relation references the document frame (drawn as axes through the
+    // world origin); `clusterFrames` are the construction segments named as
+    // references. When `all`, every axis relation in the document is read; else
+    // only those the selection carries, so the frame appears with its subject.
+    struct AxisFrames {
+        bool documentFrame = false;
+        std::vector<EntityId> clusterFrames;
+    };
+    AxisFrames axisFrames(bool all) const;
 
     // Activates a creation tool, or returns to selection with ToolKind::Select.
     // Switching tools abandons whatever the previous one had in flight, which

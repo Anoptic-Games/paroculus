@@ -196,12 +196,15 @@ std::optional<GlyphHit> hitGlyph(std::span<const GlyphMark> marks, const ViewTra
         // A ghost describes a relation that does not exist yet. Picking one
         // would select an id nothing holds.
         if(marks[i].ghost) continue;
-        if(!marks[i].constraint.valid()) continue;
+        // An overflow ⋯ carries no constraint of its own but is pickable: it
+        // opens the inspector on its anchor's operand. Everything else needs a
+        // real constraint to select.
+        if(!marks[i].overflow && !marks[i].constraint.valid()) continue;
 
         const double distance = (places[i] - screen).norm();
         if(distance > layout.radius) continue;
         if(best && best->distance <= distance) continue;
-        best = GlyphHit{marks[i].constraint, marks[i].on, distance};
+        best = GlyphHit{marks[i].constraint, marks[i].on, distance, marks[i].overflow};
     }
     return best;
 }

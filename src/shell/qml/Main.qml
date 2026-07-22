@@ -140,6 +140,9 @@ ApplicationWindow {
     Connections {
         target: App.active
         function onReportPosted(text) { toast.show(text) }
+        // A ⋯ overflow pick reveals the inspector — the session already selected
+        // the anchor's operand, so the panel opens filtered to that crowd.
+        function onRevealInspector() { rightDock.inspectorVisible = true }
     }
 
     // ---- Menu bar ----
@@ -170,6 +173,41 @@ ApplicationWindow {
             Action { text: qsTr("Zoom Out"); shortcut: "Ctrl+-"; onTriggered: sketch.zoomOut() }
             Action { text: qsTr("Reset View / Fit"); shortcut: "Ctrl+0"; onTriggered: sketch.resetView() }
             MenuSeparator {}
+            // Presentation toggles: unrecorded, per-workspace, sidecar-persisted.
+            // Each reads and writes the active workspace's own state, so switching
+            // tabs shows that tab's preferences.
+            MenuItem {
+                text: qsTr("Inspect Mode  (Ctrl+I)"); checkable: true
+                checked: App.active && App.active.inspectMode
+                onTriggered: if (App.active) App.active.toggleInspectMode()
+            }
+            MenuItem {
+                text: qsTr("Line Extensions"); checkable: true
+                checked: App.active && App.active.extensions
+                onTriggered: if (App.active) App.active.setExtensions(!App.active.extensions)
+            }
+            MenuItem {
+                text: qsTr("All Reference Frames"); checkable: true
+                checked: App.active && App.active.showAllFrames
+                onTriggered: if (App.active) App.active.setShowAllFrames(!App.active.showAllFrames)
+            }
+            MenuItem {
+                text: qsTr("Show Grid"); checkable: true
+                checked: App.active && App.active.gridVisible
+                onTriggered: if (App.active) App.active.setGridVisible(!App.active.gridVisible)
+            }
+            Menu {
+                title: qsTr("Background")
+                MenuItem { text: qsTr("Choose…"); onTriggered: backgroundDialog.openFor() }
+                MenuItem { text: qsTr("Default"); onTriggered: if (App.active) App.active.clearBackground() }
+            }
+            Menu {
+                title: qsTr("Glyph Density")
+                MenuItem { text: qsTr("Sparse"); onTriggered: root.setGlyphDensity(0.5) }
+                MenuItem { text: qsTr("Normal"); onTriggered: root.setGlyphDensity(1.0) }
+                MenuItem { text: qsTr("Dense"); onTriggered: root.setGlyphDensity(2.0) }
+            }
+            MenuSeparator {}
             Menu {
                 title: qsTr("Panels")
                 MenuItem { text: qsTr("Layers"); checkable: true; checked: rightDock.layersVisible; onTriggered: rightDock.layersVisible = !rightDock.layersVisible }
@@ -191,6 +229,29 @@ ApplicationWindow {
     // registry's None tier, the same mechanism as the palette chord.
     Shortcut { sequence: "Ctrl+Tab"; onActivated: App.cycleActive(1) }
     Shortcut { sequence: "Ctrl+Shift+Tab"; onActivated: App.cycleActive(-1) }
+    // Inspect mode is shell presentation, not a session action, so it is a shell
+    // shortcut behind the registry's None tier — the same tier the palette and
+    // tab cycling sit in. Esc exits it, handled in the canvas.
+    Shortcut { sequence: "Ctrl+I"; onActivated: if (App.active) App.active.toggleInspectMode() }
+
+    // The background colour picker: writes the active workspace's per-document
+    // background, which render applies on the canvas and the bake never sees.
+    // selectedColor is seeded on open rather than bound, so the dialog's own
+    // writes as the user picks do not fight a binding.
+    ColorDialog {
+        id: backgroundDialog
+        title: qsTr("Canvas background")
+        function openFor() {
+            selectedColor = (App.active && App.active.hasBackground) ? App.active.background : Theme.windowBg
+            open()
+        }
+        onAccepted: if (App.active) App.active.setBackground(selectedColor.toString())
+    }
+
+    // The glyph-density preference is application-wide: the manager stores it and
+    // applies it to every open workspace at once, so a change is honoured on all
+    // tabs rather than only the active one.
+    function setGlyphDensity(multiplier) { App.setGlyphDensity(multiplier) }
 
     ColumnLayout {
         anchors.fill: parent
@@ -286,7 +347,7 @@ ApplicationWindow {
                 // step; this is its read-only home.
                 Rectangle {
                     id: toolOptions
-                    visible: App.active && App.active.toolName.length > 0
+                    visible: App.active && App.active.toolName.length > 0 && !App.active.inspectMode
                     anchors { left: parent.left; top: parent.top; margins: 12 }
                     width: toolOptionsRow.width + 20
                     height: 28
@@ -325,8 +386,12 @@ ApplicationWindow {
                     anchors { top: parent.top; horizontalCenter: parent.horizontalCenter; topMargin: 12 }
                 }
 
-                // The transient strip, near the work; hidden while the palette is up.
-                StripView { paletteOpen: commandPalette.visible }
+                // The transient strip, near the work; hidden while the palette is
+                // up, and while inspect mode presents the document as output.
+                StripView {
+                    paletteOpen: commandPalette.visible
+                    visible: !(App.active && App.active.inspectMode)
+                }
 
                 // The constraints toolbar's hover verdict, in words, beside the
                 // ghost it arms on the canvas — the same preview path the strip
@@ -350,6 +415,110 @@ ApplicationWindow {
                 // The latest report as a transient toast near the canvas. The
                 // panel is the memory; this is the notice.
                 Toast { id: toast }
+
+                // The HUD: read-only readouts in the canvas's top-right corner,
+                // each a click-through to its panel. dof and zoom always; the
+                // truncation count when the overlay dropped relations; the
+                // direction-class count while extensions are on. Calm — under-
+                // constraint is normal — and never interactive beyond the click.
+                Column {
+                    id: hud
+                    visible: App.active && !App.active.inspectMode
+                    anchors { right: parent.right; top: parent.top; margins: 12 }
+                    spacing: 3
+
+                    Text {
+                        anchors.right: parent.right
+                        color: App.active && App.active.dof > 0 ? Theme.info : Theme.textMuted
+                        font.pixelSize: 11; font.family: "monospace"
+                        text: App.active ? (App.active.dof >= 0 ? qsTr("%1 dof").arg(App.active.dof)
+                                                                : qsTr("unsolved")) : ""
+                    }
+                    Text {
+                        anchors.right: parent.right
+                        color: Theme.textMuted; font.pixelSize: 11; font.family: "monospace"
+                        text: App.active ? qsTr("%1×").arg(App.active.zoom.toFixed(2)) : ""
+                    }
+                    Text {
+                        anchors.right: parent.right
+                        // The readout is read once — each read runs the whole
+                        // overlay layout — and reused by both bindings below.
+                        property var readout: App.active ? App.active.glyphReadout : ({shown: 0, total: 0})
+                        visible: readout.shown < readout.total
+                        color: Theme.warn; font.pixelSize: 11; font.family: "monospace"
+                        text: qsTr("%1 of %2 relations shown").arg(readout.shown).arg(readout.total)
+                        // Click through to the inspector, where the relation list
+                        // is unbudgeted — the recall counterpart of the overlay.
+                        MouseArea {
+                            anchors.fill: parent; anchors.margins: -3
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: rightDock.inspectorVisible = true
+                        }
+                    }
+                    Text {
+                        anchors.right: parent.right
+                        visible: App.active && App.active.extensions
+                        color: Theme.textMuted; font.pixelSize: 11; font.family: "monospace"
+                        // Read the class count only while extensions are on — the
+                        // ternary short-circuits, so a hidden overlay pays no
+                        // union-find on every hover-move.
+                        text: (App.active && App.active.extensions)
+                              ? qsTr("%1 directions").arg(App.active.directionClassCount) : ""
+                    }
+                }
+
+                // An inspect-mode band, so the WYSIWYG state is legible from
+                // inside it — the one place there is no other furniture to say so.
+                Rectangle {
+                    visible: App.active && App.active.inspectMode
+                    anchors { top: parent.top; horizontalCenter: parent.horizontalCenter; topMargin: 12 }
+                    width: inspectLabel.width + 24; height: 26; radius: 13
+                    color: Theme.activeBg
+                    Text {
+                        id: inspectLabel; anchors.centerIn: parent
+                        color: Theme.textBright; font.pixelSize: 11
+                        text: qsTr("inspect — Esc to exit")
+                    }
+                    MouseArea { anchors.fill: parent; onClicked: if (App.active) App.active.setInspectMode(false) }
+                }
+
+                // The canvas context menu: the presentation toggles the View menu
+                // carries, reachable with a right-click on the work. Right-button
+                // only, so left and middle fall through to the canvas below —
+                // SketchView does not accept the right button, so nothing is
+                // stolen. The full selection context menu is later work; this is
+                // the swatch the spec puts here beside the View menu's.
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.RightButton
+                    onClicked: canvasMenu.popup()
+                }
+                Menu {
+                    id: canvasMenu
+                    MenuItem {
+                        text: qsTr("Inspect Mode"); checkable: true
+                        checked: App.active && App.active.inspectMode
+                        onTriggered: if (App.active) App.active.toggleInspectMode()
+                    }
+                    MenuItem {
+                        text: qsTr("Line Extensions"); checkable: true
+                        checked: App.active && App.active.extensions
+                        onTriggered: if (App.active) App.active.setExtensions(!App.active.extensions)
+                    }
+                    MenuItem {
+                        text: qsTr("All Reference Frames"); checkable: true
+                        checked: App.active && App.active.showAllFrames
+                        onTriggered: if (App.active) App.active.setShowAllFrames(!App.active.showAllFrames)
+                    }
+                    MenuItem {
+                        text: qsTr("Show Grid"); checkable: true
+                        checked: App.active && App.active.gridVisible
+                        onTriggered: if (App.active) App.active.setGridVisible(!App.active.gridVisible)
+                    }
+                    MenuSeparator {}
+                    MenuItem { text: qsTr("Background…"); onTriggered: backgroundDialog.openFor() }
+                    MenuItem { text: qsTr("Default Background"); onTriggered: if (App.active) App.active.clearBackground() }
+                }
             }
 
             // ---- Right dock ----

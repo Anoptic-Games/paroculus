@@ -112,6 +112,20 @@ struct GlyphPolicy {
     double freshWeight = 500.0;
     // Nearer the cursor takes the remainder.
     double proximityWeight = 1.0;
+
+    // The most marks one anchor fans before the rest collapse into a single ⋯.
+    // A vertex where relations cluster reads as a small fan the eye can count
+    // plus a promise of more, rather than a smear of overlapping marks no denser
+    // information survives. The overflow mark is pickable and opens the crowd in
+    // the inspector, so the cap costs the user nothing but the smear.
+    size_t fanLimit = 5;
+
+    // Marks per million square pixels below which the overlay is loose enough to
+    // carry mnemonic labels beside the unvalued marks. Labels share the mark
+    // budget rather than getting one of their own — two budgets over one overlay
+    // is how it becomes unreadable in two ways at once — so they appear only when
+    // the overlay is not already crowded and are the first thing to go as it is.
+    double labelDensity = 32.0;
 };
 
 // Action-surface policy.

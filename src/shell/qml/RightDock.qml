@@ -441,6 +441,61 @@ Item {
                         }
                     }
 
+                    // Axes — the reference each axis relation the selection
+                    // carries points at, and the retargets the model offers. The
+                    // reference is shown for every axis relation; each retarget
+                    // button is offered only when its own action is applicable, so
+                    // a row that reads runnable is runnable — the trustworthiness
+                    // the whole table keeps. Two targets land here: a new cluster
+                    // frame (doc-framed relations) and back to the document frame
+                    // (clustered relations). Retarget to an existing named frame
+                    // needs a frame picker and is deferred.
+                    Column {
+                        width: parent.width
+                        spacing: 1
+                        visible: App.active && App.active.axisReferences.length > 0
+                        // Whether each retarget action applies to the current
+                        // selection right now — the same predicates the menu dims by.
+                        function applies(name) {
+                            if (!App.active) return false
+                            var rows = App.active.actions.filter(function(a) { return a.name === name })
+                            return rows.length > 0 && rows[0].applicable
+                        }
+                        readonly property bool canNewFrame: applies("relation.retarget-axes")
+                        readonly property bool canToDocument: applies("relation.retarget-to-document")
+                        Text {
+                            color: Theme.textDim; font.pixelSize: 10
+                            text: qsTr("AXES")
+                        }
+                        Repeater {
+                            model: App.active ? App.active.axisReferences : []
+                            delegate: Text {
+                                required property var modelData
+                                width: parent.width; elide: Text.ElideRight
+                                color: Theme.textSecondary; font.pixelSize: 11
+                                text: modelData.kind + " → " + modelData.frameName
+                            }
+                        }
+                        Text {
+                            visible: parent.canNewFrame
+                            color: Theme.info; font.pixelSize: 11
+                            text: qsTr("→ new cluster frame")
+                            MouseArea {
+                                anchors.fill: parent; anchors.margins: -3
+                                onClicked: App.active.run("relation.retarget-axes", {})
+                            }
+                        }
+                        Text {
+                            visible: parent.canToDocument
+                            color: Theme.info; font.pixelSize: 11
+                            text: qsTr("→ document frame")
+                            MouseArea {
+                                anchors.fill: parent; anchors.margins: -3
+                                onClicked: App.active.run("relation.retarget-to-document", {})
+                            }
+                        }
+                    }
+
                     // Style — the selection's resolved appearance, forking on a
                     // shared edit exactly as the style toolbar does.
                     StyleSection { visible: App.active && App.active.appearance.any }

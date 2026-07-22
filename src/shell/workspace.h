@@ -110,6 +110,23 @@ class Workspace : public QObject {
     Q_PROPERTY(QString redoLabel READ redoLabel NOTIFY changed)
     Q_PROPERTY(int activeLayer READ activeLayer NOTIFY changed)
 
+    // The U2 canvas-depth projections. The HUD readouts — how many relations the
+    // overlay drew of how many it could, and the declared-direction-class count —
+    // and the per-workspace presentation toggles the canvas and the View menu
+    // share. All presentation: none reaches the document or is recorded, and each
+    // rides the sidecar rather than the journal.
+    // One map {shown, total} rather than two properties, so the HUD reads it once
+    // per changed() — each read runs the whole overlay layout, and the coarse
+    // changed() fires on every hover-move.
+    Q_PROPERTY(QVariantMap glyphReadout READ glyphReadout NOTIFY changed)
+    Q_PROPERTY(int directionClassCount READ directionClassCount NOTIFY changed)
+    Q_PROPERTY(bool hasBackground READ hasBackground NOTIFY changed)
+    Q_PROPERTY(QString background READ backgroundHex NOTIFY changed)
+    Q_PROPERTY(bool showAllFrames READ showAllFrames NOTIFY changed)
+    Q_PROPERTY(bool extensions READ extensions NOTIFY changed)
+    Q_PROPERTY(bool gridVisible READ gridVisible NOTIFY changed)
+    Q_PROPERTY(bool inspectMode READ inspectMode NOTIFY changed)
+
 public:
     explicit Workspace(QObject *parent = nullptr);
     ~Workspace() override;
@@ -172,6 +189,38 @@ public:
     QString undoLabel() const;
     QString redoLabel() const;
     int activeLayer() const;
+
+    QVariantMap glyphReadout() const;
+    int directionClassCount() const;
+    bool hasBackground() const { return background_ != 0; }
+    QString backgroundHex() const;
+    bool showAllFrames() const { return showAllFrames_; }
+    bool extensions() const { return extensions_; }
+    bool gridVisible() const { return gridVisible_; }
+    bool inspectMode() const { return inspectMode_; }
+    // The packed background for render, and the axis frames the canvas draws.
+    // C++-facing, for SketchView: the canvas reads these to fill the Adornment.
+    uint32_t backgroundColor() const { return background_; }
+
+    // ---- Presentation toggles (unrecorded, sidecar-persisted) ----
+    // Each updates transient view state and repaints; none touches the document
+    // or the journal, so a script is unaffected and the determinism property
+    // holds. They persist to the sidecar on save, exactly as pan and zoom do.
+    Q_INVOKABLE void setBackground(const QString &hex);
+    Q_INVOKABLE void clearBackground();
+    Q_INVOKABLE void setShowAllFrames(bool on);
+    Q_INVOKABLE void setExtensions(bool on);
+    Q_INVOKABLE void setGridVisible(bool on);
+    // Inspect mode is transient and not even sidecar-persisted: it is a momentary
+    // way of looking, per the spec, not a preference. Esc and the toggle exit.
+    Q_INVOKABLE void setInspectMode(bool on);
+    Q_INVOKABLE void toggleInspectMode();
+
+    // The glyph-density preference (application settings, display-only). A
+    // multiplier over the policy default, applied to the session's glyph policy
+    // and re-applied whenever the session is replaced, so a loaded or replayed
+    // document honours it too.
+    Q_INVOKABLE void setGlyphDensity(double multiplier);
 
     // ---- QML entrances (the registry, and the state machine) ----
     Q_INVOKABLE QVariantList palette(const QString &query) const;
@@ -248,6 +297,11 @@ signals:
     // A no-silent-changes event was just logged, for the frame to flash as a
     // toast. The reports model is the memory; this is the notice.
     void reportPosted(const QString &text);
+    // A per-anchor ⋯ overflow mark was just picked, so the frame reveals the
+    // inspector — the ⋯ opens the crowd there, per the spec. The session already
+    // selected the anchor's operand, so the inspector's relation list is filtered
+    // to it the moment it is shown.
+    void revealInspector();
 
 private:
     void stepScript();
@@ -275,6 +329,18 @@ private:
     // The previewed pose held between a hover and the paint. Transient view
     // state: the session does not know it exists and the document is untouched.
     std::vector<SeedSpan> ghostPose_;
+
+    // U2 canvas-depth presentation state. Sidecar-persisted (all but inspect
+    // mode), never journalled, never seen by a script — presentation, not edits.
+    uint32_t background_ = 0;   // 0 == theme default
+    bool showAllFrames_ = false;
+    bool extensions_ = false;
+    bool gridVisible_ = true;
+    bool inspectMode_ = false;  // transient, not even sidecar-persisted
+    // The glyph-density multiplier (application setting), applied to the session
+    // glyph policy and re-applied when the session is replaced.
+    double glyphDensity_ = 1.0;
+    void applyGlyphPolicy();
 
     // Script playback, faithful to the recording's own viewport.
     GestureScript script_;

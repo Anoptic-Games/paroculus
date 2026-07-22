@@ -490,6 +490,9 @@ bool doRetargetAxes(Session &session, const Action &, const ActionArguments &a) 
     }
     return session.retargetAxes(RetargetTarget::NewClusterFrame, EntityId());
 }
+bool doRetargetToDocument(Session &session, const Action &, const ActionArguments &) {
+    return session.retargetAxes(RetargetTarget::DocumentFrame, EntityId());
+}
 bool doSetGrid(Session &session, const Action &, const ActionArguments &a) {
     const std::optional<double> step = a.value("step");
     const std::optional<double> enabled = a.value("enabled");
@@ -525,6 +528,16 @@ bool canFlipAlternative(const ActionContext &c, const Action &) {
 // alone. One predicate cannot serve all three because it cannot see the target.
 bool canRetargetAxes(const ActionContext &c, const Action &) {
     return c.axisConstraints > 0 && !c.transformLocked;
+}
+// The second retarget target U2 surfaces: back to the document frame, which
+// sheds a cluster reference. It applies exactly when there is a clustered axis
+// relation to shed and nothing in the closure locked or frame-referenced — the
+// same lock/frame gate the rewrite refuses on — so applicable still equals
+// runnable. A predicate of its own rather than a broadened canRetargetAxes,
+// because broadening the latter would make the no-arg menu default (a new
+// cluster frame) apply to an already-clustered selection and orphan a frame.
+bool canRetargetToDocument(const ActionContext &c, const Action &) {
+    return c.clusteredAxisConstraints > 0 && !c.transformLocked;
 }
 
 // A title a surface can show, derived rather than stored: "point-on-line"
@@ -591,6 +604,8 @@ std::string_view descriptionFor(std::string_view name) {
     if(name == "relation.set-value") return "Set the selected relation's value";
     if(name == "relation.flip-alternative") return "Flip the relation's alternative form";
     if(name == "relation.retarget-axes") return "Retarget the selection's axis relations";
+    if(name == "relation.retarget-to-document")
+        return "Point the selection's axis relations back at the document frame";
     if(name == "snap.set-grid") return "Set grid snapping and its step";
     if(name == "snap.set-construction-attract") return "Toggle snapping to construction geometry";
     if(name == "relation.distribute") return "Distribute the selected points evenly";
@@ -702,6 +717,8 @@ const Catalogue &catalogue() {
              canFlipAlternative, doFlipAlternative},
             {"relation.retarget-axes", "Retarget axes", {}, RETARGET_PARAMETERS, canRetargetAxes,
              doRetargetAxes},
+            {"relation.retarget-to-document", "Retarget to document frame", {}, {},
+             canRetargetToDocument, doRetargetToDocument},
 
             // Layers and groups: organization, so none of these touches a
             // constraint and none of them can refuse an edit. Only visibility
@@ -1086,6 +1103,16 @@ ActionContext contextOf(const Session &session) {
     }
     c.axisConstraints = axisReferencedIn(session.document(), moved).size();
     c.absoluteDimensions = absoluteValuedIn(session.document(), moved).size();
+    // Axis relations already on a cluster frame in the moved set — the ones
+    // retarget-to-document sheds — which axisReferencedIn skips. Walked in record
+    // order for a stable count.
+    for(const ConstraintRecord &rel : session.document().constraints().records()) {
+        if(rel.kind != ConstraintKind::Horizontal && rel.kind != ConstraintKind::Vertical) continue;
+        if(boundOperandCount(rel) <= constraintInfo(rel.kind).operandCount) continue;  // doc-framed
+        if(std::binary_search(moved.begin(), moved.end(), rel.operands[0])) {
+            c.clusteredAxisConstraints++;
+        }
+    }
 
     const EntityId axis = mirrorAxisIn(session.document(), c.selection);
     if(axis.valid()) {

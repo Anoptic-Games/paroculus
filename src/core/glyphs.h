@@ -13,6 +13,7 @@
 #pragma once
 
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "core/geom.h"
@@ -42,7 +43,30 @@ struct GlyphMark {
     // A relation a placement would declare, not one it has. Preview shows
     // truth, and the truth includes which relations are about to exist.
     bool ghost = false;
+
+    // Whether this unvalued mark should carry its mnemonic label beside the
+    // shape. Set by the overlay's budget, not here: a label is dropped before
+    // the mark it labels as density tightens, so which marks get one is a
+    // property of the whole overlay rather than of the mark. Ignored on valued
+    // marks, which always carry their number.
+    bool showLabel = false;
+
+    // The per-anchor overflow mark: the fan around a crowded anchor caps at a
+    // small count and the excess collapses into one ⋯ mark drawn at the next fan
+    // slot. It stands for no single constraint — `constraint` is null — so it is
+    // never a relation selection; picking it opens the inspector on `on`, the
+    // anchor's operand, so detailed inspection is one click from the crowd. Fan
+    // placement stays layOutGlyphs's, so render and hit testing agree on where
+    // the ⋯ sits exactly as they agree on the marks.
+    bool overflow = false;
 };
+
+// The short mnemonic a mark's kind reads as, for the unvalued marks a loose
+// budget labels. Valued kinds return empty — their label is their value, drawn
+// by render from the pose. Stable enough to draw beside the shape without
+// teaching a second vocabulary: it is the kind's convention spelled in a glyph
+// or two, not its full title.
+std::string_view glyphMnemonic(ConstraintKind kind);
 
 // How marks are placed around the geometry they annotate.
 //

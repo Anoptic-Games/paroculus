@@ -40,12 +40,25 @@ struct GlyphContext {
 void marksFor(const Document &doc, const Pose &pose, const ConstraintRecord &constraint,
               std::vector<GlyphMark> &out);
 
-// The visible set, ranked and truncated to the budget.
+// The visible set, ranked and truncated to the budget, with the counts an
+// honest truncation owes the HUD.
 //
+// `marks` is the draw list: the surviving marks plus one ⋯ overflow mark per
+// anchor whose fan the cap collapsed. `total` is how many distinct relations had
+// a mark on screen before any truncation; `shown` is how many still have a drawn
+// (non-overflow) mark. The HUD reads "N of M relations shown" from shown and
+// total, so a dropped relation is counted rather than vanishing silently — which
+// is the whole difference between truncating and lying about it.
+struct VisibleGlyphs {
+    std::vector<GlyphMark> marks;
+    size_t total = 0;
+    size_t shown = 0;
+};
+
 // width, height: viewport pixels, which is what the density budget is against.
-std::vector<GlyphMark> visibleGlyphs(const Document &doc, const Pose &pose,
-                                     const ViewTransform &view, double width, double height,
-                                     const GlyphContext &context, const GlyphPolicy &policy);
+VisibleGlyphs visibleGlyphs(const Document &doc, const Pose &pose,
+                            const ViewTransform &view, double width, double height,
+                            const GlyphContext &context, const GlyphPolicy &policy);
 
 // Marks for relations a placement would declare but has not yet.
 //

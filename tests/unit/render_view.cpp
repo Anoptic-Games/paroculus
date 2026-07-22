@@ -543,3 +543,183 @@ TEST_CASE("fitView frames a circle by its rim, not by its centre") {
         CHECK(a.y() <= H);
     }
 }
+
+TEST_CASE("a resize holds the document point at the viewport centre") {
+    // A window grown or shrunk is not a request to look somewhere else, so the
+    // thing under the centre stays under the centre.
+    ViewState state;
+    state.base = centredView();
+    state.frameOnce(Pose(Document()), W, H, true);  // latch so resize has a base
+    // A pan and zoom off the identity, so the invariant is not true by symmetry.
+    state.zoom = 1.7;
+    state.pan = Eigen::Vector2d(37.0, -21.0);
+
+    const Point centreDoc =
+        state.transform(W, H).toDocument(Eigen::Vector2d(W * 0.5, H * 0.5));
+
+    const int newW = 900, newH = 500;
+    state.resize(W, H, newW, newH);
+    const Eigen::Vector2d landed =
+        state.transform(newW, newH).toScreen(centreDoc);
+    CHECK(landed.x() == doctest::Approx(newW * 0.5));
+    CHECK(landed.y() == doctest::Approx(newH * 0.5));
+    // Zoom is untouched — a resize is not a zoom.
+    CHECK(state.zoom == doctest::Approx(1.7));
+}
+
+TEST_CASE("an unframed view is left alone by a resize") {
+    // Before the framing latches the pan means nothing, so there is nothing to
+    // preserve and resize must not perturb it.
+    ViewState state;
+    state.base = centredView();
+    REQUIRE_FALSE(state.framed);
+    state.pan = Eigen::Vector2d(5.0, 9.0);
+    state.resize(W, H, 900, 500);
+    CHECK(state.pan.x() == doctest::Approx(5.0));
+    CHECK(state.pan.y() == doctest::Approx(9.0));
+}
+
+TEST_CASE("the background colour is applied on the canvas") {
+    Document doc;
+    addSegment(doc, addPoint(doc, -20.0, 0.0), addPoint(doc, 20.0, 0.0));
+    Adornment adornment;
+    adornment.background = 0xff803010u;  // an opaque brown, packed 0xAARRGGBB
+    const std::vector<uint32_t> pixels = paint(Pose(doc), centredView(), adornment);
+    // A corner is untouched by the short segment, so it reads the background —
+    // as a little-endian BGRA word, 0xAABBGGRR.
+    const uint32_t corner = pixels[2u * W + 2u];
+    CHECK(corner != BACKGROUND);
+    CHECK((corner & 0xffu) == 0x10u);          // blue byte at bit 0
+    CHECK(((corner >> 8) & 0xffu) == 0x30u);   // green
+    CHECK(((corner >> 16) & 0xffu) == 0x80u);  // red
+}
+
+TEST_CASE("line extensions reach the raster only when toggled") {
+    // A short horizontal segment near the centre; its carrier line, extended,
+    // paints far from the segment where nothing else does.
+    Document doc;
+    addSegment(doc, addPoint(doc, -10.0, 0.0), addPoint(doc, 10.0, 0.0));
+    const ViewTransform view = centredView();
+    // A point on the carrier well outside the segment, away from the vertices.
+    const Eigen::Vector2d far = view.toScreen(Point{160.0, 0.0});
+
+    Adornment off;
+    CHECK_FALSE(paintedNear(paint(Pose(doc), view, off), far));
+
+    Adornment on;
+    on.extensions = true;
+    CHECK(paintedNear(paint(Pose(doc), view, on), far));
+}
+
+TEST_CASE("the document frame draws its axes only when asked") {
+    Document doc;
+    addSegment(doc, addPoint(doc, 40.0, 40.0), addPoint(doc, 60.0, 40.0));
+    const ViewTransform view = centredView();
+    // The world origin's y-axis, sampled well away from the off-origin segment.
+    const Eigen::Vector2d onAxis = view.toScreen(Point{0.0, -100.0});
+
+    Adornment off;
+    CHECK_FALSE(paintedNear(paint(Pose(doc), view, off), onAxis));
+
+    Adornment on;
+    on.documentFrame = true;
+    CHECK(paintedNear(paint(Pose(doc), view, on), onAxis));
+}
+
+TEST_CASE("inspect mode draws no vertices and no construction geometry") {
+    Document doc;
+    const EntityId a = addPoint(doc, -20.0, 0.0);
+    const EntityId b = addPoint(doc, 20.0, 0.0);
+    const EntityId ordinary = addSegment(doc, a, b);
+    // A construction segment above the ordinary one.
+    const EntityId c = addPoint(doc, -20.0, 40.0);
+    const EntityId d = addPoint(doc, 20.0, 40.0);
+    const EntityId guide = addSegment(doc, c, d);
+    EntityRecord asGuide = *doc.entities().find(guide);
+    asGuide.role = Role::Construction;
+    REQUIRE(doc.apply(SetRecord<EntityRecord>{asGuide}).ok());
+
+    const ViewTransform view = centredView();
+    const Pose pose(doc);
+    (void)ordinary;
+
+    Adornment normal;
+    Adornment inspect;
+    inspect.documentOnly = true;
+
+    // The ordinary segment is drawn in both.
+    CHECK(paintedNear(paint(pose, view, normal), view.toScreen(Point{0.0, 0.0})));
+    CHECK(paintedNear(paint(pose, view, inspect), view.toScreen(Point{0.0, 0.0})));
+    // The construction guide is drawn normally and gone in inspect mode.
+    CHECK(paintedNear(paint(pose, view, normal), view.toScreen(Point{0.0, 40.0})));
+    CHECK_FALSE(paintedNear(paint(pose, view, inspect), view.toScreen(Point{0.0, 40.0})));
+    // A vertex the ordinary segment does not pass through is a handle in normal
+    // and gone in inspect: sample the endpoint's own pixel.
+    CHECK(paintedNear(paint(pose, view, normal), view.toScreen(Point{-20.0, 0.0})));
+}
+
+TEST_CASE("a labelled mark draws more than the bare shape") {
+    // Under a loose budget an unvalued mark carries its mnemonic beside the
+    // shape, so the labelled draw reaches pixels the bare one does not — the
+    // label is really on the raster, not only in the flag.
+    Document doc;
+    const Pose pose = settledDemo(doc);
+    const ViewTransform view = defaultView(W, H);
+
+    GlyphMark bare;
+    bare.kind = ConstraintKind::Parallel;  // unvalued, has a mnemonic
+    bare.anchor = view.toDocument(Eigen::Vector2d(120.0, 250.0));
+    GlyphMark labelled = bare;
+    labelled.showLabel = true;
+
+    Adornment withoutLabel;
+    withoutLabel.glyphs = {bare};
+    Adornment withLabel;
+    withLabel.glyphs = {labelled};
+
+    auto lit = [](const std::vector<uint32_t> &pixels) {
+        return std::count_if(pixels.begin(), pixels.end(),
+                             [](uint32_t p) { return p != BACKGROUND; });
+    };
+    CHECK(lit(paint(pose, view, withLabel)) > lit(paint(pose, view, withoutLabel)));
+}
+
+TEST_CASE("an overflow mark draws where the layout places it") {
+    Document doc;
+    const Pose pose = settledDemo(doc);
+    const ViewTransform view = defaultView(W, H);
+
+    GlyphMark overflow;
+    overflow.overflow = true;
+    overflow.anchor = view.toDocument(Eigen::Vector2d(150.0, 220.0));
+
+    Adornment adornment;
+    adornment.glyphs = {overflow};
+    const std::vector<uint32_t> pixels = paint(pose, view, adornment);
+    // The ⋯ is drawn at the mark's fanned-out place, which layOutGlyphs computes.
+    const std::vector<Eigen::Vector2d> places = layOutGlyphs(adornment.glyphs, view);
+    REQUIRE(places.size() == 1);
+    CHECK(paintedNear(pixels, places.front()));
+}
+
+TEST_CASE("a carrier draws its viewport crossing even when its anchor is far off-screen") {
+    // The extension/axis lines are infinite carriers clipped to the viewport, not
+    // finite segments centred on the anchor: a document whose origin projects far
+    // off-screen must still show the axis crossing the viewport.
+    Document doc;
+    addSegment(doc, addPoint(doc, 0.0, 50.0), addPoint(doc, 20.0, 50.0));
+    // A view that projects the world origin far to the right of the viewport.
+    Eigen::Affine2d m = Eigen::Affine2d::Identity();
+    m.translate(Eigen::Vector2d(5000.0, 150.0));
+    m.scale(Eigen::Vector2d(1.0, -1.0));
+    const ViewTransform view(m);
+
+    Adornment on;
+    on.documentFrame = true;
+    // The x-axis (y_doc=0 -> screen y=150) crosses the whole viewport; a point on
+    // it well inside the viewport must be painted.
+    CHECK(paintedNear(paint(Pose(doc), view, on), Eigen::Vector2d(200.0, 150.0)));
+
+    Adornment off;
+    CHECK_FALSE(paintedNear(paint(Pose(doc), view, off), Eigen::Vector2d(200.0, 150.0)));
+}

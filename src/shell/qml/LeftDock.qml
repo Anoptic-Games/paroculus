@@ -104,6 +104,28 @@ Rectangle {
                     }
                 }
             }
+
+            // Inspect mode: the WYSIWYG toggle, held down like a tool while on. A
+            // shell presentation state, not a session action, so it toggles the
+            // active workspace directly rather than through run().
+            Rectangle {
+                width: 34; height: 34; radius: 5
+                property bool on: App.active && App.active.inspectMode
+                color: on ? Theme.activeBg : (inspectMouse.containsMouse ? Theme.surfaceRaised : "transparent")
+                Text {
+                    anchors.centerIn: parent
+                    color: parent.on ? Theme.textBright : Theme.textSecondary
+                    font.pixelSize: 12; text: qsTr("I")
+                }
+                MouseArea {
+                    id: inspectMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    onClicked: if (App.active) App.active.toggleInspectMode()
+                    ToolTip.visible: containsMouse
+                    ToolTip.text: qsTr("Inspect mode (Ctrl+I)\nDocument as output; Esc exits")
+                }
+            }
         }
 
         Rectangle { Layout.fillWidth: true; Layout.leftMargin: 8; Layout.rightMargin: 8; Layout.preferredHeight: 1; color: Theme.surfaceRaised }

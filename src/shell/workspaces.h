@@ -96,6 +96,11 @@ public:
     Q_INVOKABLE QStringList recentFiles() const;
     Q_INVOKABLE QString defaultDirectory() const;
 
+    // The glyph-density preference is application-wide, so setting it stores the
+    // value and applies it to every open workspace — not only the active one — so
+    // a change is honoured on every tab at once rather than tab by tab.
+    Q_INVOKABLE void setGlyphDensity(double multiplier);
+
 signals:
     void tabsChanged();
     void activeChanged();
