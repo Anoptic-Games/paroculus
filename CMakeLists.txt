@@ -284,7 +284,16 @@ set_source_files_properties(src/shell/qml/Main.qml PROPERTIES QT_RESOURCE_ALIAS 
 qt_add_qml_module(paroculus
     URI Paroculus
     VERSION 1.0
-    QML_FILES src/shell/qml/Main.qml
+    QML_FILES
+        src/shell/qml/Main.qml
+        src/shell/qml/Panel.qml
+        src/shell/qml/ProjectedMenu.qml
+        src/shell/qml/LeftDock.qml
+        src/shell/qml/RightDock.qml
+        src/shell/qml/StripView.qml
+        src/shell/qml/CommandPalette.qml
+        src/shell/qml/Toast.qml
+        src/shell/qml/StatusBarView.qml
 )
 
 install(TARGETS paroculus BUNDLE DESTINATION . RUNTIME DESTINATION bin)

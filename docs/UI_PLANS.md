@@ -220,6 +220,50 @@ Exit: Main.qml is a frame over components; the status mega-string is gone;
 every stage 0-8 capability is reachable in the new furniture; flake check
 green.
 
+Landed. The window frame, workspace tabs, the registry-projected menu bar,
+tools and constraints toolbars, the typed status readouts, the layers/reports
+models and the report toasts, file lifecycle, settings and sidecar v0, and the
+theme token singleton all shipped as scoped. The status mega-string is gone —
+every fragment is now a typed projection, the report-shaped ones through the
+reports model so no-silent-changes is never stringless. The pump runs one
+scheduler at a time: activating a tab enables async on it and disables it on the
+tab being left, so the active-workspace-only invariant holds by construction
+(Session::disableAsyncSolving is its other half). The async threshold is a shell
+constant with no prior named policy; the cross-session scheduler audit stays
+deferred as scope item 1 allowed, since hidden tabs are quiescent.
+
+Main.qml went from one 1011-line file to a 375-line frame over eight components
+— Panel, ProjectedMenu, LeftDock, RightDock, StripView, CommandPalette, Toast,
+StatusBarView. The seam is scope: an extracted .qml reaches App, AppSettings and
+Theme globally, so the split re-routed every frame-local id and function it
+crossed — CommandPalette emits closed() for the frame to focus the canvas rather
+than reaching for it, LeftDock exposes constraintHint for the frame's canvas
+overlay to bind, RightDock owns the lock, layout I/O and bottom-zone visibility,
+and the category filter and the strengths flyout moved into the components that
+use them. Two adversarial passes cleared it: a region-by-region behavior diff
+against the committed monolith found no divergence (handler count reconciles at
+61 vs 60, the one addition being onClosed), and an architecture pass confirmed
+the projection discipline intact — no QML reaches a Session, every surface still
+projects the one actions table.
+
+Carried to U1, none blocking here. RightDock holds three panel bodies inline
+plus persistence; extract LayersPanel, InspectorPanel and ReportsPanel bodies to
+leave it a thin host before U1's deep panels arrive, so those fills are drop-ins
+rather than edits to a grab-bag. The panel-host state it owns — window lock,
+layout persistence, bottom-zone visibility — belongs at the frame or a dedicated
+host once step 5's drag-reorder host materializes, so left and bottom zones do
+not reach into rightDock.* for a lock that is conceptually the window's. actionsIn
+is duplicated verbatim in LeftDock and ProjectedMenu; unify it through a helper
+that still reads App.active.actions inline, because a C++ invokable would drop
+the reactive dependency that re-dims the surfaces on selection. The strengths
+flyout rebuilds sibling row names by suffixing .reference/.measure; look them up
+by kind and strength when the constraints toolbar matures, so a rename cannot
+desync this one surface while the projecting ones keep working. The tab bar and
+the tool-options chip remain inline; extract the chip when the numeric entry
+becomes a real widget. Tooltips carry name, binding and description on the
+toolbars; menus carry name and binding, the description left off because a
+tooltip popup inside a Menu popup is awkward and redundant with the labelled row.
+
 ### Stage U1 — vocabulary
 
 Goal: the registry grows every mutating action and read query the spec's
