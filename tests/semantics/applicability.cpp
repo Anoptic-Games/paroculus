@@ -229,7 +229,17 @@ TEST_CASE("every action is invocable headlessly, applicable or not") {
     for(const Action &action : actions()) {
         CAPTURE(std::string(action.name));
         ActionArguments arguments;
-        for(const ActionParameter &p : action.parameters) arguments.set(p.name, 0.0);
+        // A text parameter reads the string channel. "1" is a valid name and a
+        // valid one-token expression, so it satisfies every text parameter the
+        // catalogue carries — a rename target, a new parameter's name, a value
+        // expression — without the sweep knowing which is which.
+        for(const ActionParameter &p : action.parameters) {
+            if(p.text) {
+                arguments.setText(p.name, "1");
+            } else {
+                arguments.set(p.name, 0.0);
+            }
+        }
 
         const bool applies = action.applicable(contextOf(session), action);
         const bool ran = invokeAction(session, action.name, arguments);

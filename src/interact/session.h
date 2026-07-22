@@ -115,6 +115,14 @@ struct Presentation {
     std::vector<RegionId> brokenRegions;
     std::vector<TagId> brokenTags;
 
+    // How many styles the last appearance edit forked, and the newest one it
+    // made. A forked edit reports itself, because it changed which record the
+    // selection's look comes from — the selection now has its own style rather
+    // than the shared one it was editing. Zero when the edit mutated an
+    // exclusive style in place. Cleared by the next appearance edit.
+    size_t styleForked = 0;
+    StyleId forkedStyle;
+
     // The tool in force, and what it wants shown. Select is the home state, so
     // this reads Select whenever no creation tool is running.
     ToolKind tool = ToolKind::Select;
@@ -600,6 +608,210 @@ public:
     bool setRectangleWidth(TagId tag, double width);
     bool setRectangleHeight(TagId tag, double height);
 
+    // -----------------------------------------------------------------------
+    // Styles
+    // -----------------------------------------------------------------------
+    //
+    // An entity or region references a shared StyleRecord or none, where null is
+    // the compiled-in default look. Editing appearance on a selection whose
+    // style is shared beyond it forks — the selection gets its own record with
+    // the edit applied — so direct manipulation affects what the user is holding
+    // and nothing else. Editing a style exclusive to the selection mutates it in
+    // place. A width or opacity slot holding an expression resists a direct edit,
+    // exactly as a rectangle handle resists an expression-driven dimension.
+
+    // Sets one appearance property over the selection's styleable records,
+    // forking a shared style and mutating an exclusive one. Colours are packed
+    // RGBA. Returns whether anything was applied.
+    bool setStyleStroke(uint32_t color);
+    bool setStyleFill(uint32_t color);
+    bool setStyleStrokeWidth(double width);
+    bool setStyleOpacity(double opacity);
+    bool setStyleFilled(bool filled);
+
+    // Creates a named style capturing the selection's resolved appearance and
+    // applies it to the selection, which then shares it by name.
+    bool createStyle(std::string name);
+
+    // Points the selection's styleable records at an existing style.
+    bool applyStyle(StyleId style);
+
+    // Renames a style. Names are presentation, so this touches no geometry.
+    bool renameStyle(StyleId style, std::string name);
+
+    // The style a style action names: the one given, else the newest, so an
+    // invocation with no id names a style rather than nothing.
+    StyleId targetStyle(std::optional<double> named = std::nullopt) const;
+
+    // The resolved appearance of the selection's styleable records, folded to
+    // the toolbar's mixed-state controls. `any` is false when nothing styleable
+    // is selected. The two expression flags are what the width and opacity
+    // controls read to resist a direct edit.
+    struct StyleAppearance {
+        bool any = false;
+        size_t entities = 0;
+        size_t regions = 0;
+        uint32_t strokeColor = 0xff000000u;
+        bool strokeMixed = false;
+        uint32_t fillColor = 0x00000000u;
+        bool fillMixed = false;
+        double strokeWidth = 1.0;
+        bool strokeWidthExpr = false;
+        bool strokeWidthMixed = false;
+        double opacity = 1.0;
+        bool opacityExpr = false;
+        bool opacityMixed = false;
+        bool filled = false;
+        bool filledMixed = false;
+    };
+    StyleAppearance resolvedAppearance() const;
+
+    // Every named style, with how many records reference it — the inspector's
+    // named-styles list, where "used by N" is visible before a shared edit.
+    struct NamedStyle {
+        StyleId id;
+        std::string name;
+        uint32_t strokeColor = 0xff000000u;
+        uint32_t fillColor = 0x00000000u;
+        double strokeWidth = 1.0;
+        double opacity = 1.0;
+        bool filled = false;
+        size_t usage = 0;
+    };
+    std::vector<NamedStyle> namedStyles() const;
+
+    // -----------------------------------------------------------------------
+    // Parameters
+    // -----------------------------------------------------------------------
+    //
+    // A named document parameter is a value other slots reference by name. The
+    // one place a cycle can enter the value graph, so assignment is the one
+    // operation that checks — the panel asks wouldParameterCycle before it
+    // commits so the refusal is inline rather than after the fact.
+
+    // Creates a named parameter, from a constant or an expression over the
+    // parameters that already exist. An expression that does not parse is
+    // refused rather than coerced.
+    bool createParameterConstant(std::string name, double value);
+    bool createParameterExpression(std::string name, std::string_view expression);
+
+    // Sets an existing parameter's value. The expression form is refused when it
+    // would make the parameter reach itself, or when it does not parse.
+    bool setParameterConstant(ParameterId id, double value);
+    bool setParameterExpression(ParameterId id, std::string_view expression);
+
+    bool renameParameter(ParameterId id, std::string name);
+
+    // Removes a parameter, freezing every referring slot to the value it holds
+    // now — nothing on screen moves, only the provenance is lost.
+    bool deleteParameter(ParameterId id);
+
+    // The parameter a parameter action names: the one given, else the newest.
+    ParameterId targetParameter(std::optional<double> named = std::nullopt) const;
+
+    // Whether assigning `expression` to `id` would make it reach itself. False
+    // when the expression does not parse; an unparseable value is refused for a
+    // reason of its own, which the panel reports apart from a cycle.
+    bool wouldParameterCycle(ParameterId id, std::string_view expression) const;
+
+    // Every parameter, with its editable expression text, its evaluated value,
+    // and how many slots reference it — the parameters panel's list.
+    struct ParameterInfo {
+        ParameterId id;
+        std::string name;
+        std::string expression;
+        double value = 0.0;
+        bool evaluable = false;
+        size_t usage = 0;
+    };
+    std::vector<ParameterInfo> parameters() const;
+
+    // -----------------------------------------------------------------------
+    // Layer, relation and snap vocabulary
+    // -----------------------------------------------------------------------
+
+    // Renames a real layer. The null base layer has no record and so no name to
+    // set — it is the implicit layer every document has without one being
+    // created — so it is left unnamed, and the panel shows it a fixed label.
+    bool renameLayer(LayerId layer, std::string name);
+
+    // The layer new geometry lands on: a recorded session property, not a
+    // document one, so activating a layer is undoable-free the way selecting a
+    // tool is. Tools stamp it on every entity they emit.
+    LayerId activeLayer() const { return activeLayer_; }
+    bool activateLayer(LayerId layer);
+
+    // Sets a valued constraint's value, checked before it drives: a value the
+    // rest of the document cannot hold is committed as a reference measurement
+    // rather than driving to a contradiction — the panel imposition rule the
+    // rectangle panel established.
+    bool setRelationValue(ConstraintId id, double value);
+
+    // Flips a constraint between its alternative forms — a tangency's end, an
+    // angle's supplement. Refused for a kind the taxonomy gives no alternatives.
+    bool flipAlternative(ConstraintId id);
+
+    // The constraint a relation action names: the one given, else the first
+    // selected valued constraint, so an invocation with no id acts on what the
+    // inspector row would.
+    ConstraintId targetConstraint(std::optional<double> named = std::nullopt) const;
+
+    // Retargets the selection's axis relations, the second entrance to the
+    // rewrite rotate performs: to a fresh cluster frame, to an existing one, or
+    // back to the document frame. Rotate's refusal gates hold, and the frame it
+    // creates joins the selection.
+    bool retargetAxes(RetargetTarget target, EntityId frame = EntityId());
+
+    // The snap policy fields that affect an edit, set through recorded actions so
+    // a script replayed under different snapping is the same drawing. Not
+    // journalled — presentation-adjacent session state, like the active layer and
+    // the tool — but recorded, because the placement they change is.
+    bool setSnapGrid(double step, bool enabled);
+    bool setSnapConstructionAttract(bool attract);
+
+    // -----------------------------------------------------------------------
+    // Read-only queries for the panels
+    // -----------------------------------------------------------------------
+
+    // The constraints the selection reaches, with everything a row needs: the
+    // live value, the driving/reference state, and the status flags. With
+    // nothing selected it is the whole document's list, which is how "find every
+    // distance" is one filter and no walk. The recall counterpart of the canvas
+    // glyph budget: the canvas shows what fits, this shows everything.
+    struct ConstraintRow {
+        ConstraintId id;
+        ConstraintKind kind = ConstraintKind::Coincident;
+        std::string name;      // the kind's display title
+        std::string operands;  // a short operand summary
+        bool valued = false;
+        double value = 0.0;     // the live value, driving or measured
+        bool driving = true;
+        bool hasAlternative = false;  // the kind offers a flip
+        // Status flags, read from the last solve and imposition check.
+        bool conflicting = false;
+        bool redundant = false;
+        bool frozenByLock = false;
+    };
+    std::vector<ConstraintRow> constraintRows() const;
+
+    // The axis relations the selection carries and what each references —
+    // "document frame" or a named frame — for the inspector's axis section and
+    // the retarget it offers.
+    struct AxisReference {
+        ConstraintId id;
+        ConstraintKind kind = ConstraintKind::Horizontal;
+        EntityId frame;          // null means the document frame
+        std::string frameName;   // "document frame" or the frame's label
+    };
+    std::vector<AxisReference> axisReferences() const;
+
+    // The journal's step labels and the cursor's position in them, for the
+    // history panel and the undo/redo menu rows.
+    std::vector<std::string> historyLabels() const;
+    size_t historyPosition() const;
+    std::string undoLabel() const;
+    std::string redoLabel() const;
+
     // Flattens the visible drawing for export. The one destructive path in the
     // tool, and it leads out: nothing is written back, and there is no
     // in-document bake.
@@ -654,6 +866,43 @@ private:
     bool applyCompound(const CompoundStep &step, const char *label);
     bool setRectangleSide(TagId tag, bool width, double value);
 
+    // One styleable record the selection reaches: a non-construction entity or a
+    // region, with the style it currently references. What the fork rule groups
+    // by and what resolvedAppearance folds.
+    struct StyleTarget {
+        bool isRegion = false;
+        EntityId entity;
+        RegionId region;
+        StyleId style;
+    };
+    // Which records a setter reaches. Each setter edits exactly the scope its
+    // applicability predicate names, so an applicable edit acts and an
+    // inapplicable one has nothing to act on: set-stroke is entities, set-filled
+    // is regions, and the rest are both.
+    enum class StyleScope { Entities, Regions, All };
+    std::vector<StyleTarget> styleTargets(StyleScope scope = StyleScope::All) const;
+
+    // Applies one appearance edit over the styleable selection within `scope`,
+    // forking any style shared beyond the selection and mutating an exclusive
+    // one. `edit` mutates a StyleRecord; the fork count and forked style land in
+    // the presentation. One place because every setter owes the same fork rule
+    // and a second copy of it is a rule that drifts. A no-op edit changes
+    // nothing and forks nothing.
+    bool applyStyleEdit(const std::function<void(StyleRecord &)> &edit, const char *label,
+                        StyleScope scope);
+
+    // Whether any styleable target's width (or opacity) slot is an expression, so
+    // the width and opacity setters can resist a direct edit in the model rather
+    // than only in the dimmed control.
+    bool styleSlotIsExpression(StyleScope scope, bool width) const;
+
+    // Assigns a parameter's value after the cycle check, records the request,
+    // and refreshes. Shared by the constant and expression entrances so both go
+    // through one check-then-assign.
+    bool commitParameterValue(ParameterId id, const Slot &value,
+                              std::vector<std::pair<std::string, double>> args,
+                              std::vector<std::pair<std::string, std::string>> textArgs);
+
     // Appends the value rewrites a handle drag owes its suppressed dimensions,
     // to whatever step is about to be journalled. Called from both places a drag
     // can end — the pointer release and the numeric twin — because a rewrite
@@ -677,7 +926,8 @@ private:
     // Records the request rather than the outcome, matching confirmOffer: a
     // refused action replays and is refused again, which is the same session.
     void recordAction(std::string_view name,
-                      std::vector<std::pair<std::string, double>> arguments = {});
+                      std::vector<std::pair<std::string, double>> arguments = {},
+                      std::vector<std::pair<std::string, std::string>> textArguments = {});
 
     // Applies whatever a tool asked for, and tells the tool only if it landed.
     // Applies a tool's output through the journal. Returns whether the step
@@ -880,6 +1130,11 @@ private:
     EntityId loopSeed_;
 
     NumericEntry numeric_;
+
+    // The layer new geometry lands on. Session state rather than document state,
+    // so it is recorded for scripts but not journalled: activating a layer is
+    // not an edit any more than choosing a tool is. Null is the base layer.
+    LayerId activeLayer_;
 
     ScriptRecorder *recorder_ = nullptr;
     // Null in the home state. Creation tools are shallow, so there is at most

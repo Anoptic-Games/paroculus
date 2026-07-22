@@ -195,4 +195,36 @@ TransformStep scaleStep(const Document &doc, std::span<const EntityId> selection
 TransformStep nonUniformScaleStep(const Document &doc, std::span<const EntityId> selection,
                                   double factorX, double factorY);
 
+// Where a retarget points the selection's axis relations.
+enum class RetargetTarget : uint8_t {
+    // Build a fresh cluster frame at the current orientation and point the
+    // document-framed axis relations at it — the same rewrite rotate performs
+    // with RetargetToClusterFrame, at zero degrees.
+    NewClusterFrame,
+    // An existing construction segment named in `frame`.
+    ExistingFrame,
+    // Back to the document frame: the axis relations shed their reference and
+    // mean the document axes again.
+    DocumentFrame,
+};
+
+struct RetargetOptions {
+    Point centre;
+    RetargetTarget target = RetargetTarget::NewClusterFrame;
+    EntityId frame;  // ExistingFrame only
+};
+
+// Retargets the selection's axis relations without rotating.
+//
+// The NewClusterFrame answer is exactly rotateStep at zero degrees with
+// RetargetToClusterFrame, so retargeting a rigid cluster leaves every internal
+// residual exactly zero and matches rotate-with-retarget's rewrite on the same
+// cluster — the property that makes this a second entrance to one rewrite rather
+// than a second rewrite. ExistingFrame and DocumentFrame rewrite only the
+// reference operand of the axis relations whose required segment lies inside the
+// moved set, moving no seed. Rotate's refusal gates hold: a lock or a
+// frame-referenced relation in the closure refuses whole, byte-identically.
+TransformStep retargetAxesStep(const Document &doc, std::span<const EntityId> selection,
+                               const RetargetOptions &options);
+
 }  // namespace paroculus

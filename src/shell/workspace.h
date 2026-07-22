@@ -92,6 +92,24 @@ class Workspace : public QObject {
     // reactive cadence strip and layers ride.
     Q_PROPERTY(QVariantList actions READ actions NOTIFY changed)
 
+    // The deep-panel projections U1 binds, each a view of a session query,
+    // rebuilt on changed() like the rest. The inspector reads relations,
+    // appearance and rectanglePanels; the style toolbar reads appearance and
+    // namedStyles; the parameters panel reads parameters; the history panel reads
+    // history and historyPosition; the layers panel reads activeLayer for its
+    // highlight. None mutate — every edit still goes through run().
+    Q_PROPERTY(QVariantList relations READ relations NOTIFY changed)
+    Q_PROPERTY(QVariantMap appearance READ appearance NOTIFY changed)
+    Q_PROPERTY(QVariantList namedStyles READ namedStyles NOTIFY changed)
+    Q_PROPERTY(QVariantList parameters READ parameters NOTIFY changed)
+    Q_PROPERTY(QVariantList axisReferences READ axisReferences NOTIFY changed)
+    Q_PROPERTY(QVariantList rectanglePanels READ rectanglePanels NOTIFY changed)
+    Q_PROPERTY(QVariantList history READ history NOTIFY changed)
+    Q_PROPERTY(int historyPosition READ historyPosition NOTIFY changed)
+    Q_PROPERTY(QString undoLabel READ undoLabel NOTIFY changed)
+    Q_PROPERTY(QString redoLabel READ redoLabel NOTIFY changed)
+    Q_PROPERTY(int activeLayer READ activeLayer NOTIFY changed)
+
 public:
     explicit Workspace(QObject *parent = nullptr);
     ~Workspace() override;
@@ -143,6 +161,18 @@ public:
     // menu bar is a view of the registry rather than a second list that drifts.
     QVariantList actions() const;
 
+    QVariantList relations() const;
+    QVariantMap appearance() const;
+    QVariantList namedStyles() const;
+    QVariantList parameters() const;
+    QVariantList axisReferences() const;
+    QVariantList rectanglePanels() const;
+    QVariantList history() const;
+    int historyPosition() const;
+    QString undoLabel() const;
+    QString redoLabel() const;
+    int activeLayer() const;
+
     // ---- QML entrances (the registry, and the state machine) ----
     Q_INVOKABLE QVariantList palette(const QString &query) const;
     Q_INVOKABLE bool run(const QString &name, const QVariantMap &arguments = {});
@@ -152,6 +182,22 @@ public:
     Q_INVOKABLE void redo();
     Q_INVOKABLE void deleteSelection();
     Q_INVOKABLE QVariantList rectangles() const;
+
+    // Selects a relation from the inspector so an action can act on it. Selection
+    // is presentation, not a document mutation, so it rides an invokable like undo
+    // and delete rather than run() — the same seam those already use. Not
+    // recorded: a script records the click, not the panel; the inspector is a
+    // recall surface over what the click selected.
+    Q_INVOKABLE void selectRelation(int id, bool additive = false);
+
+    // Whether assigning `expression` to parameter `id` would close a cycle, so the
+    // parameters panel can refuse inline at commit rather than after. A read, not
+    // an edit: it computes the check without touching the document.
+    Q_INVOKABLE bool parameterWouldCycle(int id, const QString &expression) const;
+    // Walks the journal to a history position through the ordinary undo/redo path,
+    // so branch fidelity holds. Not a jump: repeated single steps, which is what
+    // clicking a history row means.
+    Q_INVOKABLE void walkHistory(int position);
     // View framing (reset, zoom, fit) stays on SketchView: it needs the item
     // size and must re-sync the viewport, neither of which a workspace has.
 

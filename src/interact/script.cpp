@@ -36,6 +36,55 @@ std::string typedChar(char c) {
     return std::string("\\x") + digits[(u >> 4) & 0xf] + digits[u & 0xf];
 }
 
+// A string action argument — a name, an expression — as one field value.
+//
+// Quoted and escaped like persist's names, with one addition: a literal space
+// takes a hex escape too, so the value stays a single space-delimited token and
+// the line tokenizer needs no quote awareness of its own. A leading quote is
+// what the parser reads as "this is a string" rather than a number, so numbers,
+// which never begin with one, are unambiguous.
+std::string quoteText(std::string_view s) {
+    const char digits[] = "0123456789abcdef";
+    std::string out = "\"";
+    for(char c : s) {
+        const auto u = static_cast<unsigned char>(c);
+        if(u <= 0x20 || u == 0x7f || c == '"' || c == '\\') {
+            out += "\\x";
+            out += digits[(u >> 4) & 0xf];
+            out += digits[u & 0xf];
+            continue;
+        }
+        out += c;
+    }
+    out += '"';
+    return out;
+}
+
+std::optional<std::string> unquoteText(std::string_view s) {
+    if(s.size() < 2 || s.front() != '"' || s.back() != '"') return std::nullopt;
+    const std::string_view body = s.substr(1, s.size() - 2);
+    std::string out;
+    for(size_t i = 0; i < body.size(); i++) {
+        if(body[i] != '\\') {
+            out += body[i];
+            continue;
+        }
+        if(i + 3 >= body.size() || body[i + 1] != 'x') return std::nullopt;
+        int value = 0;
+        for(size_t k = i + 2; k < i + 4; k++) {
+            const char d = body[k];
+            const int n = d >= '0' && d <= '9'   ? d - '0'
+                          : d >= 'a' && d <= 'f' ? d - 'a' + 10
+                                                 : -1;
+            if(n < 0) return std::nullopt;
+            value = value * 16 + n;
+        }
+        out += static_cast<char>(value);
+        i += 3;
+    }
+    return out;
+}
+
 std::optional<char> typedCharFrom(std::string_view s) {
     if(s.size() == 1 && s[0] != '\\') return s[0];
     if(s.size() != 4 || s[0] != '\\' || s[1] != 'x') return std::nullopt;
@@ -288,6 +337,7 @@ std::string serializeScript(const GestureScript &script) {
             case ScriptStep::Kind::Action:
                 out += "action name=" + s.actionName;
                 for(const auto &[key, v] : s.arguments) out += " " + key + "=" + number(v);
+                for(const auto &[key, v] : s.textArguments) out += " " + key + "=" + quoteText(v);
                 break;
         }
         const std::string mods = modifierNames(s.modifiers);
@@ -446,8 +496,21 @@ ScriptLoadResult parseScript(std::string_view text, GestureScript &out) {
                 const auto f = field(tokens[i]);
                 if(!f) return fail("malformed field", lineNumber);
                 const auto [key, value] = *f;
-                if(key == "name") {
+                // The action name is the first field and serialized there. A
+                // later name= is an ordinary argument — parameter.create and the
+                // rename actions carry one — so only the first is the action's
+                // own name, and everything after it is a parameter.
+                if(i == 1 && key == "name") {
                     step.actionName = std::string(value);
+                    continue;
+                }
+                // A leading quote is what marks a string argument. Numbers never
+                // begin with one, so the two channels stay unambiguous without the
+                // parser having to know the action's schema.
+                if(!value.empty() && value.front() == '"') {
+                    const std::optional<std::string> t = unquoteText(value);
+                    if(!t) return fail("malformed action argument", lineNumber);
+                    step.textArguments.emplace_back(std::string(key), *t);
                     continue;
                 }
                 const std::optional<double> v = toDouble(value);
@@ -564,6 +627,7 @@ void applyStep(Session &session, const ScriptStep &step) {
         case ScriptStep::Kind::Action: {
             ActionArguments arguments;
             for(const auto &[key, v] : step.arguments) arguments.set(key, v);
+            for(const auto &[key, v] : step.textArguments) arguments.setText(key, v);
             invokeAction(session, step.actionName, arguments);
             return;
         }
@@ -627,11 +691,13 @@ void ScriptRecorder::numeric(ScriptStep::Kind kind) {
 }
 
 void ScriptRecorder::action(std::string_view name,
-                            const std::vector<std::pair<std::string, double>> &args) {
+                            const std::vector<std::pair<std::string, double>> &args,
+                            const std::vector<std::pair<std::string, std::string>> &textArgs) {
     ScriptStep step;
     step.kind = ScriptStep::Kind::Action;
     step.actionName = std::string(name);
     step.arguments = args;
+    step.textArguments = textArgs;
     steps_.push_back(step);
 }
 

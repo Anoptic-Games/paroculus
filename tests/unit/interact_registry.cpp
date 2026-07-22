@@ -100,6 +100,13 @@ TEST_CASE("every action is invocable headlessly") {
         // parameter took before any of them had a domain worth naming.
         ActionArguments arguments;
         for(const ActionParameter &p : a.parameters) {
+            // Text parameters read the string channel. "1" is a valid name and a
+            // valid one-token expression, so it fills a rename, a new parameter's
+            // name or a value expression alike.
+            if(p.text) {
+                arguments.setText(p.name, "1");
+                continue;
+            }
             double value = 0.0;
             if(p.name == "factor" || p.name == "x" || p.name == "y") value = 2.0;
             if(p.name == "degrees") value = 90.0;
@@ -169,6 +176,21 @@ TEST_CASE("applicable-equals-runnable holds under a locked layer") {
     offset.set("dx", 25.0);
     offset.set("dy", -25.0);
     CHECK(invokeAction(*b.session, "edit.duplicate", offset));
+
+    // The U1 rows that carry a lock gate dim under it too, and refuse when
+    // reached anyway — applicable stays equal to runnable with a lock in force.
+    const Action *retarget = findAction("relation.retarget-axes");
+    const Action *activate = findAction("layer.activate");
+    REQUIRE(retarget != nullptr);
+    REQUIRE(activate != nullptr);
+    // Retarget refuses whole on any lock in the closure, exactly as rotate does,
+    // so its row dims however many axis relations the cluster carries.
+    CHECK_FALSE(retarget->applicable(locked, *retarget));
+    CHECK_FALSE(invokeAction(*b.session, "relation.retarget-axes"));
+    // The selection sits on the locked layer, which cannot take new geometry, so
+    // activating it is refused and the row dims.
+    CHECK_FALSE(activate->applicable(locked, *activate));
+    CHECK_FALSE(invokeAction(*b.session, "layer.activate"));
 
     // The unlocked case is unchanged: all three apply.
     Bench u;
@@ -470,22 +492,39 @@ TEST_CASE("an open field swallows the letters a tool is bound to") {
     CHECK(command.action->name == "tool.rectangle");
 }
 
-TEST_CASE("a control chord resolves to no action") {
-    // resolveKey rejects a Control chord deliberately rather than relying on the
-    // letter guard: on a platform whose text() delivers the plain letter under
-    // Ctrl, ctrl+r must not alias into the rectangle tool. The ctrl+ binding
-    // grammar itself belongs to the production-UI stage.
+TEST_CASE("the ctrl chord grammar resolves undo, redo and duplicate and swallows the rest") {
+    // The production grammar cuts exactly three holes in the Control swallow.
+    // Everything else still resolves to nothing, so a platform whose text()
+    // delivers the plain letter under Ctrl cannot alias ctrl+r into the
+    // rectangle tool — the swallow the earlier stages relied on.
     ActionContext context;
     context.tool = ToolKind::Select;
 
-    // As a platform might deliver ctrl+r: the plain letter, Control set.
-    CHECK(resolveKey(context, charKey('r', Modifier::Control)).kind == KeyBinding::Kind::None);
-    CHECK(resolveKey(context, charKey('z', Modifier::Control)).kind == KeyBinding::Kind::None);
+    const KeyBinding undo = resolveKey(context, charKey('z', Modifier::Control));
+    REQUIRE(undo.kind == KeyBinding::Kind::Action);
+    CHECK(undo.action->name == "edit.undo");
 
-    // The bare and shift bindings still resolve.
+    const KeyBinding redo = resolveKey(context, charKey('z', Modifier::Control | Modifier::Shift));
+    REQUIRE(redo.kind == KeyBinding::Kind::Action);
+    CHECK(redo.action->name == "edit.redo");
+
+    const KeyBinding dup = resolveKey(context, charKey('d', Modifier::Control));
+    REQUIRE(dup.kind == KeyBinding::Kind::Action);
+    CHECK(dup.action->name == "edit.duplicate");
+
+    // Unbound ctrl chords swallow, ctrl+r among them.
+    CHECK(resolveKey(context, charKey('r', Modifier::Control)).kind == KeyBinding::Kind::None);
+    CHECK(resolveKey(context, charKey('g', Modifier::Control)).kind == KeyBinding::Kind::None);
+
+    // The bare and shift bindings are unchanged: they still resolve exactly as
+    // they did before the ctrl grammar existed.
     const KeyBinding bare = resolveKey(context, charKey('r'));
     REQUIRE(bare.kind == KeyBinding::Kind::Action);
     CHECK(bare.action->name == "tool.rectangle");
+
+    const KeyBinding bareUndo = resolveKey(context, charKey('z'));
+    REQUIRE(bareUndo.kind == KeyBinding::Kind::Action);
+    CHECK(bareUndo.action->name == "edit.undo");
 
     const KeyBinding shifted = resolveKey(context, charKey('z', Modifier::Shift));
     REQUIRE(shifted.kind == KeyBinding::Kind::Action);

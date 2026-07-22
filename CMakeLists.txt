@@ -91,6 +91,8 @@ add_library(paroculus-core STATIC
     src/core/copy.h
     src/core/document.cpp
     src/core/document.h
+    src/core/expression.cpp
+    src/core/expression.h
     src/core/geom.h
     src/core/glyphs.cpp
     src/core/glyphs.h
@@ -294,6 +296,9 @@ qt_add_qml_module(paroculus
         src/shell/qml/CommandPalette.qml
         src/shell/qml/Toast.qml
         src/shell/qml/StatusBarView.qml
+        src/shell/qml/SlotField.qml
+        src/shell/qml/StyleSection.qml
+        src/shell/qml/StyleBar.qml
 )
 
 install(TARGETS paroculus BUNDLE DESTINATION . RUNTIME DESTINATION bin)
@@ -312,6 +317,7 @@ if(PAROCULUS_TESTS)
         tests/support/build.h
         tests/unit/core_composition.cpp
         tests/unit/core_document.cpp
+    tests/unit/core_expression.cpp
         tests/unit/core_geom.cpp
         tests/unit/core_ids.cpp
         tests/unit/core_parameters.cpp
@@ -349,6 +355,7 @@ if(PAROCULUS_TESTS)
         tests/gestures/flagship.cpp
         tests/gestures/inference.cpp
         tests/gestures/structure.cpp
+    tests/gestures/vocabulary.cpp
         tests/unit/solve_context.cpp
         tests/unit/solve_demosketch.cpp
         tests/unit/solve_scheduler.cpp
@@ -356,6 +363,7 @@ if(PAROCULUS_TESTS)
         tests/semantics/catalogue.cpp
         tests/semantics/branches.cpp
         tests/semantics/structure.cpp
+    tests/semantics/vocabulary.cpp
     )
     target_link_libraries(paroculus-tests PRIVATE
         doctest::doctest
@@ -389,6 +397,7 @@ if(PAROCULUS_TESTS)
         tests/shell/translation.cpp
         tests/shell/sidecar.cpp
         tests/shell/workspace.cpp
+        tests/shell/panels.cpp
         src/shell/sketchview.cpp
         src/shell/sketchview.h
         src/app/scriptplay.cpp

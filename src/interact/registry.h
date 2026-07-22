@@ -36,20 +36,30 @@ namespace paroculus {
 
 class Session;
 
-// One parameter an action accepts. Numbers only in v0 — the language grows to
-// slots and expressions with the property editor, and the schema is here so it
-// can grow rather than be retrofitted.
+// One parameter an action accepts. Most are numbers; `text` marks the ones that
+// carry a string instead — a name to rename to, an infix expression to assign —
+// which is the growth the v0 schema was left room for. A text parameter reads
+// from the arguments' text channel and a numeric one from the value channel, so
+// the two never collide and a surface fills whichever the schema names.
 struct ActionParameter {
     std::string_view name;
     bool required = false;
+    bool text = false;
 };
 
-// The arguments one invocation carries.
+// The arguments one invocation carries: numbers in one channel, strings in
+// another. Two channels rather than a variant because the schema already says
+// which a parameter reads, and a name that happens to spell a number ("2024" for
+// a layer) must not be read as one.
 struct ActionArguments {
     std::vector<std::pair<std::string, double>> values;
+    std::vector<std::pair<std::string, std::string>> texts;
 
     std::optional<double> value(std::string_view name) const;
     void set(std::string_view name, double v);
+
+    std::optional<std::string_view> text(std::string_view name) const;
+    void setText(std::string_view name, std::string v);
 };
 
 // What applicability is decided against.
@@ -124,6 +134,28 @@ struct ActionContext {
     // too: a drag has a numeric twin exactly as a placement does, and digits
     // have to open its field even though the tool in force is Select.
     bool dragging = false;
+
+    // The styleable records the selection reaches, and whether a width or
+    // opacity edit would resist. The style setters dim by these counts and by
+    // the expression flags, exactly as the rectangle handle resists an
+    // expression-driven dimension — an applicable style edit must run, so the
+    // predicate has to see the same resistance the edit does.
+    size_t styleableEntities = 0;
+    size_t styleableRegions = 0;
+    bool strokeWidthExpr = false;
+    bool opacityExpr = false;
+    // Styles and parameters the document holds, for the actions that name one:
+    // apply, rename and the parameter family dim to nothing when there is none
+    // to act on, and default to the newest when invoked with no id.
+    size_t namedStyleCount = 0;
+    size_t parameterCount = 0;
+
+    // The first selected constraint's flags, for the relation actions that act
+    // on it with no id: set-value wants a valued one, flip-alternative one the
+    // taxonomy gives alternatives. The inspector passes an explicit id per row,
+    // so this is the menu-and-default reading.
+    bool selectedConstraintValued = false;
+    bool selectedConstraintHasAlternative = false;
 };
 
 struct Action {

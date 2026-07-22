@@ -27,8 +27,11 @@ Item {
     property alias layersVisible: layersPanel.visible
     property alias inspectorVisible: inspectorPanel.visible
     property alias reportsVisible: reportsPanel.visible
+    property alias parametersVisible: parametersPanel.visible
+    property alias historyVisible: historyPanel.visible
     readonly property bool anyOpen: layersPanel.visible || inspectorPanel.visible
-                                    || reportsPanel.visible
+                                    || reportsPanel.visible || parametersPanel.visible
+                                    || historyPanel.visible
 
     // Drag-resizable width, defaulting to a quarter of the row the dock shares
     // with the canvas. A binding until the user drags, then a fixed value; the
@@ -45,10 +48,17 @@ Item {
     function resetPanels() {
         layersPanel.visible = true
         layersPanel.collapsed = false
-        inspectorPanel.visible = false
+        inspectorPanel.visible = true
         inspectorPanel.collapsed = false
-        reportsPanel.visible = true
+        // Reports, parameters and history are closed by default per the spec's
+        // layout: the toast is the notice, the panel is the memory opened when
+        // wanted, so the canvas keeps the room.
+        reportsPanel.visible = false
         reportsPanel.collapsed = false
+        parametersPanel.visible = false
+        parametersPanel.collapsed = false
+        historyPanel.visible = false
+        historyPanel.collapsed = false
         bottomDockVisible = false
         locked = false
         dockWidth = Qt.binding(function() { return Math.round((parent ? parent.width : 900) * 0.25) })
@@ -67,6 +77,8 @@ Item {
             layers: [layersPanel.visible, layersPanel.collapsed],
             inspector: [inspectorPanel.visible, inspectorPanel.collapsed],
             reports: [reportsPanel.visible, reportsPanel.collapsed],
+            parameters: [parametersPanel.visible, parametersPanel.collapsed],
+            history: [historyPanel.visible, historyPanel.collapsed],
             width: dockWidth,
             bottom: bottomDockVisible,
             lock: locked
@@ -80,6 +92,9 @@ Item {
                 layersPanel.visible = o.layers[0]; layersPanel.collapsed = o.layers[1]
                 inspectorPanel.visible = o.inspector[0]; inspectorPanel.collapsed = o.inspector[1]
                 reportsPanel.visible = o.reports[0]; reportsPanel.collapsed = o.reports[1]
+                // Added in U1, so an older saved layout may not carry them.
+                if (o.parameters) { parametersPanel.visible = o.parameters[0]; parametersPanel.collapsed = o.parameters[1] }
+                if (o.history) { historyPanel.visible = o.history[0]; historyPanel.collapsed = o.history[1] }
                 if (o.width) dockWidth = o.width
                 bottomDockVisible = o.bottom
                 locked = o.lock
@@ -148,49 +163,122 @@ Item {
                 onCollapsedChanged: rightDock.savePanelLayout()
                 Column {
                     width: parent.width
-                    spacing: 4
+                    spacing: 2
                     Repeater {
+                        // Real layers only. The implicit null base layer has no
+                        // record and so no row — activating, renaming, hiding or
+                        // locking it would all route through layer id 0, which the
+                        // action layer reads as "the selection's layer" rather than
+                        // the base. It is named below when no real layer exists so
+                        // the panel is never blank.
                         model: App.active ? App.active.layers : []
-                        delegate: Row {
+                        delegate: Rectangle {
                             required property var modelData
-                            spacing: 8
-                            Text {
-                                color: modelData.visible ? Theme.info : Theme.textDim
-                                font.pixelSize: 11
-                                font.family: "monospace"
-                                text: modelData.visible ? qsTr("shown") : qsTr("hidden")
-                                MouseArea {
-                                    anchors.fill: parent
-                                    anchors.margins: -3
-                                    onClicked: App.active.run(
-                                        modelData.visible ? "layer.hide" : "layer.show",
-                                        { "layer": modelData.id })
+                            width: parent.width
+                            height: 22
+                            radius: 3
+                            // A highlight for the active layer, the layer new
+                            // geometry lands on.
+                            color: modelData.active ? Theme.activeBg : "transparent"
+                            Row {
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.left: parent.left; anchors.right: parent.right
+                                anchors.leftMargin: 4; anchors.rightMargin: 4
+                                spacing: 6
+                                Text {  // the visible toggle, projecting layer.hide/show
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    color: modelData.visible ? Theme.info : Theme.textDim
+                                    font.pixelSize: 10; font.family: "monospace"
+                                    text: modelData.visible ? qsTr("vis") : qsTr("hid")
+                                    MouseArea {
+                                        anchors.fill: parent; anchors.margins: -3
+                                        onClicked: App.active.run(
+                                            modelData.visible ? "layer.hide" : "layer.show",
+                                            { "layer": modelData.id })
+                                    }
                                 }
-                            }
-                            Text {
-                                color: modelData.locked ? Theme.warn : Theme.textDim
-                                font.pixelSize: 11
-                                font.family: "monospace"
-                                text: modelData.locked ? qsTr("locked") : qsTr("open")
-                                MouseArea {
-                                    anchors.fill: parent
-                                    anchors.margins: -3
-                                    onClicked: App.active.run(
-                                        modelData.locked ? "layer.unlock" : "layer.lock",
-                                        { "layer": modelData.id })
+                                Text {  // the lock toggle, projecting layer.lock/unlock
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    color: modelData.locked ? Theme.warn : Theme.textDim
+                                    font.pixelSize: 10; font.family: "monospace"
+                                    text: modelData.locked ? qsTr("lk") : qsTr("—")
+                                    MouseArea {
+                                        anchors.fill: parent; anchors.margins: -3
+                                        onClicked: App.active.run(
+                                            modelData.locked ? "layer.unlock" : "layer.lock",
+                                            { "layer": modelData.id })
+                                    }
                                 }
-                            }
-                            Text {
-                                color: modelData.visible ? Theme.textPrimary : Theme.textDim
-                                font.pixelSize: 12
-                                text: modelData.name
+                                Item {
+                                    width: parent.width - 120
+                                    height: 18
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    Text {
+                                        visible: !renameField.visible
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: parent.width; elide: Text.ElideRight
+                                        color: modelData.visible ? Theme.textPrimary : Theme.textDim
+                                        font.pixelSize: 12
+                                        font.bold: modelData.active
+                                        text: modelData.name.length > 0 ? modelData.name : qsTr("base")
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            // Click to activate. The base has no
+                                            // record to name, and a locked layer
+                                            // cannot take new geometry, so activate
+                                            // is offered on neither — the row
+                                            // projects its own lock, which is what
+                                            // the session refuses on.
+                                            onClicked: if (modelData.id !== 0 && !modelData.locked)
+                                                App.active.run("layer.activate", { "layer": modelData.id })
+                                            // Double-click to rename. The base layer
+                                            // has no record to name, so it is left.
+                                            onDoubleClicked: {
+                                                if (modelData.id === 0) return
+                                                renameField.text = modelData.name
+                                                renameField.visible = true
+                                                renameField.forceActiveFocus()
+                                                renameField.selectAll()
+                                            }
+                                        }
+                                    }
+                                    TextField {
+                                        id: renameField
+                                        visible: false
+                                        anchors.fill: parent
+                                        font.pixelSize: 12
+                                        onAccepted: {
+                                            App.active.run("layer.rename",
+                                                { "layer": modelData.id, "name": text })
+                                            visible = false
+                                        }
+                                        onActiveFocusChanged: if (!activeFocus) visible = false
+                                    }
+                                }
+                                Text {  // the entity-count badge
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    color: Theme.textDim; font.pixelSize: 10
+                                    text: modelData.count
+                                }
                             }
                         }
                     }
+                    // The implicit base layer has no record and so no row of its
+                    // own — it is the layer every document has without one being
+                    // created. Named when no real layer exists so the panel is not
+                    // empty on a fresh document.
                     Text {
                         visible: !App.active || App.active.layers.length === 0
                         color: Theme.textDim; font.pixelSize: 11
-                        text: qsTr("base layer only")
+                        text: qsTr("base layer")
+                    }
+                    Text {
+                        color: Theme.info; font.pixelSize: 11
+                        text: qsTr("+ new layer")
+                        MouseArea {
+                            anchors.fill: parent; anchors.margins: -3
+                            onClicked: App.active.run("layer.new", {})
+                        }
                     }
                 }
             }
@@ -198,15 +286,164 @@ Item {
             Panel {
                 id: inspectorPanel
                 title: qsTr("Inspector")
-                visible: false  // closed by default; the deep sections land in U1
                 locked: rightDock.locked
                 onVisibleChanged: rightDock.savePanelLayout()
                 onCollapsedChanged: rightDock.savePanelLayout()
-                Text {
+                Column {
                     width: parent.width
-                    wrapMode: Text.WordWrap
-                    color: Theme.textMuted; font.pixelSize: 11
-                    text: App.active ? App.active.selectionText : ""
+                    spacing: 8
+
+                    // Selection — the signature line.
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        color: Theme.textMuted; font.pixelSize: 11
+                        text: App.active ? App.active.selectionText : ""
+                    }
+
+                    // Rectangle size — width and height driving the tag's slots
+                    // through the checked tag.set-width / set-height path.
+                    Repeater {
+                        model: App.active ? App.active.rectanglePanels : []
+                        delegate: Row {
+                            required property var modelData
+                            spacing: 6
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: Theme.textSecondary; font.pixelSize: 11; text: qsTr("size")
+                            }
+                            SlotField {
+                                width: 64
+                                label: modelData.widthDriven ? "w" : "w?"
+                                value: modelData.width.toFixed(2)
+                                onCommitted: App.active.run("tag.set-width",
+                                    { "tag": modelData.tag, "value": parseFloat(text) })
+                            }
+                            SlotField {
+                                width: 64
+                                label: modelData.heightDriven ? "h" : "h?"
+                                value: modelData.height.toFixed(2)
+                                onCommitted: App.active.run("tag.set-height",
+                                    { "tag": modelData.tag, "value": parseFloat(text) })
+                            }
+                        }
+                    }
+
+                    // Relations — the full constraint list, unbudgeted. Driving
+                    // plain, reference bracketed, live; status flags tinted.
+                    Column {
+                        width: parent.width
+                        spacing: 1
+                        visible: App.active && App.active.relations.length > 0
+                        Text {
+                            color: Theme.textDim; font.pixelSize: 10
+                            text: qsTr("RELATIONS")
+                        }
+                        Repeater {
+                            model: App.active ? App.active.relations : []
+                            delegate: Rectangle {
+                                required property var modelData
+                                width: parent.width
+                                height: relationRow.implicitHeight + 4
+                                radius: 2
+                                color: rowHover.hovered ? Theme.hover : "transparent"
+                                HoverHandler { id: rowHover }
+                                Row {
+                                    id: relationRow
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: parent.width - 4; x: 2
+                                    spacing: 6
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: parent.width - 132
+                                        elide: Text.ElideRight
+                                        color: modelData.conflicting ? Theme.warn
+                                             : modelData.frozen ? Theme.textDim
+                                             : Theme.textPrimary
+                                        font.pixelSize: 11
+                                        text: modelData.kind
+                                              + (modelData.operands.length > 0 ? " " + modelData.operands : "")
+                                              + (modelData.redundant ? " ·redundant" : "")
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            onClicked: App.active.selectRelation(modelData.id, false)
+                                        }
+                                    }
+                                    // The value, editable through checked set-value.
+                                    // A reference is marked rather than bracketed
+                                    // so the field stays a plain number to edit.
+                                    SlotField {
+                                        visible: modelData.valued
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 74
+                                        label: modelData.driving ? "" : "ref"
+                                        value: modelData.value.toFixed(1)
+                                        // Select the relation first: set-value's
+                                        // applicability is selection-based (a valued
+                                        // constraint selected), so editing the field
+                                        // selects the row it edits — which is also
+                                        // what highlights the glyph on the canvas.
+                                        // A non-finite parse is dropped rather than
+                                        // driven into the solve.
+                                        onCommitted: {
+                                            var v = parseFloat(text)
+                                            if (isNaN(v)) return
+                                            App.active.selectRelation(modelData.id)
+                                            App.active.run("relation.set-value", { "value": v })
+                                        }
+                                    }
+                                    Text {  // driving / reference toggle
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        color: Theme.textDim; font.pixelSize: 10; text: "D"
+                                        MouseArea {
+                                            anchors.fill: parent; anchors.margins: -3
+                                            onClicked: {
+                                                App.active.selectRelation(modelData.id)
+                                                App.active.run("relation.toggle-driving", {})
+                                            }
+                                        }
+                                    }
+                                    Text {  // flip alternative, when the kind has one
+                                        visible: modelData.hasAlternative
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        color: Theme.textDim; font.pixelSize: 10; text: "⇄"
+                                        MouseArea {
+                                            anchors.fill: parent; anchors.margins: -3
+                                            // Selection-based applicability, so
+                                            // select the row before flipping it.
+                                            onClicked: {
+                                                App.active.selectRelation(modelData.id)
+                                                App.active.run("relation.flip-alternative", {})
+                                            }
+                                        }
+                                    }
+                                    Text {  // delete
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        color: Theme.textDim; font.pixelSize: 11; text: "×"
+                                        MouseArea {
+                                            anchors.fill: parent; anchors.margins: -3
+                                            // Selects then deletes. Like every
+                                            // relation row action this is a recall
+                                            // surface: it edits the live document
+                                            // through the selection, which a script
+                                            // records as the click on the canvas
+                                            // glyph, not as the panel button — the
+                                            // recordable delete is select-glyph +
+                                            // Delete.
+                                            onClicked: {
+                                                App.active.selectRelation(modelData.id)
+                                                App.active.deleteSelection()
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Style — the selection's resolved appearance, forking on a
+                    // shared edit exactly as the style toolbar does.
+                    StyleSection { visible: App.active && App.active.appearance.any }
                 }
             }
 
@@ -230,6 +467,138 @@ Item {
                         color: Theme.textSecondary; font.pixelSize: 11
                         bottomPadding: 4
                         text: model.text
+                    }
+                }
+            }
+
+            // Parameters — the payoff surface of the slot thread. A parameter
+            // driving twenty widths is edited here, once. Closed by default.
+            Panel {
+                id: parametersPanel
+                title: qsTr("Parameters")
+                visible: false
+                locked: rightDock.locked
+                onVisibleChanged: rightDock.savePanelLayout()
+                onCollapsedChanged: rightDock.savePanelLayout()
+                Column {
+                    width: parent.width
+                    spacing: 2
+                    Repeater {
+                        model: App.active ? App.active.parameters : []
+                        delegate: Row {
+                            required property var modelData
+                            property bool cycleWarn: false
+                            width: parent.width
+                            spacing: 6
+                            Item {
+                                width: 70; height: 18
+                                anchors.verticalCenter: parent.verticalCenter
+                                Text {
+                                    id: pName
+                                    visible: !pRename.visible
+                                    anchors.fill: parent; verticalAlignment: Text.AlignVCenter
+                                    elide: Text.ElideRight
+                                    color: Theme.textPrimary; font.pixelSize: 12
+                                    text: modelData.name
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        onDoubleClicked: {
+                                            pRename.text = modelData.name; pRename.visible = true
+                                            pRename.forceActiveFocus(); pRename.selectAll()
+                                        }
+                                    }
+                                }
+                                TextField {
+                                    id: pRename; visible: false; anchors.fill: parent
+                                    font.pixelSize: 12
+                                    onAccepted: {
+                                        App.active.run("parameter.rename", { "id": modelData.id, "name": text })
+                                        visible = false
+                                    }
+                                    onActiveFocusChanged: if (!activeFocus) visible = false
+                                }
+                            }
+                            SlotField {
+                                width: 96
+                                anchors.verticalCenter: parent.verticalCenter
+                                // The expression text, editable. A parameter value
+                                // is always passed as an expression — the parser
+                                // reads a bare number as a constant — so references
+                                // to other parameters and arithmetic both commit.
+                                value: modelData.evaluable ? modelData.expression : qsTr("unevaluable")
+                                onCommitted: {
+                                    // wouldCycle refused inline, before the commit,
+                                    // not after: the check the panel owes the user.
+                                    if (App.active.parameterWouldCycle(modelData.id, text)) {
+                                        parent.cycleWarn = true
+                                    } else {
+                                        parent.cycleWarn = false
+                                        App.active.run("parameter.set", { "id": modelData.id, "expression": text })
+                                    }
+                                }
+                            }
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: parent.cycleWarn ? Theme.warn : Theme.textDim
+                                font.pixelSize: 9
+                                text: parent.cycleWarn ? qsTr("cycle") : ("×" + modelData.usage)
+                            }
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: Theme.textDim; font.pixelSize: 11; text: "×"
+                                MouseArea {
+                                    anchors.fill: parent; anchors.margins: -3
+                                    // Freeze semantics: deleting states that
+                                    // referring slots freeze to their value.
+                                    onClicked: App.active.run("parameter.delete", { "id": modelData.id })
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        color: Theme.info; font.pixelSize: 11
+                        text: qsTr("+ new parameter")
+                        MouseArea {
+                            anchors.fill: parent; anchors.margins: -3
+                            onClicked: App.active.run("parameter.create", { "name": "param", "value": 0 })
+                        }
+                    }
+                }
+            }
+
+            // History — the undo journal as a list, click to walk to a position
+            // through the ordinary undo/redo path so branch fidelity holds.
+            Panel {
+                id: historyPanel
+                title: qsTr("History")
+                visible: false
+                locked: rightDock.locked
+                onVisibleChanged: rightDock.savePanelLayout()
+                onCollapsedChanged: rightDock.savePanelLayout()
+                Column {
+                    width: parent.width
+                    spacing: 1
+                    Text {
+                        color: (App.active && App.active.historyPosition === 0) ? Theme.textBright : Theme.textDim
+                        font.pixelSize: 11; text: qsTr("○ start")
+                        MouseArea { anchors.fill: parent; anchors.margins: -2
+                            onClicked: App.active.walkHistory(0) }
+                    }
+                    Repeater {
+                        model: App.active ? App.active.history : []
+                        delegate: Text {
+                            required property var modelData
+                            required property int index
+                            width: parent.width; elide: Text.ElideRight
+                            // Applied steps are below the cursor; undone ones above
+                            // it are dimmed, exactly as the journal's depth divides.
+                            color: (App.active && index < App.active.historyPosition)
+                                   ? Theme.textPrimary : Theme.textDim
+                            font.pixelSize: 11
+                            text: (index + 1) + ". " + modelData
+                            MouseArea { anchors.fill: parent; anchors.margins: -2
+                                onClicked: App.active.walkHistory(index + 1) }
+                        }
                     }
                 }
             }

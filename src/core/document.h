@@ -242,6 +242,15 @@ ParameterDependents dependentsOf(const Document &doc, ParameterId id);
 std::vector<Command> deletionStep(const Document &doc, EntityId id);
 std::vector<Command> deletionStep(const Document &doc, std::span<const EntityId> ids);
 
+// The constraints naming any of `entities` as an operand, in ID order.
+//
+// The entity→constraint reverse lookup the inspector's relations list walks: what
+// binds this selection, unbudgeted, so the panel can show everything the canvas
+// glyph budget could not. A linear scan for now — the reverse index selection.h
+// anticipates is the same trade the component partition records, worth building
+// with a profile in hand and a document large enough to need it.
+std::vector<ConstraintId> constraintsOn(const Document &doc, std::span<const EntityId> entities);
+
 // The tags naming `id` among the relations that define them, in ID order.
 //
 // A tag is the one record that names constraints rather than only geometry, so

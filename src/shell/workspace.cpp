@@ -1,6 +1,7 @@
 #include "shell/workspace.h"
 
 #include <cstdio>
+#include <map>
 
 #include <QFileInfo>
 #include <QStringList>
@@ -21,6 +22,13 @@ namespace {
 // component should ever pay. A display-only, corpus-free number the discovery
 // window tunes; changing it moves no recorded gesture.
 constexpr size_t kAsyncEntityThreshold = 256;
+
+// A packed 0xAARRGGBB colour as the "#aarrggbb" QML reads as a color. The raw
+// value rides alongside for the setter, which passes it back to run() as a
+// number — QML colour bindings want the string, the action wants the number.
+QString argbHex(uint32_t colour) {
+    return QString::asprintf("#%08x", colour);
+}
 
 // One surface entry, as QML sees it. A plain map: the list is short, rebuilt
 // whenever anything changes, and a model would be a second place for
@@ -310,6 +318,12 @@ QVariantList Workspace::strip() const {
 }
 
 QVariantList Workspace::layers() const {
+    // Entity counts per layer, computed once for the whole panel: the badge the
+    // layers list carries beside the visible and lock toggles.
+    std::map<uint32_t, int> counts;
+    for(const EntityRecord &e : session_->document().entities().records()) counts[e.layer.value()]++;
+    const uint32_t active = session_->activeLayer().value();
+
     QVariantList out;
     for(LayerId id : layerOrder(session_->document())) {
         const LayerRecord *layer = session_->document().layers().find(id);
@@ -319,6 +333,9 @@ QVariantList Workspace::layers() const {
         row["name"] = QString::fromStdString(layer->name);
         row["visible"] = layer->visible;
         row["locked"] = layer->locked;
+        row["active"] = layer->id.value() == active;
+        const auto it = counts.find(layer->id.value());
+        row["count"] = it != counts.end() ? it->second : 0;
         out.prepend(row);
     }
     return out;
@@ -348,6 +365,131 @@ QVariantList Workspace::rectangles() const {
     return out;
 }
 
+QVariantList Workspace::relations() const {
+    QVariantList out;
+    for(const Session::ConstraintRow &r : session_->constraintRows()) {
+        QVariantMap m;
+        m[QStringLiteral("id")] = static_cast<int>(r.id.value());
+        m[QStringLiteral("kind")] = QString::fromStdString(r.name);
+        m[QStringLiteral("operands")] = QString::fromStdString(r.operands);
+        m[QStringLiteral("valued")] = r.valued;
+        m[QStringLiteral("value")] = r.value;
+        m[QStringLiteral("driving")] = r.driving;
+        m[QStringLiteral("hasAlternative")] = r.hasAlternative;
+        m[QStringLiteral("conflicting")] = r.conflicting;
+        m[QStringLiteral("redundant")] = r.redundant;
+        m[QStringLiteral("frozen")] = r.frozenByLock;
+        out.append(m);
+    }
+    return out;
+}
+
+QVariantMap Workspace::appearance() const {
+    const Session::StyleAppearance a = session_->resolvedAppearance();
+    QVariantMap m;
+    m[QStringLiteral("any")] = a.any;
+    m[QStringLiteral("entities")] = static_cast<int>(a.entities);
+    m[QStringLiteral("regions")] = static_cast<int>(a.regions);
+    m[QStringLiteral("strokeColor")] = argbHex(a.strokeColor);
+    m[QStringLiteral("strokeColorValue")] = static_cast<double>(a.strokeColor);
+    m[QStringLiteral("strokeMixed")] = a.strokeMixed;
+    m[QStringLiteral("fillColor")] = argbHex(a.fillColor);
+    m[QStringLiteral("fillColorValue")] = static_cast<double>(a.fillColor);
+    m[QStringLiteral("fillMixed")] = a.fillMixed;
+    m[QStringLiteral("strokeWidth")] = a.strokeWidth;
+    m[QStringLiteral("strokeWidthExpr")] = a.strokeWidthExpr;
+    m[QStringLiteral("strokeWidthMixed")] = a.strokeWidthMixed;
+    m[QStringLiteral("opacity")] = a.opacity;
+    m[QStringLiteral("opacityExpr")] = a.opacityExpr;
+    m[QStringLiteral("opacityMixed")] = a.opacityMixed;
+    m[QStringLiteral("filled")] = a.filled;
+    m[QStringLiteral("filledMixed")] = a.filledMixed;
+    return m;
+}
+
+QVariantList Workspace::namedStyles() const {
+    QVariantList out;
+    for(const Session::NamedStyle &s : session_->namedStyles()) {
+        QVariantMap m;
+        m[QStringLiteral("id")] = static_cast<int>(s.id.value());
+        m[QStringLiteral("name")] = QString::fromStdString(s.name);
+        m[QStringLiteral("strokeColor")] = argbHex(s.strokeColor);
+        m[QStringLiteral("fillColor")] = argbHex(s.fillColor);
+        m[QStringLiteral("strokeWidth")] = s.strokeWidth;
+        m[QStringLiteral("opacity")] = s.opacity;
+        m[QStringLiteral("filled")] = s.filled;
+        m[QStringLiteral("usage")] = static_cast<int>(s.usage);
+        out.append(m);
+    }
+    return out;
+}
+
+QVariantList Workspace::parameters() const {
+    QVariantList out;
+    for(const Session::ParameterInfo &p : session_->parameters()) {
+        QVariantMap m;
+        m[QStringLiteral("id")] = static_cast<int>(p.id.value());
+        m[QStringLiteral("name")] = QString::fromStdString(p.name);
+        m[QStringLiteral("expression")] = QString::fromStdString(p.expression);
+        m[QStringLiteral("value")] = p.value;
+        m[QStringLiteral("evaluable")] = p.evaluable;
+        m[QStringLiteral("usage")] = static_cast<int>(p.usage);
+        out.append(m);
+    }
+    return out;
+}
+
+QVariantList Workspace::axisReferences() const {
+    QVariantList out;
+    for(const Session::AxisReference &r : session_->axisReferences()) {
+        QVariantMap m;
+        m[QStringLiteral("id")] = static_cast<int>(r.id.value());
+        m[QStringLiteral("kind")] =
+            r.kind == ConstraintKind::Horizontal ? QStringLiteral("horizontal")
+                                                  : QStringLiteral("vertical");
+        m[QStringLiteral("frame")] = static_cast<int>(r.frame.value());
+        m[QStringLiteral("frameName")] = QString::fromStdString(r.frameName);
+        out.append(m);
+    }
+    return out;
+}
+
+QVariantList Workspace::rectanglePanels() const { return rectangles(); }
+
+QVariantList Workspace::history() const {
+    QVariantList out;
+    for(const std::string &label : session_->historyLabels()) {
+        out.append(QString::fromStdString(label));
+    }
+    return out;
+}
+
+int Workspace::historyPosition() const { return static_cast<int>(session_->historyPosition()); }
+QString Workspace::undoLabel() const { return QString::fromStdString(session_->undoLabel()); }
+QString Workspace::redoLabel() const { return QString::fromStdString(session_->redoLabel()); }
+int Workspace::activeLayer() const { return static_cast<int>(session_->activeLayer().value()); }
+
+bool Workspace::parameterWouldCycle(int id, const QString &expression) const {
+    return session_->wouldParameterCycle(ParameterId(static_cast<uint32_t>(id)),
+                                         expression.toStdString());
+}
+
+void Workspace::walkHistory(int position) {
+    if(position < 0) return;
+    const size_t target = static_cast<size_t>(position);
+    // Repeated single steps through the ordinary undo/redo path, so branch
+    // fidelity holds — a jump would bypass the mechanism that keeps it. The guard
+    // is a runaway backstop, never reached in practice.
+    size_t guard = 0;
+    while(session_->historyPosition() > target && session_->canUndo() && guard++ < 1000000) {
+        session_->handle(Key::Undo);
+    }
+    while(session_->historyPosition() < target && session_->canRedo() && guard++ < 1000000) {
+        session_->handle(Key::Redo);
+    }
+    notifyChanged();
+}
+
 QVariantList Workspace::palette(const QString &query) const {
     QVariantList out;
     const std::string text = query.toStdString();
@@ -356,11 +498,28 @@ QVariantList Workspace::palette(const QString &query) const {
 }
 
 bool Workspace::run(const QString &name, const QVariantMap &arguments) {
+    // Routed by the action's own schema rather than by what the QVariant happens
+    // to coerce to: a rename whose new name spells a number ("2024") is a string,
+    // not a value, and only the parameter table can say which channel it reads.
+    const Action *action = findAction(name.toStdString());
+    auto isText = [&](const std::string &key) {
+        if(action == nullptr) return false;
+        for(const ActionParameter &p : action->parameters) {
+            if(p.name == key) return p.text;
+        }
+        return false;
+    };
+
     ActionArguments args;
     for(auto it = arguments.begin(); it != arguments.end(); ++it) {
+        const std::string key = it.key().toStdString();
+        if(isText(key)) {
+            args.setText(key, it.value().toString().toStdString());
+            continue;
+        }
         bool ok = false;
         const double value = it.value().toDouble(&ok);
-        if(ok) args.set(it.key().toStdString(), value);
+        if(ok) args.set(key, value);
     }
     const bool ran = invokeAction(*session_, name.toStdString(), args);
     notifyChanged();
@@ -401,6 +560,11 @@ QString Workspace::previewOf(const QString &name, int assignment) {
         default:
             return QStringLiteral("cannot hold");
     }
+}
+
+void Workspace::selectRelation(int id, bool additive) {
+    session_->selectConstraint(ConstraintId(static_cast<uint32_t>(id)), additive);
+    notifyChanged();
 }
 
 void Workspace::undo() {

@@ -343,6 +343,190 @@ bool doSetSide(Session &session, const Action &, const ActionArguments &args) {
                  : session.setRectangleHeight(id, *value);
 }
 
+// ---------------------------------------------------------------------------
+// Styles and parameters
+// ---------------------------------------------------------------------------
+
+constexpr ActionParameter COLOR_PARAMETERS[] = {{"color", true}};
+constexpr ActionParameter FLAG_PARAMETERS[] = {{"flag", true}};
+// A style width or opacity is a constant the toolbar scrubs; the expression
+// resistance lives in applicability, not here, so the control dims rather than
+// flattening a value authored elsewhere.
+constexpr ActionParameter STYLE_VALUE_PARAMETERS[] = {{"value", true}};
+constexpr ActionParameter STYLE_CREATE_PARAMETERS[] = {{"name", false, true}};
+constexpr ActionParameter STYLE_APPLY_PARAMETERS[] = {{"style", false}};
+constexpr ActionParameter STYLE_RENAME_PARAMETERS[] = {{"style", false}, {"name", true, true}};
+// A parameter value is a constant or an expression, the two channels a slot
+// carries. name is text; id names which parameter, and defaults to the newest.
+constexpr ActionParameter PARAM_CREATE_PARAMETERS[] = {
+    {"name", true, true}, {"value", false}, {"expression", false, true}};
+constexpr ActionParameter PARAM_SET_PARAMETERS[] = {
+    {"id", false}, {"value", false}, {"expression", false, true}};
+constexpr ActionParameter PARAM_RENAME_PARAMETERS[] = {{"id", false}, {"name", true, true}};
+constexpr ActionParameter PARAM_ID_PARAMETERS[] = {{"id", false}};
+
+bool doSetStyleStroke(Session &session, const Action &, const ActionArguments &a) {
+    const std::optional<double> color = a.value("color");
+    if(!color) return false;
+    return session.setStyleStroke(static_cast<uint32_t>(*color));
+}
+bool doSetStyleFill(Session &session, const Action &, const ActionArguments &a) {
+    const std::optional<double> color = a.value("color");
+    if(!color) return false;
+    return session.setStyleFill(static_cast<uint32_t>(*color));
+}
+bool doSetStyleWidth(Session &session, const Action &, const ActionArguments &a) {
+    const std::optional<double> v = a.value("value");
+    if(!v) return false;
+    return session.setStyleStrokeWidth(*v);
+}
+bool doSetStyleOpacity(Session &session, const Action &, const ActionArguments &a) {
+    const std::optional<double> v = a.value("value");
+    if(!v) return false;
+    return session.setStyleOpacity(*v);
+}
+bool doSetStyleFilled(Session &session, const Action &, const ActionArguments &a) {
+    const std::optional<double> flag = a.value("flag");
+    if(!flag) return false;
+    return session.setStyleFilled(*flag != 0.0);
+}
+bool doCreateStyle(Session &session, const Action &, const ActionArguments &a) {
+    return session.createStyle(std::string(a.text("name").value_or("")));
+}
+bool doApplyStyle(Session &session, const Action &, const ActionArguments &a) {
+    return session.applyStyle(session.targetStyle(a.value("style")));
+}
+bool doRenameStyle(Session &session, const Action &, const ActionArguments &a) {
+    const std::optional<std::string_view> name = a.text("name");
+    if(!name) return false;
+    return session.renameStyle(session.targetStyle(a.value("style")), std::string(*name));
+}
+
+bool doCreateParameter(Session &session, const Action &, const ActionArguments &a) {
+    const std::optional<std::string_view> name = a.text("name");
+    if(!name) return false;
+    if(const std::optional<std::string_view> expr = a.text("expression")) {
+        return session.createParameterExpression(std::string(*name), *expr);
+    }
+    return session.createParameterConstant(std::string(*name), a.value("value").value_or(0.0));
+}
+bool doSetParameter(Session &session, const Action &, const ActionArguments &a) {
+    const ParameterId id = session.targetParameter(a.value("id"));
+    if(const std::optional<std::string_view> expr = a.text("expression")) {
+        return session.setParameterExpression(id, *expr);
+    }
+    const std::optional<double> v = a.value("value");
+    if(!v) return false;
+    return session.setParameterConstant(id, *v);
+}
+bool doRenameParameter(Session &session, const Action &, const ActionArguments &a) {
+    const std::optional<std::string_view> name = a.text("name");
+    if(!name) return false;
+    return session.renameParameter(session.targetParameter(a.value("id")), std::string(*name));
+}
+bool doDeleteParameter(Session &session, const Action &, const ActionArguments &a) {
+    return session.deleteParameter(session.targetParameter(a.value("id")));
+}
+
+bool haveStyleableEntities(const ActionContext &c, const Action &) {
+    return c.styleableEntities > 0;
+}
+bool haveStyleable(const ActionContext &c, const Action &) {
+    return c.styleableEntities + c.styleableRegions > 0;
+}
+bool canStyleWidth(const ActionContext &c, const Action &) {
+    return c.styleableEntities + c.styleableRegions > 0 && !c.strokeWidthExpr;
+}
+bool canStyleOpacity(const ActionContext &c, const Action &) {
+    return c.styleableEntities + c.styleableRegions > 0 && !c.opacityExpr;
+}
+bool haveStyleableRegions(const ActionContext &c, const Action &) {
+    return c.styleableRegions > 0;
+}
+bool canApplyStyle(const ActionContext &c, const Action &) {
+    return c.namedStyleCount > 0 && c.styleableEntities + c.styleableRegions > 0;
+}
+bool haveStyle(const ActionContext &c, const Action &) { return c.namedStyleCount > 0; }
+bool haveParameter(const ActionContext &c, const Action &) { return c.parameterCount > 0; }
+
+// ---------------------------------------------------------------------------
+// Layer, relation and snap vocabulary
+// ---------------------------------------------------------------------------
+
+constexpr ActionParameter LAYER_RENAME_PARAMETERS[] = {{"layer", false}, {"name", true, true}};
+constexpr ActionParameter CONSTRAINT_VALUE_PARAMETERS[] = {{"constraint", false}, {"value", true}};
+constexpr ActionParameter CONSTRAINT_PARAMETERS[] = {{"constraint", false}};
+// A retarget names an existing frame, or asks for the document frame; absent
+// both is the new-cluster-frame default, the answer that matches rotate.
+constexpr ActionParameter RETARGET_PARAMETERS[] = {{"frame", false}, {"document", false}};
+constexpr ActionParameter GRID_PARAMETERS[] = {{"step", true}, {"enabled", true}};
+constexpr ActionParameter ATTRACT_PARAMETERS[] = {{"flag", true}};
+
+bool doRenameLayer(Session &session, const Action &, const ActionArguments &a) {
+    const std::optional<std::string_view> name = a.text("name");
+    if(!name) return false;
+    return session.renameLayer(session.targetLayer(a.value("layer")), std::string(*name));
+}
+bool doActivateLayer(Session &session, const Action &, const ActionArguments &a) {
+    return session.activateLayer(session.targetLayer(a.value("layer")));
+}
+bool doSetRelationValue(Session &session, const Action &, const ActionArguments &a) {
+    const std::optional<double> value = a.value("value");
+    if(!value) return false;
+    return session.setRelationValue(session.targetConstraint(a.value("constraint")), *value);
+}
+bool doFlipAlternative(Session &session, const Action &, const ActionArguments &a) {
+    return session.flipAlternative(session.targetConstraint(a.value("constraint")));
+}
+bool doRetargetAxes(Session &session, const Action &, const ActionArguments &a) {
+    if(a.value("document").value_or(0.0) != 0.0) {
+        return session.retargetAxes(RetargetTarget::DocumentFrame, EntityId());
+    }
+    if(const std::optional<double> frame = a.value("frame")) {
+        if(*frame > 0.0) {
+            return session.retargetAxes(RetargetTarget::ExistingFrame,
+                                        EntityId(static_cast<uint32_t>(*frame)));
+        }
+    }
+    return session.retargetAxes(RetargetTarget::NewClusterFrame, EntityId());
+}
+bool doSetGrid(Session &session, const Action &, const ActionArguments &a) {
+    const std::optional<double> step = a.value("step");
+    const std::optional<double> enabled = a.value("enabled");
+    if(!step || !enabled) return false;
+    return session.setSnapGrid(*step, *enabled != 0.0);
+}
+bool doSetConstructionAttract(Session &session, const Action &, const ActionArguments &a) {
+    const std::optional<double> flag = a.value("flag");
+    if(!flag) return false;
+    return session.setSnapConstructionAttract(*flag != 0.0);
+}
+
+// A real layer must exist and be unlocked to activate; the base layer, which has
+// no record, is always there and always activatable. The gate mirrors the
+// session's — an applicable activate is one the session performs.
+bool canActivateLayer(const ActionContext &c, const Action &) {
+    if(c.layer == 0) return true;  // the base layer
+    const LayerRecord *l = contextLayer(c);
+    return l != nullptr && !l->locked;
+}
+bool canSetValue(const ActionContext &c, const Action &) { return c.selectedConstraintValued; }
+bool canFlipAlternative(const ActionContext &c, const Action &) {
+    return c.selectedConstraintHasAlternative;
+}
+// The new-cluster-frame default is what a menu or the palette invokes — and the
+// only target U1 surfaces — so the row dims exactly as that rewrite would refuse:
+// document-framed axis relations to retarget (axisReferencedIn skips ones already
+// on a frame), and nothing in the closure locked or frame-referenced. The
+// document-frame and existing-frame targets the action also carries act on
+// already-clustered relations too, so when U2's inspector axis section surfaces
+// them it must gate on the broader "any axis relation in the moved set" — from
+// axisReferences() — rather than this predicate, which is right for the default
+// alone. One predicate cannot serve all three because it cannot see the target.
+bool canRetargetAxes(const ActionContext &c, const Action &) {
+    return c.axisConstraints > 0 && !c.transformLocked;
+}
+
 // A title a surface can show, derived rather than stored: "point-on-line"
 // becomes "Point on line". The taxonomy's name is a serialization token and
 // therefore format; a title is presentation and free to change, so deriving one
@@ -404,6 +588,11 @@ std::string_view descriptionFor(std::string_view name) {
     if(name == "region.lower") return "Lower the region in the stacking order";
     if(name == "relation.toggle-driving") return "Flip the relation between driving and reference";
     if(name == "relation.walk-conflicts") return "Select the conflicting relations";
+    if(name == "relation.set-value") return "Set the selected relation's value";
+    if(name == "relation.flip-alternative") return "Flip the relation's alternative form";
+    if(name == "relation.retarget-axes") return "Retarget the selection's axis relations";
+    if(name == "snap.set-grid") return "Set grid snapping and its step";
+    if(name == "snap.set-construction-attract") return "Toggle snapping to construction geometry";
     if(name == "relation.distribute") return "Distribute the selected points evenly";
     if(name == "relation.mirror") return "Mirror the selection about a segment";
     if(name == "layer.new") return "Create a new layer";
@@ -414,6 +603,8 @@ std::string_view descriptionFor(std::string_view name) {
     if(name == "layer.unlock") return "Unlock the layer";
     if(name == "layer.raise") return "Raise the layer in the stacking order";
     if(name == "layer.lower") return "Lower the layer in the stacking order";
+    if(name == "layer.rename") return "Rename the layer";
+    if(name == "layer.activate") return "Draw new geometry on this layer";
     if(name == "group.create") return "Group the selection to drag together";
     if(name == "group.dissolve") return "Dissolve the selection's groupings";
     if(name == "transform.rotate") return "Rotate the selection about its centre";
@@ -422,6 +613,18 @@ std::string_view descriptionFor(std::string_view name) {
     if(name == "tag.dissolve") return "Dissolve the selection's tags";
     if(name == "tag.set-width") return "Set the tagged rectangle's width";
     if(name == "tag.set-height") return "Set the tagged rectangle's height";
+    if(name == "style.set-stroke") return "Set the selection's stroke colour";
+    if(name == "style.set-fill") return "Set the selection's fill colour";
+    if(name == "style.set-stroke-width") return "Set the selection's stroke width";
+    if(name == "style.set-opacity") return "Set the selection's opacity";
+    if(name == "style.set-filled") return "Fill or unfill the selected regions";
+    if(name == "style.create") return "Create a named style from the selection";
+    if(name == "style.apply") return "Apply a named style to the selection";
+    if(name == "style.rename") return "Rename a style";
+    if(name == "parameter.create") return "Create a named parameter";
+    if(name == "parameter.set") return "Set a parameter's value";
+    if(name == "parameter.rename") return "Rename a parameter";
+    if(name == "parameter.delete") return "Delete a parameter, freezing what it drove";
     if(name == "export.bake") return "Flatten the visible drawing for export";
     return {};
 }
@@ -489,6 +692,16 @@ const Catalogue &catalogue() {
              haveSelectedConstraints, doToggleDriving},
             {"relation.walk-conflicts", "Select conflicting", "shift+w", {}, haveConflicts,
              doWalkConflicts},
+            // The inspector's per-row actions on a selected constraint: set the
+            // value checked-before-drive, flip an alternative form, retarget the
+            // axis relations. set-value and flip act on the first selected
+            // constraint when no id is given; the inspector passes one per row.
+            {"relation.set-value", "Set value", {}, CONSTRAINT_VALUE_PARAMETERS, canSetValue,
+             doSetRelationValue},
+            {"relation.flip-alternative", "Flip alternative", {}, CONSTRAINT_PARAMETERS,
+             canFlipAlternative, doFlipAlternative},
+            {"relation.retarget-axes", "Retarget axes", {}, RETARGET_PARAMETERS, canRetargetAxes,
+             doRetargetAxes},
 
             // Layers and groups: organization, so none of these touches a
             // constraint and none of them can refuse an edit. Only visibility
@@ -507,6 +720,12 @@ const Catalogue &catalogue() {
              doLayerLocked<false>},
             {"layer.raise", "Raise layer", {}, LAYER_PARAMETERS, haveLayer, doMoveLayer<1>},
             {"layer.lower", "Lower layer", {}, LAYER_PARAMETERS, haveLayer, doMoveLayer<-1>},
+            {"layer.rename", "Rename layer", {}, LAYER_RENAME_PARAMETERS, haveLayer,
+             doRenameLayer},
+            // The active layer is recorded session state, not a document edit, so
+            // this journals nothing while tools stamp it on what they emit.
+            {"layer.activate", "Activate layer", {}, LAYER_PARAMETERS, canActivateLayer,
+             doActivateLayer},
             {"group.create", "Group", "g", {}, haveGroupable, doGroup},
             {"group.dissolve", "Ungroup", "shift+g", {}, haveGroup, doDissolveGroup},
 
@@ -537,7 +756,7 @@ const Catalogue &catalogue() {
             // Listed, permanently dimmed. See `never`.
             {"transform.scale-non-uniform", "Scale non-uniformly (export only)", {},
              NON_UNIFORM_PARAMETERS, never, doScaleNonUniform},
-            {"edit.duplicate", "Duplicate", {}, OFFSET_PARAMETERS, haveDuplicable,
+            {"edit.duplicate", "Duplicate", "ctrl+d", OFFSET_PARAMETERS, haveDuplicable,
              doDuplicate},
 
             // Compound relations: primitives plus a tag, never a new kind.
@@ -553,6 +772,48 @@ const Catalogue &catalogue() {
              doSetSide<true>},
             {"tag.set-height", "Set height", {}, SIDE_PARAMETERS, haveRectangleTag,
              doSetSide<false>},
+
+            // Styles. The first family whose Session methods write records no
+            // earlier one wrote; the forking rule lives in Session, and the
+            // registry contributes that a recolour is reachable identically from
+            // the toolbar, the inspector, the palette, the keyboard and a script.
+            // Width and opacity dim over an expression-driven slot, which is the
+            // resistance the rectangle handle already carries.
+            {"style.set-stroke", "Stroke colour", {}, COLOR_PARAMETERS, haveStyleableEntities,
+             doSetStyleStroke},
+            {"style.set-fill", "Fill colour", {}, COLOR_PARAMETERS, haveStyleable, doSetStyleFill},
+            {"style.set-stroke-width", "Stroke width", {}, STYLE_VALUE_PARAMETERS, canStyleWidth,
+             doSetStyleWidth},
+            {"style.set-opacity", "Opacity", {}, STYLE_VALUE_PARAMETERS, canStyleOpacity,
+             doSetStyleOpacity},
+            {"style.set-filled", "Filled", {}, FLAG_PARAMETERS, haveStyleableRegions,
+             doSetStyleFilled},
+            {"style.create", "Create style", {}, STYLE_CREATE_PARAMETERS, haveStyleable,
+             doCreateStyle},
+            {"style.apply", "Apply style", {}, STYLE_APPLY_PARAMETERS, canApplyStyle,
+             doApplyStyle},
+            {"style.rename", "Rename style", {}, STYLE_RENAME_PARAMETERS, haveStyle,
+             doRenameStyle},
+
+            // Parameters. Named document values the slot graph references by id,
+            // in create/set/rename/delete order so the shared conformance sweep
+            // makes one before it sets or deletes it.
+            {"parameter.create", "New parameter", {}, PARAM_CREATE_PARAMETERS, always,
+             doCreateParameter},
+            {"parameter.set", "Set parameter", {}, PARAM_SET_PARAMETERS, haveParameter,
+             doSetParameter},
+            {"parameter.rename", "Rename parameter", {}, PARAM_RENAME_PARAMETERS, haveParameter,
+             doRenameParameter},
+            {"parameter.delete", "Delete parameter", {}, PARAM_ID_PARAMETERS, haveParameter,
+             doDeleteParameter},
+
+            // Snap policy fields that affect an edit, so a toggle is a recorded
+            // action rather than a raw policy mutation no script would capture.
+            // Not journalled — session state — but recorded, so a script that
+            // toggles grid snapping mid-drawing replays to the identical document.
+            {"snap.set-grid", "Grid snapping", {}, GRID_PARAMETERS, always, doSetGrid},
+            {"snap.set-construction-attract", "Construction attract", {}, ATTRACT_PARAMETERS,
+             always, doSetConstructionAttract},
 
             // The only destructive path in the tool, and it leads out of it.
             {"export.bake", "Bake for export", {}, {}, always, doBake},
@@ -627,6 +888,23 @@ void ActionArguments::set(std::string_view name, double v) {
     values.emplace_back(std::string(name), v);
 }
 
+std::optional<std::string_view> ActionArguments::text(std::string_view name) const {
+    for(const auto &[key, v] : texts) {
+        if(key == name) return std::string_view(v);
+    }
+    return std::nullopt;
+}
+
+void ActionArguments::setText(std::string_view name, std::string v) {
+    for(auto &[key, existing] : texts) {
+        if(key == name) {
+            existing = std::move(v);
+            return;
+        }
+    }
+    texts.emplace_back(std::string(name), std::move(v));
+}
+
 std::span<const Action> actions() { return catalogue().rows; }
 
 const Action *findAction(std::string_view name) {
@@ -646,15 +924,35 @@ KeyBinding resolveKey(const ActionContext &context, const KeyStroke &stroke) {
         if(index) out.arguments.set("index", static_cast<double>(*index));
     };
 
-    // A stroke carrying Control resolves to nothing, deliberately, and before
-    // any other reading — offers, fields and commands alike. The binding
-    // grammar spells only shift+ chords; the production-UI stage grows ctrl+
-    // bindings — undo, redo, copy, paste — as ordinary registry rows, and that
-    // grammar belongs to that stage rather than here. Until then a Control
-    // chord must not fall through to the bare-letter command: on a platform
-    // whose text() delivers the plain letter under Ctrl, ctrl+r would otherwise
-    // alias into the rectangle tool.
-    if(has(stroke.modifiers, Modifier::Control)) return out;
+    // A stroke carrying Control is resolved here, before any other reading —
+    // offers, fields and commands alike — and resolves the production ctrl+
+    // chords or nothing. ctrl+d is an ordinary binding on edit.duplicate;
+    // ctrl+z and ctrl+shift+z are aliases beside undo's and redo's bare
+    // single-letter bindings, which stay exactly what they were. Every other
+    // Control chord still resolves to nothing, so a platform whose text()
+    // delivers the plain letter under Ctrl cannot alias ctrl+r into the
+    // rectangle tool — the swallow the earlier stages relied on, now with three
+    // holes cut in it by name rather than removed.
+    if(has(stroke.modifiers, Modifier::Control)) {
+        if(stroke.character != 0) {
+            const char lowered = stroke.character >= 'A' && stroke.character <= 'Z'
+                                     ? static_cast<char>(stroke.character - 'A' + 'a')
+                                     : stroke.character;
+            if(lowered >= 'a' && lowered <= 'z') {
+                std::string chord = "ctrl+";
+                if(has(stroke.modifiers, Modifier::Shift)) chord += "shift+";
+                chord += lowered;
+                if(const Action *a = actionForBinding(chord)) {
+                    action(a->name, std::nullopt);
+                } else if(chord == "ctrl+z") {
+                    action("edit.undo", std::nullopt);
+                } else if(chord == "ctrl+shift+z") {
+                    action("edit.redo", std::nullopt);
+                }
+            }
+        }
+        return out;
+    }
 
     // Offer numbers first, and only when a modifier claims them. Read off the
     // key's digit rather than the character it printed, because a shifted digit
@@ -804,6 +1102,27 @@ ActionContext contextOf(const Session &session) {
         c.selectedTags++;
         if(rectangleFrame(session.document(), id)) c.rectangleTags++;
     }
+
+    // Style applicability, asked of the same query the toolbar reads, so an
+    // applicable style edit is one the toolbar can perform and the sweep can run.
+    const Session::StyleAppearance appearance = session.resolvedAppearance();
+    c.styleableEntities = appearance.entities;
+    c.styleableRegions = appearance.regions;
+    c.strokeWidthExpr = appearance.strokeWidthExpr;
+    c.opacityExpr = appearance.opacityExpr;
+    c.namedStyleCount = session.document().styles().size();
+    c.parameterCount = session.document().parameters().size();
+
+    // The first selected constraint's flags, for the relation actions that act on
+    // it with no id. Read the same taxonomy the session's own checks read, so an
+    // applicable row is one the session performs.
+    if(!session.selection().constraints().empty()) {
+        const ConstraintId first = session.selection().constraints().front();
+        if(const ConstraintRecord *r = session.document().constraints().find(first)) {
+            c.selectedConstraintValued = constraintInfo(r->kind).valueArity == 1;
+            c.selectedConstraintHasAlternative = constraintInfo(r->kind).alternatives > 0;
+        }
+    }
     return c;
 }
 
@@ -823,9 +1142,12 @@ bool invokeAction(Session &session, std::string_view name, const ActionArguments
 
     // The schema is checked here rather than inside each action, so a missing
     // required parameter fails the same way whoever asked — a menu, a script,
-    // a key — and no action has to remember to check.
+    // a key — and no action has to remember to check. A text parameter reads the
+    // string channel and a numeric one the value channel, so the check follows
+    // the schema rather than assuming every argument is a number.
     for(const ActionParameter &p : action->parameters) {
-        if(p.required && !arguments.value(p.name)) return false;
+        if(!p.required) continue;
+        if(p.text ? !arguments.text(p.name) : !arguments.value(p.name)) return false;
     }
     if(action->invoke == nullptr) return false;
     return action->invoke(session, *action, arguments);

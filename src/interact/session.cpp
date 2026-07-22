@@ -6,6 +6,7 @@
 #include <set>
 #include <unordered_set>
 
+#include "core/expression.h"
 #include "interact/loops.h"
 #include "interact/registry.h"
 #include "interact/script.h"
@@ -794,6 +795,19 @@ bool Session::runTool(ToolOutput output, std::vector<ConstraintId> inferred) {
         refreshToolPresentation();
         return false;
     }
+
+    // New geometry lands on the active layer. Stamped here rather than in the
+    // tool because the active layer is session state a toolkit-free tool cannot
+    // see, and every entity a placement creates — its construction geometry
+    // included — belongs to the layer the user is drawing on.
+    if(activeLayer_.valid()) {
+        for(Command &c : output.commands) {
+            if(auto *add = std::get_if<AddRecord<EntityRecord>>(&c)) {
+                add->record.layer = activeLayer_;
+            }
+        }
+    }
+
     // Geometry and its inferences go in as one step. Undo removes the placement
     // and what it declared together, because they are one gesture; declining a
     // single inference is the finer step, and it is a separate action.
@@ -1504,8 +1518,9 @@ bool Session::commitCandidate(const ConstraintRecord &candidate, Strength streng
 }
 
 void Session::recordAction(std::string_view name,
-                           std::vector<std::pair<std::string, double>> arguments) {
-    if(recorder_ != nullptr) recorder_->action(name, arguments);
+                           std::vector<std::pair<std::string, double>> arguments,
+                           std::vector<std::pair<std::string, std::string>> textArguments) {
+    if(recorder_ != nullptr) recorder_->action(name, arguments, textArguments);
 }
 
 bool Session::impose(ConstraintKind kind, Strength strength, size_t assignment,
@@ -2551,6 +2566,711 @@ bool Session::setRectangleHeight(TagId tag, double height) {
     recordAction("tag.set-height", {{"tag", static_cast<double>(tag.value())},
                                     {"value", height}});
     return setRectangleSide(tag, false, height);
+}
+
+// ---------------------------------------------------------------------------
+// Styles
+// ---------------------------------------------------------------------------
+
+std::vector<Session::StyleTarget> Session::styleTargets(StyleScope scope) const {
+    std::vector<StyleTarget> out;
+    if(scope != StyleScope::Regions) {
+        for(EntityId id : selection_.items()) {
+            const EntityRecord *e = doc_->entities().find(id);
+            if(e == nullptr || e->role == Role::Construction) continue;
+            // Points are joints and adorners, not styled geometry; their role is
+            // what they are, exactly as construction geometry's is.
+            if(e->kind != EntityKind::Segment && e->kind != EntityKind::Circle &&
+               e->kind != EntityKind::Arc) {
+                continue;
+            }
+            StyleTarget t;
+            t.entity = id;
+            t.style = e->style;
+            out.push_back(t);
+        }
+    }
+    if(scope != StyleScope::Entities) {
+        for(RegionId id : selectedRegions()) {
+            const RegionRecord *r = doc_->regions().find(id);
+            if(r == nullptr) continue;
+            StyleTarget t;
+            t.isRegion = true;
+            t.region = id;
+            t.style = r->style;
+            out.push_back(t);
+        }
+    }
+    return out;
+}
+
+bool Session::applyStyleEdit(const std::function<void(StyleRecord &)> &edit, const char *label,
+                             StyleScope scope) {
+    presentation_.styleForked = 0;
+    presentation_.forkedStyle = StyleId();
+
+    const std::vector<StyleTarget> targets = styleTargets(scope);
+    if(targets.empty()) return false;
+
+    // Grouped by the style each target currently references, in id order so the
+    // command sequence and any allocated fork ids are deterministic. The null
+    // style — the compiled-in default — sorts first and is always forked, since
+    // there is no record to mutate.
+    std::map<StyleId, std::vector<size_t>> groups;
+    for(size_t i = 0; i < targets.size(); i++) groups[targets[i].style].push_back(i);
+
+    std::vector<Command> step;
+    size_t forked = 0;
+    StyleId lastForked;
+    uint32_t nextStyle = doc_->styles().allocator().next();
+
+    for(const auto &[styleId, members] : groups) {
+        const StyleRecord *found = styleId.valid() ? doc_->styles().find(styleId) : nullptr;
+        const StyleRecord resolved = found != nullptr ? *found : StyleRecord{};
+        StyleRecord edited = resolved;
+        edit(edited);
+
+        // A no-op edit changes nothing and must fork nothing: clicking the swatch
+        // the selection already shows, or scrubbing a width back to its start,
+        // would otherwise sever a shared style for a visually null change. Skipped
+        // here so the fork decision below only ever sees a real edit.
+        if(edited == resolved) continue;
+
+        // Shared beyond the selection? The null style is shared with all unstyled
+        // geometry, so it always forks; a named one is shared when a record the
+        // selection does not name references it, counted over the whole document.
+        bool sharedOutside = !styleId.valid();
+        if(styleId.valid()) {
+            size_t total = 0;
+            for(const EntityRecord &e : doc_->entities().records()) {
+                if(e.style == styleId) total++;
+            }
+            for(const RegionRecord &r : doc_->regions().records()) {
+                if(r.style == styleId) total++;
+            }
+            sharedOutside = total > members.size();
+        }
+
+        if(sharedOutside) {
+            const StyleId newId(nextStyle++);
+            edited.id = newId;
+            edited.name = "style " + std::to_string(doc_->styles().size() + forked + 1);
+            step.push_back(AddRecord<StyleRecord>{edited});
+            for(size_t idx : members) {
+                const StyleTarget &t = targets[idx];
+                if(t.isRegion) {
+                    RegionRecord r = *doc_->regions().find(t.region);
+                    r.style = newId;
+                    step.push_back(SetRecord<RegionRecord>{std::move(r)});
+                } else {
+                    EntityRecord e = *doc_->entities().find(t.entity);
+                    e.style = newId;
+                    step.push_back(SetRecord<EntityRecord>{std::move(e)});
+                }
+            }
+            forked++;
+            lastForked = newId;
+        } else {
+            edited.id = styleId;
+            step.push_back(SetRecord<StyleRecord>{std::move(edited)});
+        }
+    }
+
+    // Every edit was a no-op, but the selection was styleable: nothing to change,
+    // and returning true keeps applicable equal to runnable — an applicable style
+    // edit runs even when the value it sets is the one already held.
+    if(step.empty()) return true;
+    if(journal_->applyStep(*doc_, label, std::move(step)) != CommandError::None) return false;
+    presentation_.styleForked = forked;
+    presentation_.forkedStyle = lastForked;
+    refresh();
+    return true;
+}
+
+// Whether any styleable target's width or opacity slot is an expression. The
+// width and opacity setters resist a direct edit then, exactly as the rectangle
+// handle resists an expression-driven dimension: a value authored elsewhere is
+// not silently flattened to a constant. The model enforces it, not only the
+// dimmed control.
+bool Session::styleSlotIsExpression(StyleScope scope, bool width) const {
+    for(const StyleTarget &t : styleTargets(scope)) {
+        const StyleRecord *s = t.style.valid() ? doc_->styles().find(t.style) : nullptr;
+        const StyleRecord r = s != nullptr ? *s : StyleRecord{};
+        if(!(width ? r.strokeWidth : r.opacity).isConstant()) return true;
+    }
+    return false;
+}
+
+bool Session::setStyleStroke(uint32_t color) {
+    recordAction("style.set-stroke", {{"color", static_cast<double>(color)}});
+    // Stroke reaches entities only, matching its applicability: a region's stroke
+    // colour is stored but never drawn, so editing it would act beyond what the
+    // predicate promises.
+    return applyStyleEdit([color](StyleRecord &s) { s.strokeColor = color; }, "stroke colour",
+                          StyleScope::Entities);
+}
+
+bool Session::setStyleFill(uint32_t color) {
+    recordAction("style.set-fill", {{"color", static_cast<double>(color)}});
+    return applyStyleEdit([color](StyleRecord &s) { s.fillColor = color; }, "fill colour",
+                          StyleScope::All);
+}
+
+bool Session::setStyleStrokeWidth(double width) {
+    recordAction("style.set-stroke-width", {{"value", width}});
+    // A non-finite or negative width is not a value the drawing can hold, so it is
+    // refused rather than driven into the style — the model boundary the panel's
+    // own numeric parse cannot be trusted to have already made.
+    if(!std::isfinite(width) || width < 0.0) return false;
+    if(styleSlotIsExpression(StyleScope::All, true)) return false;  // resist
+    return applyStyleEdit([width](StyleRecord &s) { s.strokeWidth = Slot(width); }, "stroke width",
+                          StyleScope::All);
+}
+
+bool Session::setStyleOpacity(double opacity) {
+    recordAction("style.set-opacity", {{"value", opacity}});
+    if(!std::isfinite(opacity)) return false;
+    if(styleSlotIsExpression(StyleScope::All, false)) return false;  // resist
+    return applyStyleEdit([opacity](StyleRecord &s) { s.opacity = Slot(opacity); }, "opacity",
+                          StyleScope::All);
+}
+
+bool Session::setStyleFilled(bool filled) {
+    recordAction("style.set-filled", {{"flag", filled ? 1.0 : 0.0}});
+    // Filled is a region concept, so this reaches regions only — an entity's
+    // style has a filled flag but nothing draws it, and set-filled's applicability
+    // names regions.
+    return applyStyleEdit([filled](StyleRecord &s) { s.filled = filled; }, "filled",
+                          StyleScope::Regions);
+}
+
+bool Session::createStyle(std::string name) {
+    recordAction("style.create", {}, {{"name", name}});
+    const std::vector<StyleTarget> targets = styleTargets();
+    if(targets.empty()) return false;
+
+    // Captures the selection's resolved appearance so the new style looks like
+    // what the selection already shows, then applies it so the selection shares
+    // it by name.
+    const StyleAppearance appearance = resolvedAppearance();
+    StyleRecord style;
+    const StyleId id(doc_->styles().allocator().next());
+    style.id = id;
+    style.name =
+        name.empty() ? "style " + std::to_string(doc_->styles().size() + 1) : std::move(name);
+    style.strokeColor = appearance.strokeColor;
+    style.fillColor = appearance.fillColor;
+    style.strokeWidth = Slot(appearance.strokeWidth);
+    style.opacity = Slot(appearance.opacity);
+    style.filled = appearance.filled;
+
+    std::vector<Command> step;
+    step.push_back(AddRecord<StyleRecord>{style});
+    for(const StyleTarget &t : targets) {
+        if(t.isRegion) {
+            RegionRecord r = *doc_->regions().find(t.region);
+            r.style = id;
+            step.push_back(SetRecord<RegionRecord>{std::move(r)});
+        } else {
+            EntityRecord e = *doc_->entities().find(t.entity);
+            e.style = id;
+            step.push_back(SetRecord<EntityRecord>{std::move(e)});
+        }
+    }
+    if(journal_->applyStep(*doc_, "create style", std::move(step)) != CommandError::None) {
+        return false;
+    }
+    refresh();
+    return true;
+}
+
+bool Session::applyStyle(StyleId style) {
+    recordAction("style.apply", {{"style", static_cast<double>(style.value())}});
+    if(!style.valid() || doc_->styles().find(style) == nullptr) return false;
+    const std::vector<StyleTarget> targets = styleTargets();
+    if(targets.empty()) return false;
+
+    std::vector<Command> step;
+    for(const StyleTarget &t : targets) {
+        if(t.isRegion) {
+            const RegionRecord *r = doc_->regions().find(t.region);
+            if(r == nullptr || r->style == style) continue;
+            RegionRecord next = *r;
+            next.style = style;
+            step.push_back(SetRecord<RegionRecord>{std::move(next)});
+        } else {
+            const EntityRecord *e = doc_->entities().find(t.entity);
+            if(e == nullptr || e->style == style) continue;
+            EntityRecord next = *e;
+            next.style = style;
+            step.push_back(SetRecord<EntityRecord>{std::move(next)});
+        }
+    }
+    if(step.empty()) return true;  // already applied; nothing to do
+    if(journal_->applyStep(*doc_, "apply style", std::move(step)) != CommandError::None) {
+        return false;
+    }
+    refresh();
+    return true;
+}
+
+bool Session::renameStyle(StyleId style, std::string name) {
+    recordAction("style.rename", {{"style", static_cast<double>(style.value())}},
+                 {{"name", name}});
+    const StyleRecord *s = doc_->styles().find(style);
+    if(s == nullptr) return false;
+    StyleRecord next = *s;
+    next.name = std::move(name);
+    if(next == *s) return true;  // same name; a no-op the toggle path is allowed
+    // A name is presentation and changes no solve input, so this does not refresh
+    // — the same reason newLayer does not.
+    return journal_->applyStep(*doc_, "rename style", SetRecord<StyleRecord>{std::move(next)}) ==
+           CommandError::None;
+}
+
+StyleId Session::targetStyle(std::optional<double> named) const {
+    if(named && *named > 0.0) return StyleId(static_cast<uint32_t>(*named));
+    StyleId newest;
+    for(const StyleRecord &s : doc_->styles().records()) {
+        if(!newest.valid() || newest < s.id) newest = s.id;
+    }
+    return newest;
+}
+
+Session::StyleAppearance Session::resolvedAppearance() const {
+    StyleAppearance out;
+    const std::vector<StyleTarget> targets = styleTargets();
+    if(targets.empty()) return out;
+    out.any = true;
+    bool first = true;
+    for(const StyleTarget &t : targets) {
+        if(t.isRegion) {
+            out.regions++;
+        } else {
+            out.entities++;
+        }
+        const StyleRecord *s = t.style.valid() ? doc_->styles().find(t.style) : nullptr;
+        const StyleRecord r = s != nullptr ? *s : StyleRecord{};
+        const double w = doc_->evaluate(r.strokeWidth).value_or(1.0);
+        const double op = doc_->evaluate(r.opacity).value_or(1.0);
+        if(first) {
+            out.strokeColor = r.strokeColor;
+            out.fillColor = r.fillColor;
+            out.strokeWidth = w;
+            out.opacity = op;
+            out.filled = r.filled;
+            first = false;
+        } else {
+            if(r.strokeColor != out.strokeColor) out.strokeMixed = true;
+            if(r.fillColor != out.fillColor) out.fillMixed = true;
+            if(w != out.strokeWidth) out.strokeWidthMixed = true;
+            if(op != out.opacity) out.opacityMixed = true;
+            if(r.filled != out.filled) out.filledMixed = true;
+        }
+        // True if any target's slot is an expression: the control resists a
+        // direct edit as soon as one value was authored elsewhere.
+        if(!r.strokeWidth.isConstant()) out.strokeWidthExpr = true;
+        if(!r.opacity.isConstant()) out.opacityExpr = true;
+    }
+    return out;
+}
+
+std::vector<Session::NamedStyle> Session::namedStyles() const {
+    std::vector<NamedStyle> out;
+    for(const StyleRecord &s : doc_->styles().records()) {
+        NamedStyle n;
+        n.id = s.id;
+        n.name = s.name;
+        n.strokeColor = s.strokeColor;
+        n.fillColor = s.fillColor;
+        n.strokeWidth = doc_->evaluate(s.strokeWidth).value_or(1.0);
+        n.opacity = doc_->evaluate(s.opacity).value_or(1.0);
+        n.filled = s.filled;
+        for(const EntityRecord &e : doc_->entities().records()) {
+            if(e.style == s.id) n.usage++;
+        }
+        for(const RegionRecord &r : doc_->regions().records()) {
+            if(r.style == s.id) n.usage++;
+        }
+        out.push_back(std::move(n));
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Parameters
+// ---------------------------------------------------------------------------
+
+bool Session::createParameterConstant(std::string name, double value) {
+    recordAction("parameter.create", {{"value", value}}, {{"name", name}});
+    if(!std::isfinite(value)) return false;
+    ParameterRecord p;
+    p.name = std::move(name);
+    p.value = Slot(value);
+    // No refresh: a brand-new parameter is referenced by no slot yet, so no
+    // constraint value changes and no solve input moves.
+    return journal_->applyStep(*doc_, "create parameter", AddRecord<ParameterRecord>{p}) ==
+           CommandError::None;
+}
+
+bool Session::createParameterExpression(std::string name, std::string_view expression) {
+    recordAction("parameter.create", {},
+                 {{"name", name}, {"expression", std::string(expression)}});
+    const std::optional<Slot> value = parseExpression(expression, doc_->parameters());
+    if(!value) return false;
+    ParameterRecord p;
+    p.name = std::move(name);
+    p.value = *value;
+    return journal_->applyStep(*doc_, "create parameter", AddRecord<ParameterRecord>{p}) ==
+           CommandError::None;
+}
+
+bool Session::commitParameterValue(ParameterId id, const Slot &value,
+                                   std::vector<std::pair<std::string, double>> args,
+                                   std::vector<std::pair<std::string, std::string>> textArgs) {
+    recordAction("parameter.set", std::move(args), std::move(textArgs));
+    const ParameterRecord *p = doc_->parameters().find(id);
+    if(p == nullptr) return false;
+    // Refused rather than committed: a cycle would make evaluation diverge, and
+    // the panel asked wouldParameterCycle first so this is the backstop, not the
+    // surface.
+    if(wouldCycle(doc_->parameters(), id, value)) return false;
+    ParameterRecord next = *p;
+    next.value = value;
+    if(journal_->applyStep(*doc_, "set parameter", SetRecord<ParameterRecord>{std::move(next)}) !=
+       CommandError::None) {
+        return false;
+    }
+    // Referring constraint values re-evaluate, so the solve input moved.
+    refresh();
+    return true;
+}
+
+bool Session::setParameterConstant(ParameterId id, double value) {
+    if(!std::isfinite(value)) {
+        recordAction("parameter.set",
+                     {{"id", static_cast<double>(id.value())}, {"value", value}}, {});
+        return false;
+    }
+    return commitParameterValue(id, Slot(value),
+                                {{"id", static_cast<double>(id.value())}, {"value", value}}, {});
+}
+
+bool Session::setParameterExpression(ParameterId id, std::string_view expression) {
+    const std::optional<Slot> value = parseExpression(expression, doc_->parameters());
+    if(!value) {
+        // Record the refused request too, so a script of a mistyped value replays
+        // as the same refusal rather than dropping the step.
+        recordAction("parameter.set", {{"id", static_cast<double>(id.value())}},
+                     {{"expression", std::string(expression)}});
+        return false;
+    }
+    return commitParameterValue(id, *value, {{"id", static_cast<double>(id.value())}},
+                                {{"expression", std::string(expression)}});
+}
+
+bool Session::renameParameter(ParameterId id, std::string name) {
+    recordAction("parameter.rename", {{"id", static_cast<double>(id.value())}}, {{"name", name}});
+    const ParameterRecord *p = doc_->parameters().find(id);
+    if(p == nullptr) return false;
+    ParameterRecord next = *p;
+    next.name = std::move(name);
+    if(next == *p) return true;  // same name
+    // Slots reference a parameter by id, not by name, so nothing re-evaluates and
+    // no refresh is needed. A later expression resolves the new name.
+    return journal_->applyStep(*doc_, "rename parameter",
+                               SetRecord<ParameterRecord>{std::move(next)}) == CommandError::None;
+}
+
+bool Session::deleteParameter(ParameterId id) {
+    recordAction("parameter.delete", {{"id", static_cast<double>(id.value())}});
+    if(doc_->parameters().find(id) == nullptr) return false;
+    // Freeze semantics: every referring slot is set to the value it evaluates to
+    // now, then the parameter goes. Nothing on screen moves; only the provenance
+    // is lost. Refresh because the frozen slots are constants rather than
+    // expressions now, and the derived state is rebuilt from them.
+    std::vector<Command> step = deletionStep(*doc_, id);
+    if(step.empty()) return false;
+    if(journal_->applyStep(*doc_, "delete parameter", std::move(step)) != CommandError::None) {
+        return false;
+    }
+    refresh();
+    return true;
+}
+
+ParameterId Session::targetParameter(std::optional<double> named) const {
+    if(named && *named > 0.0) return ParameterId(static_cast<uint32_t>(*named));
+    ParameterId newest;
+    for(const ParameterRecord &p : doc_->parameters().records()) {
+        if(!newest.valid() || newest < p.id) newest = p.id;
+    }
+    return newest;
+}
+
+bool Session::wouldParameterCycle(ParameterId id, std::string_view expression) const {
+    const std::optional<Slot> value = parseExpression(expression, doc_->parameters());
+    if(!value) return false;  // an unparseable value is a different refusal
+    return wouldCycle(doc_->parameters(), id, *value);
+}
+
+std::vector<Session::ParameterInfo> Session::parameters() const {
+    std::vector<ParameterInfo> out;
+    for(const ParameterRecord &p : doc_->parameters().records()) {
+        ParameterInfo info;
+        info.id = p.id;
+        info.name = p.name;
+        info.expression = formatExpression(p.value, doc_->parameters());
+        const std::optional<double> v = evaluateParameter(doc_->parameters(), p.id);
+        info.evaluable = v.has_value();
+        info.value = v.value_or(0.0);
+        info.usage = dependentsOf(*doc_, p.id).count();
+        out.push_back(std::move(info));
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Layer, relation and snap vocabulary
+// ---------------------------------------------------------------------------
+
+bool Session::renameLayer(LayerId layer, std::string name) {
+    recordAction("layer.rename", {{"layer", static_cast<double>(layer.value())}},
+                 {{"name", name}});
+    const LayerRecord *l = doc_->layers().find(layer);
+    if(l == nullptr) return false;  // the base layer has no record and no name
+    LayerRecord next = *l;
+    next.name = std::move(name);
+    if(next == *l) return true;  // same name
+    // Organization, not semantics: a name changes no solve input, so like
+    // newLayer this does not refresh.
+    return journal_->applyStep(*doc_, "rename layer", SetRecord<LayerRecord>{std::move(next)}) ==
+           CommandError::None;
+}
+
+bool Session::activateLayer(LayerId layer) {
+    recordAction("layer.activate", {{"layer", static_cast<double>(layer.value())}});
+    // A locked layer cannot take new geometry — seeding a locked parameter is a
+    // move, not a request for one — so activating one is refused. The base layer
+    // is always there and always unlocked.
+    if(layer.valid()) {
+        const LayerRecord *l = doc_->layers().find(layer);
+        if(l == nullptr || l->locked) return false;
+    }
+    activeLayer_ = layer;
+    return true;
+}
+
+bool Session::setRelationValue(ConstraintId id, double value) {
+    recordAction("relation.set-value",
+                 {{"constraint", static_cast<double>(id.value())}, {"value", value}});
+    const ConstraintRecord *r = doc_->constraints().find(id);
+    if(r == nullptr || constraintInfo(r->kind).valueArity != 1) return false;
+    if(!std::isfinite(value)) return false;  // not a value the geometry can hold
+    ConstraintRecord next = *r;
+    next.value = Slot(value);
+    next.driving = true;
+
+    // Checked before it drives. Refused rather than auto-downgraded: this is a
+    // panel imposition, where the downgrade is the user's choice — PRINCIPLES
+    // keeps the automatic reference for the numeric-placement path alone. A value
+    // the rest of the document cannot hold leaves the document byte-identical and
+    // the downgrade on offer. Checked against the document without this
+    // constraint, since a driving record constrains and comparing the candidate
+    // to itself calls it redundant.
+    Document without = *doc_;
+    without.apply(RemoveRecord<ConstraintRecord>{id});
+    Topology t(without);
+    const CandidateCheck check = checkCandidate(without, t, next);
+    presentation_.impositionVerdict = check.verdict;
+    presentation_.conflicting = check.conflicting;
+    presentation_.conflictAttributed = check.attributed;
+    presentation_.imposed = ConstraintId();
+    presentation_.downgrade.reset();
+    if(!check.committable()) {
+        // Named rather than flagged, exactly as the imposition path names its
+        // downgrade: the offer sits where the refusal did and the value is not
+        // lost. Redundant still commits and is flagged, since redundancy is where
+        // later edits go to die rather than a fault today.
+        if(check.verdict == CandidateVerdict::Inconsistent) {
+            presentation_.downgrade = Presentation::Downgrade{r->kind, 0};
+        }
+        return false;
+    }
+    presentation_.imposed = id;
+    if(journal_->applyStep(*doc_, "set value", SetRecord<ConstraintRecord>{std::move(next)}) !=
+       CommandError::None) {
+        return false;
+    }
+    refresh();
+    return true;
+}
+
+bool Session::flipAlternative(ConstraintId id) {
+    recordAction("relation.flip-alternative", {{"constraint", static_cast<double>(id.value())}});
+    const ConstraintRecord *r = doc_->constraints().find(id);
+    if(r == nullptr || constraintInfo(r->kind).alternatives == 0) return false;
+    ConstraintRecord next = *r;
+    next.alternative = next.alternative == 0 ? 1 : 0;
+    if(journal_->applyStep(*doc_, "flip alternative", SetRecord<ConstraintRecord>{std::move(next)}) !=
+       CommandError::None) {
+        return false;
+    }
+    refresh();
+    return true;
+}
+
+ConstraintId Session::targetConstraint(std::optional<double> named) const {
+    if(named && *named > 0.0) return ConstraintId(static_cast<uint32_t>(*named));
+    // The first selected constraint, so an inspector row's action with no id acts
+    // on what the selection names. set-value and flip check the kind themselves.
+    if(!selection_.constraints().empty()) return selection_.constraints().front();
+    return ConstraintId();
+}
+
+bool Session::retargetAxes(RetargetTarget target, EntityId frame) {
+    std::vector<std::pair<std::string, double>> args;
+    if(target == RetargetTarget::DocumentFrame) {
+        args.emplace_back("document", 1.0);
+    } else if(target == RetargetTarget::ExistingFrame) {
+        args.emplace_back("frame", static_cast<double>(frame.value()));
+    }
+    // NewClusterFrame records no argument: absent is the default answer, exactly
+    // as an absent retarget flag keeps the document axes under rotate.
+    recordAction("relation.retarget-axes", std::move(args));
+
+    const std::optional<Point> centre = transformCentre();
+    if(!centre) {
+        presentation_.structure.clear();
+        presentation_.structure.transformError = TransformError::NothingToMove;
+        return false;
+    }
+    RetargetOptions options;
+    options.centre = *centre;
+    options.target = target;
+    options.frame = frame;
+    return applyTransform(retargetAxesStep(*doc_, selection_.items(), options), "retarget axes");
+}
+
+bool Session::setSnapGrid(double step, bool enabled) {
+    recordAction("snap.set-grid", {{"step", step}, {"enabled", enabled ? 1.0 : 0.0}});
+    // Session state, like the tool and the active layer, so it is recorded for
+    // scripts but not journalled. The placement it changes is what makes a script
+    // toggling grid snapping mid-drawing replay to the identical document.
+    snapPolicy_.gridStep = step;
+    snapPolicy_.gridEnabled = enabled;
+    return true;
+}
+
+bool Session::setSnapConstructionAttract(bool attract) {
+    recordAction("snap.set-construction-attract", {{"flag", attract ? 1.0 : 0.0}});
+    snapPolicy_.snapToConstruction = attract;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Read-only queries for the panels
+// ---------------------------------------------------------------------------
+
+std::vector<Session::ConstraintRow> Session::constraintRows() const {
+    std::vector<ConstraintId> ids;
+    if(!selection_.items().empty()) ids = constraintsOn(*doc_, selection_.items());
+    // Directly-selected constraints too, so a walked conflict set lists here.
+    for(ConstraintId id : selection_.constraints()) {
+        if(std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
+    }
+    // With nothing selected, the whole document — how "find every distance" is one
+    // filter and no walk.
+    if(selection_.items().empty() && selection_.constraints().empty()) {
+        for(const ConstraintRecord &c : doc_->constraints().records()) ids.push_back(c.id);
+    }
+    std::sort(ids.begin(), ids.end());
+
+    const Pose current = pose();
+    std::vector<ConstraintRow> out;
+    for(ConstraintId id : ids) {
+        const ConstraintRecord *r = doc_->constraints().find(id);
+        if(r == nullptr) continue;
+        const ConstraintKindInfo &info = constraintInfo(r->kind);
+        ConstraintRow row;
+        row.id = id;
+        row.kind = r->kind;
+        row.name = std::string(info.name);
+        row.valued = info.valueArity == 1;
+        row.driving = r->driving;
+        row.hasAlternative = info.alternatives > 0;
+        if(row.valued) {
+            // Driving shows the value it holds; reference shows what the geometry
+            // is doing, measured from the pose and live.
+            const std::optional<double> v =
+                r->driving ? doc_->evaluate(r->value) : measure(current, *r);
+            row.value = v.value_or(0.0);
+        }
+        const size_t bound = boundOperandCount(*r);
+        for(size_t i = 0; i < bound; i++) {
+            if(i) row.operands += ", ";
+            row.operands += "#" + std::to_string(r->operands[i].value());
+        }
+        row.conflicting = std::find(presentation_.conflicting.begin(),
+                                    presentation_.conflicting.end(), id) !=
+                          presentation_.conflicting.end();
+        // Redundancy is detected at imposition, not stored per constraint, so the
+        // flag is the transient one the last check raised for this row. Full
+        // per-constraint redundancy is a counterfactual per relation, deferred.
+        row.redundant = id == presentation_.imposed &&
+                        presentation_.impositionVerdict == CandidateVerdict::Redundant;
+        // Frozen when every operand it binds is on a locked layer, so it has no
+        // free parameter to drive.
+        bool anyFree = false;
+        for(size_t i = 0; i < bound; i++) {
+            if(!isLocked(*doc_, r->operands[i])) {
+                anyFree = true;
+                break;
+            }
+        }
+        row.frozenByLock = bound > 0 && !anyFree;
+        out.push_back(std::move(row));
+    }
+    return out;
+}
+
+std::vector<Session::AxisReference> Session::axisReferences() const {
+    std::vector<ConstraintId> ids;
+    if(!selection_.items().empty()) ids = constraintsOn(*doc_, selection_.items());
+    for(ConstraintId id : selection_.constraints()) {
+        if(std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
+    }
+    std::sort(ids.begin(), ids.end());
+
+    std::vector<AxisReference> out;
+    for(ConstraintId id : ids) {
+        const ConstraintRecord *r = doc_->constraints().find(id);
+        if(r == nullptr) continue;
+        if(r->kind != ConstraintKind::Horizontal && r->kind != ConstraintKind::Vertical) continue;
+        AxisReference ref;
+        ref.id = id;
+        ref.kind = r->kind;
+        const bool referenced = boundOperandCount(*r) > constraintInfo(r->kind).operandCount;
+        ref.frame = referenced ? r->operands[1] : EntityId();
+        ref.frameName = ref.frame.valid() ? "cluster frame" : "document frame";
+        out.push_back(std::move(ref));
+    }
+    return out;
+}
+
+std::vector<std::string> Session::historyLabels() const {
+    std::vector<std::string> out;
+    for(const UndoRecord &r : journal_->records()) out.push_back(r.label);
+    return out;
+}
+
+size_t Session::historyPosition() const { return journal_->depth(); }
+
+std::string Session::undoLabel() const {
+    return journal_->canUndo() ? journal_->records()[journal_->depth() - 1].label : std::string();
+}
+
+std::string Session::redoLabel() const {
+    return journal_->canRedo() ? journal_->records()[journal_->depth()].label : std::string();
 }
 
 Bake Session::bake() const { return bakeForExport(*doc_, pose()); }

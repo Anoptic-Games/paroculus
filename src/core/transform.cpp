@@ -413,6 +413,57 @@ TransformStep scaleStep(const Document &doc, std::span<const EntityId> selection
     return step;
 }
 
+TransformStep retargetAxesStep(const Document &doc, std::span<const EntityId> selection,
+                               const RetargetOptions &options) {
+    // A new cluster frame is a zero-degree rotation that retargets: delegating
+    // rather than duplicating is what guarantees the parity the test asserts —
+    // the rewrite is one function, reached two ways.
+    if(options.target == RetargetTarget::NewClusterFrame) {
+        RotateOptions ro;
+        ro.centre = options.centre;
+        ro.angle = 0.0;
+        ro.axes = AxisAnswer::RetargetToClusterFrame;
+        return rotateStep(doc, selection, ro);
+    }
+
+    TransformStep step;
+    const std::vector<EntityId> moved = closure(doc, selection);
+    if(moved.empty()) {
+        step.error = TransformError::NothingToMove;
+        return step;
+    }
+    // The same gates rotate refuses on, byte-identically: a lock or a
+    // frame-referenced relation in the closure refuses the whole retarget.
+    if(anyLocked(doc, moved)) {
+        step.error = TransformError::Locked;
+        return step;
+    }
+    if(anyFrameReferenced(doc, moved)) {
+        step.error = TransformError::FrameReferenced;
+        return step;
+    }
+
+    const EntityId newRef =
+        options.target == RetargetTarget::ExistingFrame ? options.frame : EntityId();
+
+    // Every axis relation whose required segment is inside the moved set, at any
+    // current reference — so a retarget to the document frame reaches the ones a
+    // cluster frame already holds, which axisReferencedIn deliberately skips.
+    for(const ConstraintRecord &c : doc.constraints().records()) {
+        if(c.kind != ConstraintKind::Horizontal && c.kind != ConstraintKind::Vertical) continue;
+        if(!contains(moved, c.operands[0])) continue;
+        const EntityId currentRef =
+            boundOperandCount(c) > constraintInfo(c.kind).operandCount ? c.operands[1] : EntityId();
+        if(currentRef == newRef) continue;  // already where asked; emit nothing
+        ConstraintRecord next = c;
+        next.operands[1] = newRef;
+        step.commands.push_back(SetRecord<ConstraintRecord>{next});
+        step.retargeted++;
+    }
+    step.frame = newRef;
+    return step;
+}
+
 TransformStep nonUniformScaleStep(const Document &doc, std::span<const EntityId> selection,
                                   double factorX, double factorY) {
     (void)doc;

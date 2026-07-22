@@ -216,6 +216,15 @@ paroculus::KeyStroke strokeOf(const QKeyEvent *event) {
     paroculus::KeyStroke stroke;
     const QString text = event->text();
     if(!text.isEmpty()) stroke.character = text.at(0).toLatin1();
+    // Under Control, some platforms deliver a C0 control character in text()
+    // (Ctrl+Z as 0x1a) rather than the letter. Reconstruct the engraved letter
+    // from the key symbol so the registry sees the same 'z' a headless caller
+    // spells — the same reconstruction the engraved digit does for the shifted
+    // number row, and the reason resolveKey can carry ctrl chords at all.
+    if((event->modifiers() & Qt::ControlModifier) && stroke.character > 0 &&
+       stroke.character < 0x20 && event->key() >= Qt::Key_A && event->key() <= Qt::Key_Z) {
+        stroke.character = static_cast<char>('a' + (event->key() - Qt::Key_A));
+    }
     stroke.digit = engravedDigit(event);
     if(event->modifiers() & Qt::ShiftModifier) stroke.modifiers |= Modifier::Shift;
     if(event->modifiers() & Qt::ControlModifier) stroke.modifiers |= Modifier::Control;

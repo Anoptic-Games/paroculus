@@ -174,7 +174,9 @@ ApplicationWindow {
                 title: qsTr("Panels")
                 MenuItem { text: qsTr("Layers"); checkable: true; checked: rightDock.layersVisible; onTriggered: rightDock.layersVisible = !rightDock.layersVisible }
                 MenuItem { text: qsTr("Inspector"); checkable: true; checked: rightDock.inspectorVisible; onTriggered: rightDock.inspectorVisible = !rightDock.inspectorVisible }
+                MenuItem { text: qsTr("Parameters"); checkable: true; checked: rightDock.parametersVisible; onTriggered: rightDock.parametersVisible = !rightDock.parametersVisible }
                 MenuItem { text: qsTr("Reports"); checkable: true; checked: rightDock.reportsVisible; onTriggered: rightDock.reportsVisible = !rightDock.reportsVisible }
+                MenuItem { text: qsTr("History"); checkable: true; checked: rightDock.historyVisible; onTriggered: rightDock.historyVisible = !rightDock.historyVisible }
                 MenuSeparator {}
                 MenuItem { text: qsTr("Bottom Dock"); checkable: true; checked: rightDock.bottomDockVisible; onTriggered: rightDock.bottomDockVisible = !rightDock.bottomDockVisible }
             }
@@ -314,6 +316,13 @@ ApplicationWindow {
                                   (App.active ? App.active.numericEntry.text : "") + "_]"
                         }
                     }
+                }
+
+                // The style toolbar, floating at the canvas top, shown only when
+                // the selection has something styleable. Writes through the same
+                // style actions the inspector's Style section does.
+                StyleBar {
+                    anchors { top: parent.top; horizontalCenter: parent.horizontalCenter; topMargin: 12 }
                 }
 
                 // The transient strip, near the work; hidden while the palette is up.

@@ -81,9 +81,13 @@ struct ScriptStep {
     int clicks = 1;
 
     // Kind::Action. The name is the registry's stable token; the arguments are
-    // its parameter schema, filled.
+    // its parameter schema, filled. Numeric arguments and the string ones — a
+    // name to rename to, an expression to assign — ride in separate lists,
+    // because the parameter schema already says which channel each reads and a
+    // name that spells a number must not be read as one.
     std::string actionName;
     std::vector<std::pair<std::string, double>> arguments;
+    std::vector<std::pair<std::string, std::string>> textArguments;
 
     // Kind::Tool. Without this a drawing session could not be recorded at all:
     // the same click means "select this" or "place a point here" depending on
@@ -159,7 +163,8 @@ public:
     void decline(size_t index);
     void type(char c);
     void numeric(ScriptStep::Kind kind);
-    void action(std::string_view name, const std::vector<std::pair<std::string, double>> &args);
+    void action(std::string_view name, const std::vector<std::pair<std::string, double>> &args,
+                const std::vector<std::pair<std::string, std::string>> &textArgs = {});
 
     const std::vector<ScriptStep> &steps() const { return steps_; }
     void clear() { steps_.clear(); }

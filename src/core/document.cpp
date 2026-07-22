@@ -644,6 +644,27 @@ std::vector<TagId> tagsOver(const Document &doc, ConstraintId id) {
     return out;
 }
 
+std::vector<ConstraintId> constraintsOn(const Document &doc, std::span<const EntityId> entities) {
+    // Walked in constraint id order — records() is id-ordered — so the list is
+    // deterministic. Reads boundOperandCount so an absent optional operand does
+    // not count as a binding a null slot never made.
+    std::vector<ConstraintId> out;
+    for(const ConstraintRecord &c : doc.constraints().records()) {
+        const size_t bound = boundOperandCount(c);
+        bool touches = false;
+        for(size_t i = 0; i < bound && !touches; i++) {
+            for(EntityId id : entities) {
+                if(c.operands[i] == id) {
+                    touches = true;
+                    break;
+                }
+            }
+        }
+        if(touches) out.push_back(c.id);
+    }
+    return out;
+}
+
 std::vector<RegionId> compositesOver(const Document &doc, RegionId id) {
     std::vector<RegionId> out;
     for(const RegionRecord &r : doc.regions().records()) {

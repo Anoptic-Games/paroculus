@@ -105,6 +105,23 @@ TEST_CASE("strokeOf maps modifiers, extracts the character, and fills the digit"
                         QStringLiteral("a"));
         CHECK(shelltest::strokeOf(&event).character == 'a');
     }
+    SUBCASE("a C0 control char under Control is reconstructed to its letter") {
+        // Ctrl+Z as some platforms deliver it: text() is 0x1a (SUB), not 'z'. The
+        // registry's ctrl grammar spells its chords with letters, so the letter is
+        // rebuilt from the key symbol exactly as the engraved digit is.
+        QKeyEvent event(QEvent::KeyPress, Qt::Key_Z, Qt::ControlModifier, 0, 0, 0,
+                        QStringLiteral("\x1a"));
+        const KeyStroke stroke = shelltest::strokeOf(&event);
+        CHECK(stroke.character == 'z');
+        CHECK(has(stroke.modifiers, Modifier::Control));
+    }
+    SUBCASE("a plain letter under Control is left as it is") {
+        // The platform the test suite runs on: text() already carries the letter,
+        // so reconstruction is a no-op and ctrl+r still swallows rather than tools.
+        QKeyEvent event(QEvent::KeyPress, Qt::Key_R, Qt::ControlModifier, 0, 0, 0,
+                        QStringLiteral("r"));
+        CHECK(shelltest::strokeOf(&event).character == 'r');
+    }
     SUBCASE("empty text leaves the character at 0") {
         QKeyEvent event(QEvent::KeyPress, Qt::Key_Shift, Qt::NoModifier, 0, 0, 0, QString());
         CHECK(shelltest::strokeOf(&event).character == 0);
