@@ -50,6 +50,28 @@ void press(Session &session, Point p, Modifier modifiers = Modifier::None) {
     session.handle(event);
 }
 
+// A press carrying a click count, so a test can descend the selection ladder the
+// way a double-click does: shape, then edges, then points.
+void clickAt(Session &session, Point p, int clicks) {
+    const ViewTransform &view = session.viewport().view;
+    const Eigen::Vector2d s = view.toScreen(p);
+    session.handle(PointerEvent::at(PointerAction::Move, s, view));
+    PointerEvent event = PointerEvent::at(PointerAction::Press, s, view, Button::Left);
+    event.clicks = clicks;
+    session.handle(event);
+    session.handle(PointerEvent::at(PointerAction::Release, s, view, Button::Left));
+}
+
+// Descends the selection to the points rung at `corner`: one click selects the
+// shape, then two double-clicks descend past the edges to the points. Leaving no
+// edge selected is what keeps the tag unselected, so a drag from here is an
+// ordinary vertex drag rather than the handle drag a bare corner press would be.
+void descendToPoints(Session &session, Point corner) {
+    clickAt(session, corner, 1);
+    clickAt(session, corner, 2);
+    clickAt(session, corner, 2);
+}
+
 // Drags the pointer from one document point to another, as a user would.
 void dragTo(Session &session, Point from, Point to) {
     const ViewTransform &view = session.viewport().view;
@@ -314,6 +336,64 @@ TEST_CASE("structure: a rectangle's handle drives its dimensions") {
     CHECK(width->driving);
 }
 
+TEST_CASE("every corner of a whole-selected rectangle drags freely to the cursor") {
+    // The stage U4 regression. A single click selects the whole rectangle, which
+    // put every corner in the drag's held set; the solver keeps a held param
+    // near its seed, and its equal-coordinate substitution (coincidence,
+    // horizontal and vertical are all a=b) then eliminated the grab's cursor
+    // value in favour of a held neighbour's old seed. The corners came out each
+    // locked to a different axis — one vertical only, its neighbour horizontal
+    // only — and the corner between them locked on both. Holding only the grab
+    // when the whole component is selected lets every corner track the cursor,
+    // with the adjacent corners following and the opposite one anchored: the
+    // drag-along a corner resize is supposed to be.
+    const Point corners[] = {{60.0, 40.0}, {60.0, -40.0}, {-60.0, -40.0}, {-60.0, 40.0}};
+    for(const Point &c : corners) {
+        Document doc;
+        UndoJournal journal;
+        std::unique_ptr<Session> session = fresh(doc, journal);
+        session->setTool(ToolKind::Rectangle);
+        press(*session, Point{-60.0, -40.0});
+        press(*session, Point{60.0, 40.0});
+        session->setTool(ToolKind::Select);
+
+        // The point ids at the grabbed corner and at the opposite one, read
+        // before the drag so they can be followed through it. A corner is two
+        // coincident points; both must land on the cursor.
+        const Point opposite{-c.x, -c.y};
+        std::vector<EntityId> grabbedPts, oppositePts;
+        for(const EntityRecord &e : doc.entities().records()) {
+            if(e.kind != EntityKind::Point) continue;
+            const std::optional<Point> p = session->pose().point(e.id);
+            if(!p) continue;
+            if(std::hypot(p->x - c.x, p->y - c.y) < 1e-6) grabbedPts.push_back(e.id);
+            if(std::hypot(p->x - opposite.x, p->y - opposite.y) < 1e-6) oppositePts.push_back(e.id);
+        }
+        REQUIRE(grabbedPts.size() == 2);
+        REQUIRE(oppositePts.size() == 2);
+
+        const Point target{c.x + 40.0, c.y + 30.0};
+        dragTo(*session, c, target);
+
+        // The grabbed corner reached the cursor in full — both coincident points,
+        // both coordinates — rather than one axis snapping back to a neighbour.
+        for(EntityId id : grabbedPts) {
+            const std::optional<Point> p = session->pose().point(id);
+            REQUIRE(p.has_value());
+            CHECK(p->x == doctest::Approx(target.x).epsilon(1e-6));
+            CHECK(p->y == doctest::Approx(target.y).epsilon(1e-6));
+        }
+        // The opposite corner is the anchor and did not move.
+        for(EntityId id : oppositePts) {
+            const std::optional<Point> p = session->pose().point(id);
+            REQUIRE(p.has_value());
+            CHECK(p->x == doctest::Approx(opposite.x).epsilon(1e-6));
+            CHECK(p->y == doctest::Approx(opposite.y).epsilon(1e-6));
+        }
+        CHECK_FALSE(session->presentation().saturated);
+    }
+}
+
 TEST_CASE("structure: the handle stops working when the tag does, and nothing else does") {
     Document doc;
     UndoJournal journal;
@@ -466,12 +546,17 @@ TEST_CASE("an ordinary vertex drag does not rewrite a rectangle's dimension") {
     // what it is over. Dragging a corner with the tag unselected is an ordinary
     // vertex drag, and a driving width must resist it — otherwise the number the
     // user pinned is silently rewritten by a gesture that never showed a handle.
+    //
+    // Reaching that gesture takes descending. A bare corner press selects the
+    // connected run, edges included, which selects the tag and makes the drag a
+    // handle drag — the resize the handle is for. Descending past the edges to
+    // the points leaves the tag unselected, which is the ordinary vertex drag
+    // this invariant is about.
     DimensionedRectangle f;
     const Point grabbed = f.corner();
     CHECK(f.widthValue() == doctest::Approx(120.0));
 
-    // Deselect: click empty space, so no tag is named and no handle is offered.
-    press(*f.session, Point{-300.0, 250.0});
+    descendToPoints(*f.session, grabbed);
     REQUIRE(f.session->selectedTags().empty());
 
     const double heightBefore = f.heightMeasured();

@@ -243,41 +243,69 @@ TEST_CASE("hit priority is table-driven and replaceable") {
     CHECK(hitBeats(nearPoint, point));
 }
 
-TEST_CASE("a multi-selection drag holds every selected parameter") {
+TEST_CASE("a multi-selection drag holds every selected parameter of a strict subset") {
     // PRINCIPLES: multi-selection drags put all selected parameters in the set.
     // The set is the solver's soft hint — held, not targeted — so only the grab
     // is asked to be at the cursor and the rest are marked so what has to give
     // gives in the geometry the user did not select.
+    //
+    // The refinement discovered at stage U4: holding is only meaningful when
+    // there is unselected geometry for the deformation to give into. When the
+    // selection is the whole grabbed component — which is what a single click
+    // does — there is nothing unselected to absorb, and holding every point
+    // instead fights the grab through the solver's equal-coordinate
+    // substitution, pinning a corner to a held neighbour's old seed along one
+    // axis. So the whole-component case holds only the grab; a strict subset
+    // holds the subset.
     Document doc;
     const EntityId a = paroculus::test::addPoint(doc, 0.0, 0.0);
     const EntityId b = paroculus::test::addPoint(doc, 100.0, 0.0);
-    const EntityId segment = paroculus::test::addSegment(doc, a, b);
+    const EntityId c = paroculus::test::addPoint(doc, 200.0, 0.0);
+    // Two segments make one component of three points: a segment solves with its
+    // endpoints, so a, b and c are connected even without a constraint.
+    const EntityId ab = paroculus::test::addSegment(doc, a, b);
+    const EntityId bc = paroculus::test::addSegment(doc, b, c);
     // A second, unconnected shape: selected, but not in this solve.
     const EntityId far = paroculus::test::addPoint(doc, 900.0, 900.0);
 
     Topology topology(doc);
     HitPolicy policy;
 
-    SUBCASE("the whole selection is held") {
+    SUBCASE("a strict subset holds the selected non-grab points") {
+        // {b, c} is a strict subset of the component {a, b, c}: a is unselected
+        // geometry the deformation can give into, so b is held.
         const std::optional<DragSession> drag =
-            DragSession::begin(doc, topology, b, {a, b, segment}, policy);
+            DragSession::begin(doc, topology, c, {b, c, bc}, policy);
         REQUIRE(drag.has_value());
         // Grab first, so the anchor is unambiguous.
         REQUIRE_FALSE(drag->dragged().empty());
-        CHECK(drag->dragged().front() == b);
-        CHECK(std::find(drag->dragged().begin(), drag->dragged().end(), a) !=
+        CHECK(drag->dragged().front() == c);
+        CHECK(std::find(drag->dragged().begin(), drag->dragged().end(), b) !=
               drag->dragged().end());
         // A segment owns no parameters of its own, so there is nothing of it to
         // hold: it moves by its endpoints, which are already in the set.
-        CHECK(std::find(drag->dragged().begin(), drag->dragged().end(), segment) ==
+        CHECK(std::find(drag->dragged().begin(), drag->dragged().end(), bc) ==
               drag->dragged().end());
+    }
+
+    SUBCASE("a whole-component selection holds only the grab") {
+        // {a, b, c} with both segments is the entire component. There is no
+        // unselected geometry to give into, so holding the rest would only fight
+        // the grab: hold only it.
+        const std::optional<DragSession> drag =
+            DragSession::begin(doc, topology, c, {a, b, c, ab, bc}, policy);
+        REQUIRE(drag.has_value());
+        CHECK(drag->dragged().size() == 1);
+        CHECK(drag->dragged().front() == c);
     }
 
     SUBCASE("a selection outside the dragged component is not in the solve") {
         // Locality outranks it. Nothing connects the two, so holding the far
-        // point would only widen the solve for no possible effect.
+        // point would only widen the solve for no possible effect. b stays held
+        // because a is still unselected — the far point does not make the
+        // in-component selection whole.
         const std::optional<DragSession> drag =
-            DragSession::begin(doc, topology, b, {a, b, far}, policy);
+            DragSession::begin(doc, topology, c, {b, c, far}, policy);
         REQUIRE(drag.has_value());
         CHECK(std::find(drag->dragged().begin(), drag->dragged().end(), far) ==
               drag->dragged().end());
@@ -285,10 +313,10 @@ TEST_CASE("a multi-selection drag holds every selected parameter") {
     }
 
     SUBCASE("an empty selection still holds the grab") {
-        const std::optional<DragSession> drag = DragSession::begin(doc, topology, b, {}, policy);
+        const std::optional<DragSession> drag = DragSession::begin(doc, topology, c, {}, policy);
         REQUIRE(drag.has_value());
         CHECK(drag->dragged().size() == 1);
-        CHECK(drag->dragged().front() == b);
+        CHECK(drag->dragged().front() == c);
     }
 }
 

@@ -229,8 +229,14 @@ measure-impose duality.
 Interactive drag maps to the solver's native mechanism: the dragged point's
 parameters go into the `dragged` set (`Slvs_System.dragged`), the solver
 favors solutions keeping them near the cursor, and everything else moves as
-little as the constraints allow. Multi-selection drags put all selected
-parameters in the set. The user-facing pin ("this stays put") is the hard
+little as the constraints allow. Multi-selection drags put the selected
+parameters in the set too, but only while the selection is a strict subset of
+the dragged component: holding is how the give is sent into geometry the user
+did not select, and a selection covering the whole component leaves none to
+give into — held there, the equal-coordinate substitution turns the grab's
+neighbours into anchors and locks it. A single click selects the whole
+connected run, so the common corner drag holds only the grab and the rest
+follow minimal displacement. The user-facing pin ("this stays put") is the hard
 form, `SLVS_C_WHERE_DRAGGED`, one keystroke, visible like any constraint.
 
 Feel rules that are commitments, not tuning:

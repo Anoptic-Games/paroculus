@@ -189,13 +189,40 @@ std::optional<DragSession> DragSession::begin(const Document &doc, const Topolog
     // are, which is what pushes the deformation into the geometry the user did
     // not select. A selected parameter outside this component is not in this
     // solve at all — locality is the stronger rule, and nothing links them.
+    //
+    // But holding is only meaningful when there is unselected geometry for the
+    // deformation to give into. When the selection is the whole grabbed
+    // component — which is what a single click does, since it selects the
+    // connected run — there is nothing unselected to absorb, and holding every
+    // point instead fights the grab: SolveSpace substitutes equal coordinates
+    // (a coincidence, a horizontal, a vertical are all a=b), and among two
+    // dragged params in one such chain the grab's cursor value can be the one
+    // eliminated, pinning the grabbed corner to a neighbour's old seed along
+    // that axis. A rectangle came out with each corner locked to a different
+    // axis, and some locked on both. So when the whole component is held, hold
+    // only the grab and let the rest follow the solver's minimal displacement,
+    // which is what a corner drag wants anyway.
     session.dragged_.push_back(grabbed);
-    for(EntityId id : selection) {
-        if(id == grabbed) continue;
-        if(!session.context_.contains(id)) continue;
-        const EntityRecord *m = doc.entities().find(id);
-        if(m == nullptr || entityInfo(m->kind).ownParamCount == 0) continue;
-        session.dragged_.push_back(id);
+    const ComponentId grabbedComponent = topology.componentOf(grabbed);
+    bool wholeComponentHeld = grabbedComponent != NO_COMPONENT;
+    if(wholeComponentHeld) {
+        for(EntityId member : topology.membersOf(grabbedComponent)) {
+            const EntityRecord *m = doc.entities().find(member);
+            if(m == nullptr || entityInfo(m->kind).ownParamCount == 0) continue;
+            if(std::find(selection.begin(), selection.end(), member) == selection.end()) {
+                wholeComponentHeld = false;
+                break;
+            }
+        }
+    }
+    if(!wholeComponentHeld) {
+        for(EntityId id : selection) {
+            if(id == grabbed) continue;
+            if(!session.context_.contains(id)) continue;
+            const EntityRecord *m = doc.entities().find(id);
+            if(m == nullptr || entityInfo(m->kind).ownParamCount == 0) continue;
+            session.dragged_.push_back(id);
+        }
     }
     return session;
 }
