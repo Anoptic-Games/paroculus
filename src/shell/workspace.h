@@ -214,6 +214,9 @@ public:
     // The packed background for render, and the axis frames the canvas draws.
     // C++-facing, for SketchView: the canvas reads these to fill the Adornment.
     uint32_t backgroundColor() const { return background_; }
+    // The relation whose operands the inspector is hovering, or a null id when
+    // none. C++-facing, read by SketchView into the Adornment.
+    ConstraintId hoveredRelation() const { return hoveredRelation_; }
 
     // ---- Presentation toggles (unrecorded, sidecar-persisted) ----
     // Each updates transient view state and repaints; none touches the document
@@ -282,6 +285,15 @@ public:
     // recall surface over what the click selected.
     Q_INVOKABLE void selectRelation(int id, bool additive = false);
 
+    // Highlights a relation's operands on the canvas while its inspector row is
+    // hovered, so what a constraint points to is legible by eye. Transient and
+    // repaint-only: it emits highlightChanged() rather than changed(), because a
+    // changed() rebuilds the relations list and destroys the very delegate being
+    // hovered before its exit could clear this — the same hazard the imposition
+    // ghost dodges. Not recorded, not the document's business.
+    Q_INVOKABLE void setHoveredRelation(int id);
+    Q_INVOKABLE void clearHoveredRelation();
+
     // Whether assigning `expression` to parameter `id` would close a cycle, so the
     // parameters panel can refuse inline at commit rather than after. A read, not
     // an edit: it computes the check without touching the document.
@@ -340,6 +352,11 @@ public:
 
 signals:
     void changed();
+    // A transient highlight changed (the inspector's hovered relation), asking
+    // the canvas to repaint without rebuilding any model — distinct from
+    // changed(), which would destroy the hovered relation delegate. No model
+    // binds to this; only SketchView does.
+    void highlightChanged();
     // The session was replaced under a stable workspace pointer (a load into a
     // reused tab), so the canvas must re-sync the viewport for the new session
     // rather than assume a pointer change already did. Distinct from changed(),
@@ -397,6 +414,10 @@ private:
     // The previewed pose held between a hover and the paint. Transient view
     // state: the session does not know it exists and the document is untouched.
     std::vector<SeedSpan> ghostPose_;
+    // The relation whose row the inspector is hovering, so the canvas can tint
+    // its operands. Transient, repaint-only, cleared whenever a changed() would
+    // otherwise strand it — the same treatment ghostPose_ gets.
+    ConstraintId hoveredRelation_;
 
     // U2 canvas-depth presentation state. Sidecar-persisted (all but inspect
     // mode), never journalled, never seen by a script — presentation, not edits.

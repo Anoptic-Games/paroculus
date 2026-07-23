@@ -123,6 +123,50 @@ TEST_CASE("dirty tracks the journal revision across edit and save") {
     CHECK(ws.dirty());
 }
 
+TEST_CASE("a hovered relation is transient, repaint-only, and cleared by an edit") {
+    // The inspector's relation hover highlights the constraint's operands on the
+    // canvas. It rides highlightChanged(), not changed(): a changed() rebuilds
+    // the relations list and destroys the very row being hovered, so the state
+    // is repaint-only and dropped whenever a changed() would strand it.
+    Workspace ws;
+    const EntityId a = addPointVia(ws, -1.0, 0.0);
+    const EntityId b = addPointVia(ws, 1.0, 0.0);
+    ConstraintRecord c;
+    c.kind = ConstraintKind::Coincident;
+    c.operands[0] = a;
+    c.operands[1] = b;
+    ws.journal().applyStep(ws.document(), "coincide", AddRecord<ConstraintRecord>{c});
+    const ConstraintId id = ws.document().constraints().records().back().id;
+
+    int highlightSignals = 0, changedSignals = 0;
+    QObject::connect(&ws, &Workspace::highlightChanged, &ws, [&] { highlightSignals++; });
+    QObject::connect(&ws, &Workspace::changed, &ws, [&] { changedSignals++; });
+
+    REQUIRE_FALSE(ws.hoveredRelation().valid());
+    ws.setHoveredRelation(static_cast<int>(id.value()));
+    CHECK(ws.hoveredRelation() == id);
+    CHECK(highlightSignals == 1);
+    CHECK(changedSignals == 0);  // repaint only — no model rebuilt under the cursor
+
+    ws.setHoveredRelation(static_cast<int>(id.value()));  // idempotent
+    CHECK(highlightSignals == 1);
+
+    // An edit strands the hovering row before its exit fires, so notifyChanged
+    // drops the highlight the same way it drops the imposition ghost.
+    ws.notifyChanged();
+    CHECK_FALSE(ws.hoveredRelation().valid());
+    CHECK(changedSignals == 1);
+
+    // Clear is idempotent and its own repaint.
+    ws.setHoveredRelation(static_cast<int>(id.value()));
+    CHECK(highlightSignals == 2);
+    ws.clearHoveredRelation();
+    CHECK_FALSE(ws.hoveredRelation().valid());
+    CHECK(highlightSignals == 3);
+    ws.clearHoveredRelation();  // no-op
+    CHECK(highlightSignals == 3);
+}
+
 TEST_CASE("enabling and disabling async is idempotent and leaves the workspace not busy") {
     // The symmetric enable/disable the manager relies on to hold async on exactly
     // the active workspace. Disabling joins the workers; a second enable/disable

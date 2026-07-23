@@ -98,6 +98,10 @@ private:
     // pointer (a load into a reused tab), which changed() alone would not — the
     // repaint would then draw through the fresh session's identity viewport.
     QMetaObject::Connection viewResetConnection_;
+    // Repaints on the workspace's highlightChanged() — the inspector's hovered
+    // relation, a repaint that must not rebuild any model. Kept separate from
+    // changedConnection_ so it is unbound with the workspace like the others.
+    QMetaObject::Connection highlightConnection_;
 
     // A middle-button drag in flight. It never reaches the session: a pan is a
     // change of view, not an edit, and what the session sees of it is the

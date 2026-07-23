@@ -37,12 +37,18 @@ void SketchView::setWorkspace(Workspace *workspace) {
     // The previous workspace's signals stop mattering the moment it is unbound.
     QObject::disconnect(changedConnection_);
     QObject::disconnect(viewResetConnection_);
+    QObject::disconnect(highlightConnection_);
     workspace_ = workspace;
     if(workspace_ != nullptr) {
         // Any mutation from any surface — a QML action, the async pump, a script
         // step — reaches the canvas through the one coarse changed() signal.
         changedConnection_ =
             QObject::connect(workspace_, &Workspace::changed, this, [this]() { update(); });
+        // A hovered-relation highlight repaints the canvas and nothing else, so it
+        // rides its own signal rather than changed(), which would rebuild the
+        // relations list under the cursor.
+        highlightConnection_ = QObject::connect(workspace_, &Workspace::highlightChanged, this,
+                                                [this]() { update(); });
         // A session replaced under the same workspace pointer (a load into a
         // reused tab) needs the viewport re-synced, which changed() does not do.
         viewResetConnection_ = QObject::connect(workspace_, &Workspace::viewReset, this, [this]() {
@@ -383,6 +389,15 @@ void SketchView::paint(QPainter *painter) {
         adornment.marqueeFrom = p.marqueeFrom;
         adornment.marqueeTo = p.marqueeTo;
         adornment.glyphs = session.glyphs();
+        // The inspector's hovered relation lights up the geometry it names: its
+        // operands tint (render walks adornment.highlighted) and its own glyph
+        // emphasises, so a row in the list points at the drawing both ways.
+        if(workspace_->hoveredRelation().valid()) {
+            adornment.highlighted.push_back(workspace_->hoveredRelation());
+            for(paroculus::GlyphMark &m : adornment.glyphs) {
+                if(m.constraint == workspace_->hoveredRelation()) m.hovered = true;
+            }
+        }
         adornment.handledTags = session.selectedTags();
         adornment.ghostPose = workspace_->ghostPose();
         const paroculus::SnapPolicy &snap = session.snapPolicy();

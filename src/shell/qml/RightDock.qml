@@ -347,7 +347,16 @@ Item {
                                 height: relationRow.implicitHeight + 4
                                 radius: 2
                                 color: rowHover.hovered ? Theme.hover : "transparent"
-                                HoverHandler { id: rowHover }
+                                // Hovering the row lights up the relation's
+                                // geometry on the canvas — what it points to,
+                                // by eye. Repaint-only, so the list under the
+                                // cursor is not rebuilt out from under the hover.
+                                HoverHandler {
+                                    id: rowHover
+                                    onHoveredChanged: hovered
+                                        ? App.active.setHoveredRelation(modelData.id)
+                                        : App.active.clearHoveredRelation()
+                                }
                                 Row {
                                     id: relationRow
                                     anchors.verticalCenter: parent.verticalCenter

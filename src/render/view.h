@@ -29,6 +29,11 @@ struct Adornment {
     // Constraints currently resisting a saturated drag. Their operands tint, so
     // resistance has attribution rather than being merely stiff.
     std::vector<ConstraintId> resisting;
+    // Relations the inspector is hovering. Their operands tint and their glyphs
+    // emphasise, so "what does this constraint point to" is answerable by eye —
+    // the recall counterpart of the canvas glyph, over the same operand-tint
+    // mechanism resistance uses.
+    std::vector<ConstraintId> highlighted;
 
     bool marqueeActive = false;
     Eigen::Vector2d marqueeFrom = Eigen::Vector2d::Zero();

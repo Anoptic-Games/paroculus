@@ -172,6 +172,37 @@ TEST_CASE("selection changes what is drawn") {
           at(selected, view.toScreen(*pose.point(first))));
 }
 
+TEST_CASE("a highlighted relation tints the geometry it names") {
+    // The inspector's recall counterpart to the canvas glyph: hovering a
+    // relation row lights up what the constraint points to. Adornment.highlighted
+    // carries the relation; render walks its operands and tints them, the same
+    // path resistance uses. A coincidence names two points, so both must change.
+    Document doc;
+    const EntityId a = addPoint(doc, -40.0, 30.0);
+    const EntityId b = addPoint(doc, 40.0, -30.0);
+    const ConstraintId coincident =
+        paroculus::test::addConstraint(doc, ConstraintKind::Coincident, {a, b});
+    const Pose pose(doc);
+    const ViewTransform view = centredView();
+
+    const std::vector<uint32_t> plain = paint(pose, view);
+    Adornment adornment;
+    adornment.highlighted = {coincident};
+    const std::vector<uint32_t> lit = paint(pose, view, adornment);
+
+    // Both operand points changed colour, and the change is warm.
+    CHECK(at(plain, view.toScreen(*pose.point(a))) != at(lit, view.toScreen(*pose.point(a))));
+    CHECK(at(plain, view.toScreen(*pose.point(b))) != at(lit, view.toScreen(*pose.point(b))));
+    CHECK(warmPixels(lit) > warmPixels(plain));
+
+    // Nothing to highlight leaves the plain render untouched — no tint outlives
+    // its hover — and a stale id names nothing rather than tinting at random.
+    CHECK(paint(pose, view, Adornment{}) == plain);
+    Adornment stale;
+    stale.highlighted = {ConstraintId(999999u)};
+    CHECK(paint(pose, view, stale) == plain);
+}
+
 TEST_CASE("a marquee is drawn in screen space") {
     Document doc;
     const Pose pose = settledDemo(doc);

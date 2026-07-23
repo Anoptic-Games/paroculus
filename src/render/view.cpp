@@ -668,6 +668,17 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
         }
     }
 
+    // The operands of a relation the inspector is hovering, gathered the same
+    // way, so hovering a row lights up the geometry that relation names.
+    std::vector<EntityId> highlightedEntities;
+    for(ConstraintId id : adornment.highlighted) {
+        const ConstraintRecord *c = pose.document().constraints().find(id);
+        if(c == nullptr) continue;
+        for(size_t i = 0; i < boundOperandCount(*c); i++) {
+            highlightedEntities.push_back(c->operands[i]);
+        }
+    }
+
     // How an entity is tinted, in one place for every kind that draws. Written
     // out per loop it was written out four times and one copy drifted: circles
     // took no hover and no resistance, so a circle resisting a saturated drag
@@ -687,6 +698,9 @@ void renderDocument(const Pose &pose, const ViewTransform &view, const Adornment
         if(e.role == Role::Construction) colour = CONSTRUCTION;
         if(contains(adornment.selected, e.id)) colour = SELECTED;
         if(adornment.hovered == e.id) colour = HOVERED;
+        // A hovered relation's operands read as hovered: the inspector row is
+        // the hand, and its geometry is what is being pointed at.
+        if(contains(highlightedEntities, e.id)) colour = HOVERED;
         if(contains(resistingEntities, e.id)) colour = RESISTING;
         return colour;
     };

@@ -141,6 +141,9 @@ void Workspace::notifyChanged() {
     // before its exit can fire and disarm the ghost. Cleared here so no phantom
     // pose survives on the canvas.
     ghostPose_.clear();
+    // The hovered-relation highlight is stranded the same way: a rebuild destroys
+    // the row whose exit would clear it. Drop it so no tint outlives its row.
+    hoveredRelation_ = ConstraintId();
     emit changed();
 }
 
@@ -169,6 +172,7 @@ void Workspace::pump() {
     // under the cursor, so drop the ghost the same way notifyChanged does.
     if(session_->pumpAsync()) {
         ghostPose_.clear();
+        hoveredRelation_ = ConstraintId();
         emit changed();
     }
     if(!session_->asyncBusy()) pumpTimer_.stop();
@@ -804,6 +808,19 @@ QString Workspace::previewOf(const QString &name, int assignment) {
 void Workspace::selectRelation(int id, bool additive) {
     session_->selectConstraint(ConstraintId(static_cast<uint32_t>(id)), additive);
     notifyChanged();
+}
+
+void Workspace::setHoveredRelation(int id) {
+    const ConstraintId next(static_cast<uint32_t>(id));
+    if(hoveredRelation_ == next) return;
+    hoveredRelation_ = next;
+    emit highlightChanged();
+}
+
+void Workspace::clearHoveredRelation() {
+    if(!hoveredRelation_.valid()) return;
+    hoveredRelation_ = ConstraintId();
+    emit highlightChanged();
 }
 
 void Workspace::selectReported(const QVariantList &entities, const QVariantList &constraints) {
