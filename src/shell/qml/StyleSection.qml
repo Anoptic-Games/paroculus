@@ -16,12 +16,6 @@ Column {
     spacing: 4
     readonly property var ap: (App.active && App.active.appearance) ? App.active.appearance : ({})
 
-    function parseColor(s) {
-        var t = ("" + s).trim().replace("#", "")
-        if (!/^[0-9a-fA-F]{8}$/.test(t)) return -1
-        return parseInt(t, 16)
-    }
-
     Text { color: Theme.textDim; font.pixelSize: 10; text: qsTr("STYLE") }
 
     Row {
@@ -30,15 +24,11 @@ Column {
             width: 44; anchors.verticalCenter: parent.verticalCenter
             color: Theme.textSecondary; font.pixelSize: 11; text: qsTr("stroke")
         }
-        Rectangle {
-            width: 16; height: 16; radius: 2; anchors.verticalCenter: parent.verticalCenter
-            border.color: Theme.border
-            color: root.ap.strokeMixed ? "transparent" : (root.ap.strokeColor || "#00000000")
-        }
-        SlotField {
-            width: 92; anchors.verticalCenter: parent.verticalCenter
-            value: root.ap.strokeMixed ? qsTr("mixed") : (root.ap.strokeColor || "")
-            onCommitted: { var v = root.parseColor(text); if (v >= 0) App.active.run("style.set-stroke", { "color": v }) }
+        ColorField {
+            anchors.verticalCenter: parent.verticalCenter
+            argb: root.ap.strokeColorValue === undefined ? 0 : root.ap.strokeColorValue
+            mixed: root.ap.strokeMixed || false
+            onCommitted: (v) => App.active.run("style.set-stroke", { "color": v })
         }
     }
 
@@ -48,15 +38,11 @@ Column {
             width: 44; anchors.verticalCenter: parent.verticalCenter
             color: Theme.textSecondary; font.pixelSize: 11; text: qsTr("fill")
         }
-        Rectangle {
-            width: 16; height: 16; radius: 2; anchors.verticalCenter: parent.verticalCenter
-            border.color: Theme.border
-            color: root.ap.fillMixed ? "transparent" : (root.ap.fillColor || "#00000000")
-        }
-        SlotField {
-            width: 92; anchors.verticalCenter: parent.verticalCenter
-            value: root.ap.fillMixed ? qsTr("mixed") : (root.ap.fillColor || "")
-            onCommitted: { var v = root.parseColor(text); if (v >= 0) App.active.run("style.set-fill", { "color": v }) }
+        ColorField {
+            anchors.verticalCenter: parent.verticalCenter
+            argb: root.ap.fillColorValue === undefined ? 0 : root.ap.fillColorValue
+            mixed: root.ap.fillMixed || false
+            onCommitted: (v) => App.active.run("style.set-fill", { "color": v })
         }
     }
 

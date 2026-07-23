@@ -260,16 +260,47 @@ ApplicationWindow {
 
     // The background colour picker: writes the active workspace's per-document
     // background, which render applies on the canvas and the bake never sees.
-    // selectedColor is seeded on open rather than bound, so the dialog's own
-    // writes as the user picks do not fight a binding.
-    ColorDialog {
+    // The same visual picker the style colours use, opened as a modal popup from
+    // the menus rather than the native dialog, so every colour in the app is
+    // chosen the one way. Seeded on open, committed on close if it changed.
+    Popup {
         id: backgroundDialog
-        title: qsTr("Canvas background")
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        padding: 12
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: Rectangle { color: Theme.panelBg; border.color: Theme.borderStrong; radius: 8 }
+
+        property string openingHex: ""
+        property color seedColor: (App.active && App.active.hasBackground)
+                                  ? App.active.background : Theme.windowBg
         function openFor() {
-            selectedColor = (App.active && App.active.hasBackground) ? App.active.background : Theme.windowBg
+            bgPicker.setColor(seedColor)
+            openingHex = "#" + ("00000000" + (bgPicker.argbOf(bgPicker.selected) >>> 0).toString(16)).slice(-8)
             open()
         }
-        onAccepted: if (App.active) App.active.setBackground(selectedColor.toString())
+        onClosed: {
+            if(!App.active) return
+            var hex = "#" + ("00000000" + (bgPicker.argbOf(bgPicker.selected) >>> 0).toString(16)).slice(-8)
+            if(hex !== openingHex) {
+                App.active.setBackground(hex)
+                if(AppSettings) AppSettings.addRecentColor(bgPicker.argbOf(bgPicker.selected))
+            }
+        }
+        contentItem: Column {
+            spacing: 8
+            Text {
+                text: qsTr("Canvas background")
+                color: Theme.textSecondary; font.pixelSize: 12
+            }
+            ColorPicker { id: bgPicker; width: 234 }
+            Text {
+                anchors.right: parent.right
+                text: qsTr("Done"); color: Theme.info; font.pixelSize: 12
+                MouseArea { anchors.fill: parent; anchors.margins: -4; onClicked: backgroundDialog.close() }
+            }
+        }
     }
 
     // ---- Interchange and developer dialogs ----

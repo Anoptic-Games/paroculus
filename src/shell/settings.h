@@ -55,6 +55,24 @@ public:
     Q_INVOKABLE double glyphDensity() const;
     Q_INVOKABLE void setGlyphDensity(double density);
 
+    // The colour picker's two swatch rows. Both are packed ARGB integers, the
+    // same words the style and background actions take, kept here because a
+    // palette of colours the user likes is a preference and never reaches a
+    // document. Saved colours are the ones deliberately kept; recent colours are
+    // the last few committed, most recent first, capped and de-duplicated exactly
+    // as recent files are. Neither is document-semantic, so both are safe here.
+    Q_INVOKABLE QVariantList savedColors() const;
+    Q_INVOKABLE void addSavedColor(int argb);
+    Q_INVOKABLE void removeSavedColor(int argb);
+    Q_INVOKABLE QVariantList recentColors() const;
+    Q_INVOKABLE void addRecentColor(int argb);
+
+    // Prepends `argb` to `colours`, drops an earlier duplicate so a re-use moves
+    // to the front rather than repeating, and caps the length. Pure and static so
+    // the ordering rule the two swatch rows share is tested without a QSettings
+    // round-trip. Exposed for that test; the members above are its only callers.
+    static QVariantList withColorInserted(QVariantList colours, int argb, int cap);
+
 private:
     mutable QSettings settings_;
 };

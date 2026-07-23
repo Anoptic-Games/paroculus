@@ -19,36 +19,22 @@ Rectangle {
     color: Theme.surfaceRaised
     border.color: Theme.border
 
-    function parseColor(s) {
-        var t = ("" + s).trim().replace("#", "")
-        if (!/^[0-9a-fA-F]{8}$/.test(t)) return -1
-        return parseInt(t, 16)
-    }
-
     Row {
         id: bar
         anchors.centerIn: parent
         spacing: 8
 
-        Rectangle {  // stroke swatch — click cycles nothing; the field edits it
-            width: 16; height: 16; radius: 2; anchors.verticalCenter: parent.verticalCenter
-            border.color: Theme.border
-            color: root.ap.strokeMixed ? "transparent" : (root.ap.strokeColor || "#00000000")
+        ColorField {  // stroke — the swatch opens the picker, the field edits hex
+            anchors.verticalCenter: parent.verticalCenter
+            argb: root.ap.strokeColorValue === undefined ? 0 : root.ap.strokeColorValue
+            mixed: root.ap.strokeMixed || false
+            onCommitted: (v) => App.active.run("style.set-stroke", { "color": v })
         }
-        SlotField {
-            width: 84; anchors.verticalCenter: parent.verticalCenter
-            value: root.ap.strokeMixed ? qsTr("mixed") : (root.ap.strokeColor || "")
-            onCommitted: { var v = root.parseColor(text); if (v >= 0) App.active.run("style.set-stroke", { "color": v }) }
-        }
-        Rectangle {
-            width: 16; height: 16; radius: 2; anchors.verticalCenter: parent.verticalCenter
-            border.color: Theme.border
-            color: root.ap.fillMixed ? "transparent" : (root.ap.fillColor || "#00000000")
-        }
-        SlotField {
-            width: 84; anchors.verticalCenter: parent.verticalCenter
-            value: root.ap.fillMixed ? qsTr("mixed") : (root.ap.fillColor || "")
-            onCommitted: { var v = root.parseColor(text); if (v >= 0) App.active.run("style.set-fill", { "color": v }) }
+        ColorField {  // fill
+            anchors.verticalCenter: parent.verticalCenter
+            argb: root.ap.fillColorValue === undefined ? 0 : root.ap.fillColorValue
+            mixed: root.ap.fillMixed || false
+            onCommitted: (v) => App.active.run("style.set-fill", { "color": v })
         }
         Text {
             anchors.verticalCenter: parent.verticalCenter

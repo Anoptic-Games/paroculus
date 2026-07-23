@@ -7,8 +7,24 @@ namespace paroculus {
 namespace {
 
 constexpr int kRecentLimit = 12;
+// Two rows deep: enough recent colours to catch a working set, and a saved
+// palette large enough to hold a scheme without becoming a list to scroll.
+constexpr int kRecentColorLimit = 12;
+constexpr int kSavedColorLimit = 24;
 
 }  // namespace
+
+QVariantList Settings::withColorInserted(QVariantList colours, int argb, int cap) {
+    // Drop an earlier copy so a re-use moves to the front, prepend, and cap.
+    // Compared as ints, since two colours are the same swatch exactly when their
+    // packed words are equal.
+    for(int i = colours.size() - 1; i >= 0; i--) {
+        if(colours.at(i).toInt() == argb) colours.removeAt(i);
+    }
+    colours.prepend(argb);
+    while(colours.size() > cap) colours.removeLast();
+    return colours;
+}
 
 Settings::Settings(QObject *parent)
     : QObject(parent),
@@ -70,6 +86,32 @@ double Settings::glyphDensity() const {
 
 void Settings::setGlyphDensity(double density) {
     settings_.setValue(QStringLiteral("glyphDensity"), density);
+}
+
+QVariantList Settings::savedColors() const {
+    return settings_.value(QStringLiteral("savedColors")).toList();
+}
+
+void Settings::addSavedColor(int argb) {
+    settings_.setValue(QStringLiteral("savedColors"),
+                       withColorInserted(savedColors(), argb, kSavedColorLimit));
+}
+
+void Settings::removeSavedColor(int argb) {
+    QVariantList colours = savedColors();
+    for(int i = colours.size() - 1; i >= 0; i--) {
+        if(colours.at(i).toInt() == argb) colours.removeAt(i);
+    }
+    settings_.setValue(QStringLiteral("savedColors"), colours);
+}
+
+QVariantList Settings::recentColors() const {
+    return settings_.value(QStringLiteral("recentColors")).toList();
+}
+
+void Settings::addRecentColor(int argb) {
+    settings_.setValue(QStringLiteral("recentColors"),
+                       withColorInserted(recentColors(), argb, kRecentColorLimit));
 }
 
 }  // namespace paroculus

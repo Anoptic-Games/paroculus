@@ -302,6 +302,10 @@ qt_add_qml_module(paroculus
         src/shell/qml/StyleSection.qml
         src/shell/qml/StyleBar.qml
         src/shell/qml/ExportDialog.qml
+        src/shell/qml/ValueSlider.qml
+        src/shell/qml/SwatchRow.qml
+        src/shell/qml/ColorPicker.qml
+        src/shell/qml/ColorField.qml
 )
 
 install(TARGETS paroculus BUNDLE DESTINATION . RUNTIME DESTINATION bin)

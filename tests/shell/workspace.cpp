@@ -14,6 +14,7 @@
 #include "core/document.h"
 #include "core/persist.h"
 #include "shell/models/reports.h"
+#include "shell/settings.h"
 #include "shell/workspace.h"
 #include "shell/workspaces.h"
 
@@ -121,6 +122,32 @@ TEST_CASE("dirty tracks the journal revision across edit and save") {
 
     addPointVia(ws, 4.0, 4.0);
     CHECK(ws.dirty());
+}
+
+TEST_CASE("the colour swatch rows move a re-use to the front and cap their length") {
+    // The ordering rule the picker's recent and saved rows share: most recent
+    // first, no duplicate (a re-use moves rather than repeats), and a fixed cap.
+    // Tested on the pure helper so no QSettings round-trip is needed.
+    QVariantList row;
+    row = Settings::withColorInserted(row, 0xffff0000, 4);
+    row = Settings::withColorInserted(row, 0xff00ff00, 4);
+    row = Settings::withColorInserted(row, 0xff0000ff, 4);
+    REQUIRE(row.size() == 3);
+    CHECK(row.at(0).toInt() == 0xff0000ff);  // newest first
+    CHECK(row.at(2).toInt() == static_cast<int>(0xffff0000));
+
+    // Re-using a colour already present moves it to the front, not a second copy.
+    row = Settings::withColorInserted(row, 0xffff0000, 4);
+    REQUIRE(row.size() == 3);
+    CHECK(row.at(0).toInt() == static_cast<int>(0xffff0000));
+
+    // The cap drops the oldest.
+    row = Settings::withColorInserted(row, 0xff111111, 4);
+    row = Settings::withColorInserted(row, 0xff222222, 4);
+    REQUIRE(row.size() == 4);
+    CHECK(row.at(0).toInt() == 0xff222222);
+    // 0xff00ff00 was the oldest survivor and is now gone.
+    for(const QVariant &v : row) CHECK(v.toInt() != static_cast<int>(0xff00ff00));
 }
 
 TEST_CASE("a hovered relation is transient, repaint-only, and cleared by an edit") {
